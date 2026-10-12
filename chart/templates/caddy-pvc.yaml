@@ -1,0 +1,16 @@
+{{- if .Values.web.enabled }}
+# Caddy's ACME account + issued certs must survive pod restarts: every
+# restart otherwise re-runs ACME and burns Let's Encrypt duplicate-cert
+# budget (5/week per FQDN).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: caddy-data
+  namespace: idol
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: upcloud-block-storage-standard
+  resources:
+    requests:
+      storage: 1Gi
+{{- end }}

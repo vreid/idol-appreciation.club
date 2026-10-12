@@ -1,0 +1,4 @@
+idol-canvas deployed. Edge: https://{{ .Values.domain }} (Caddy TLS via the
+web Service LoadBalancer). Backend: backend.idol.svc.cluster.local:80.
+The app-env secret (DATABASE_URL, S3_*, SESSION_SECRET) is created by
+deploy.yml, not this chart.

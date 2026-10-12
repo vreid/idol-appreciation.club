@@ -878,5 +878,35 @@
     "bytes": 219794,
     "prompt": "School-uniform concept teaser photo of a female fictional idol with a ribbon tie and pleated skirt, sitting backwards on a classroom chair with a bright grin, chalk doodles on the board behind, youthful concept photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/73-cheerleader-stage.jpg",
+    "category": "cheerleader-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 496037,
+    "prompt": "Girl group of fictional idols in a cheerleader-themed stage performance, coordinated blue-and-white uniforms with pom-poms raised high, jumping in sync on a bright stage, energetic broadcast performance photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/74-pajama-sleepover-vlog.jpg",
+    "category": "pajama-sleepover-vlog",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 388914,
+    "prompt": "Vlog-style shot of a girl group of fictional idols in matching pastel pajamas during a dorm sleepover, members piled on a sofa with snacks and a movie projected on the wall, fairy lights and pillows everywhere, cozy candid lifestyle photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/75-solo-pixie-blonde.jpg",
+    "category": "solo-pixie-blonde",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 225022,
+    "prompt": "Studio portrait of a female fictional idol with a platinum blonde pixie cut, bold red lip and silver eye makeup, black turtleneck, dramatic split pink-and-blue studio lighting, striking beauty editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

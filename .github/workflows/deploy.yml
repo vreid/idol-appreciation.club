@@ -193,17 +193,26 @@ jobs:
         working-directory: tofu
         run: tofu apply -auto-approve -refresh-only -input=false || true
 
-      - name: Apply manifests
+      - name: Helm upgrade (atomic)
         run: |
-          kubectl apply -f deploy/00-namespace.yaml
-          if [ "${{ needs.ready.outputs.backend }}" = "true" ]; then
-            kubectl apply -f deploy/10-backend.yaml
+          cp web/Caddyfile chart/caddy/Caddyfile
+          ARGS=()
+          if [ "${{ needs.ready.outputs.backend }}" != "true" ]; then
+            echo "backend not .ci-ready: chart deploys without it is not supported; aborting stack changes"
+            exit 1
           fi
-          if [ "${{ needs.ready.outputs.web }}" = "true" ]; then
-            kubectl apply -f deploy/15-web.yaml
-          else
+          if [ "${{ needs.ready.outputs.web }}" != "true" ]; then
             echo "web not .ci-ready: bootstrap placeholder is the edge"
-            kubectl apply -f deploy/placeholder.yaml
+            ARGS+=(--set web.enabled=false)
+          fi
+          helm upgrade --install idol chart/ \
+            --namespace idol --atomic --wait --timeout 15m \
+            --set-string images.backend.digest="${{ needs.backend-build.outputs.digest }}" \
+            --set-string images.web.digest="${{ needs.web-build.outputs.digest }}" \
+            "${ARGS[@]}"
+          if [ "${{ needs.ready.outputs.web }}" = "true" ]; then
+            kubectl -n idol delete deploy placeholder svc placeholder \
+              --ignore-not-found
           fi
 
       - name: Create or update app-env secret
@@ -273,21 +282,6 @@ jobs:
           ./scripts/sync-dns.sh "$ipv4" ${ipv6:+"$ipv6"}
 
       # Tag is mutable (:main), so rollouts are driven by digest pinning:
-      # kubectl set image is a no-op when the digest is unchanged.
-      - name: Roll out backend (if image changed)
-        if: needs.backend-build.outputs.digest != ''
-        run: |
-          kubectl -n idol set image deployment/backend \
-            backend="${BACKEND_IMAGE}@${{ needs.backend-build.outputs.digest }}"
-          kubectl -n idol rollout status deployment/backend --timeout=300s
-
-      - name: Roll out web (if image changed)
-        if: needs.web-build.outputs.digest != ''
-        run: |
-          kubectl -n idol set image deployment/web \
-            web="${WEB_IMAGE}@${{ needs.web-build.outputs.digest }}"
-          kubectl -n idol rollout status deployment/web --timeout=300s
-
       - name: Remove bootstrap placeholder
         if: needs.ready.outputs.web == 'true'
         run: kubectl delete -f deploy/placeholder.yaml --ignore-not-found=true

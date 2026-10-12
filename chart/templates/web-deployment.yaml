@@ -1,0 +1,64 @@
+{{- if .Values.web.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: idol
+  labels:
+    app: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # kubelet chowns the PVC root to this gid so uid 1000 (caddy)
+        # can create /data/caddy.
+        fsGroup: 1000
+      volumes:
+        - name: caddy-data
+          persistentVolumeClaim:
+            claimName: caddy-data
+        - name: caddy-config
+          configMap:
+            name: caddy-config
+      containers:
+        - name: web
+          image: {{ include "idol-canvas.image" (dict "image" .Values.images.web) }}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 8443
+              name: https
+          volumeMounts:
+            - name: caddy-data
+              mountPath: /data
+            - name: caddy-config
+              mountPath: /etc/caddy/Caddyfile
+              subPath: Caddyfile
+              readOnly: true
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          # caddy exec fails EPERM under drop:[ALL] + RuntimeDefault
+          # seccomp (observed CrashLoopBackOff); keep non-root + no
+          # privilege escalation, drop the rest.
+          securityContext:
+            allowPrivilegeEscalation: false
+{{- end }}

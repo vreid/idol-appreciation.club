@@ -110,6 +110,21 @@ jobs:
       - name: oxfmt --check
         run: npx --yes oxfmt@0.72.0 --check "**/*.md"
 
+  helm-chart:
+    name: helm lint + template
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@fe7b79cd5ee1e45176fc7d371b0cb0312fbe7e1d
+        with:
+          version: v3.16.3
+      - run: helm lint chart
+      - run: helm template chart > /dev/null
+      - run: helm template chart --set web.enabled=false > /dev/null
+
   backend-ci:
     name: backend cargo gates
     needs: ready

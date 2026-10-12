@@ -43,12 +43,12 @@ variable "node_group_name" {
 
 variable "node_plan" {
   description = <<-EOT
-    Worker node plan. The classic `2xCPU-4GB` (2 vCPU / 4 GiB) is the cheapest
-    plan the Managed Kubernetes node-group API accepts; Starter Flex names are
-    not accepted for k8s node groups.
+    Worker node plan. `STARTER-2xCPU-4GB` (2 vCPU / 4 GiB, €12/mo) is the
+    cheapest 2C/4GB plan the Managed Kubernetes node-group API accepts;
+    Starter plans are valid for worker nodes (minimum 2 GB memory).
   EOT
   type        = string
-  default     = "2xCPU-4GB"
+  default     = "STARTER-2xCPU-4GB"
 }
 
 variable "node_count" {

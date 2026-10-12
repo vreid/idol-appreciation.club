@@ -1,6 +1,6 @@
-# Bootstrap placeholder: gives the LoadBalancer an IP and serves a static
-# page before the real backend image exists. deploy.yml deletes these
-# resources (kubectl delete --ignore-not-found) once the backend rolls out;
+# Bootstrap placeholder: becomes the EDGE LoadBalancer (plain HTTP) and
+# serves a static page before the real web image exists. deploy.yml deletes
+# these resources (kubectl delete --ignore-not-found) once web rolls out;
 # infra workflows never apply this file.
 apiVersion: v1
 kind: ConfigMap
@@ -71,35 +71,15 @@ kind: Service
 metadata:
   name: placeholder
   namespace: idol
+  annotations:
+    service.beta.kubernetes.io/upcloud-load-balancer-config: >-
+      {"plan":"essentials","frontends":[{"name":"http","port":80,"mode":"tcp"}],"backends":[{"name":"http","properties":{"health_check_type":"tcp","health_check_interval":10,"health_check_fall":3,"health_check_rise":3,"health_check_tls_verify":false}}]}
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app: placeholder
   ports:
     - name: http
       port: 80
       targetPort: 80
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: placeholder
-  namespace: idol
-spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - idol-appreciation.club
-        - www.idol-appreciation.club
-      secretName: letsencrypt-idol
-  rules:
-    - host: idol-appreciation.club
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: placeholder
-                port:
-                  number: 80
+

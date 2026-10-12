@@ -90,12 +90,32 @@
     "cost_if_known": 0.08549999999999999
   },
   {
+    "file": "idols/05-dance-break.jpg",
+    "category": "dance-break",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 314874,
+    "prompt": "Dynamic dance-break freeze frame of a fictional K-pop idol mid-move, clothes and hair in motion, sweat and intensity, dramatic arena lighting with lens flare, high-speed sports photography look, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/06-airport-fashion.jpg",
     "category": "airport-fashion",
     "aspect_ratio": "3:4",
     "width": 1773,
     "height": 2364,
     "bytes": 408920,
+    "prompt": "Candid paparazzi-style photo of a stylish female fictional idol walking through an airport terminal pulling a suitcase, oversized designer streetwear, face mask pulled down to her chin, flash photography aesthetic, editorial street style, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/06-airport-fashion.jpg",
+    "category": "airport-fashion",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 486368,
     "prompt": "Candid paparazzi-style photo of a stylish female fictional idol walking through an airport terminal pulling a suitcase, oversized designer streetwear, face mask pulled down to her chin, flash photography aesthetic, editorial street style, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
   },
@@ -120,12 +140,32 @@
     "cost_if_known": 0.08549999999999999
   },
   {
+    "file": "idols/08-music-show-win.jpg",
+    "category": "music-show-win",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 544148,
+    "prompt": "A fictional idol group celebrating an encore win on a music-show stage, holding a shiny trophy while golden confetti rains down, joyful tears and laughter, bright stage lights, celebratory editorial photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/09-dark-concept.jpg",
     "category": "dark-concept",
     "aspect_ratio": "3:4",
     "width": 1773,
     "height": 2364,
     "bytes": 257057,
+    "prompt": "Cinematic dark-concept teaser shot of a fictional idol, moody black set with deep shadows and a single dramatic rim light, high-fashion avant garde styling, smoldering gaze, film-noir editorial photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/09-dark-concept.jpg",
+    "category": "dark-concept",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 311321,
     "prompt": "Cinematic dark-concept teaser shot of a fictional idol, moody black set with deep shadows and a single dramatic rim light, high-fashion avant garde styling, smoldering gaze, film-noir editorial photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
   },
@@ -140,12 +180,32 @@
     "cost_if_known": 0.08549999999999999
   },
   {
+    "file": "idols/10-photobook-nature.jpg",
+    "category": "photobook-nature",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 279682,
+    "prompt": "Photobook concept photo of a female fictional idol standing in a wildflower field at golden hour, flowing white summer dress, warm backlit sun flare, dreamy soft focus background, editorial fashion photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/11-fanmeet-heart.jpg",
     "category": "fanmeet-heart",
     "aspect_ratio": "1:1",
     "width": 1024,
     "height": 1024,
     "bytes": 122014,
+    "prompt": "A cheerful female fictional idol making a finger-heart gesture toward the camera at a fan meeting, warm golden stage lights, soft bokeh crowd background, cute pastel stage outfit, heartwarming event photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/11-fanmeet-heart.jpg",
+    "category": "fanmeet-heart",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 106761,
     "prompt": "A cheerful female fictional idol making a finger-heart gesture toward the camera at a fan meeting, warm golden stage lights, soft bokeh crowd background, cute pastel stage outfit, heartwarming event photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.042749999999999996
   },

@@ -523,13 +523,21 @@ mod tests {
         if !vips() {
             return;
         }
-        let (img, _) = decode(&red_png(100, 50)).unwrap();
-        let d1 = resize_exact(&img, 32, 16).unwrap();
+        // Product requirement: derivative_sha dedup keys are stable WITHIN
+        // one running backend. Byte stability across libvips/libwebp
+        // builds is explicitly NOT required — sha keys are environment-
+        // scoped, so an upgraded encoder just produces a new derivative
+        // object for new uploads (old keys keep resolving).
+        let (img1, _) = decode(&red_png(100, 50)).unwrap();
+        let d1 = resize_exact(&img1, 32, 16).unwrap();
         let b1 = webp_bytes(&d1, 85).unwrap();
         let (img2, _) = decode(&red_png(100, 50)).unwrap();
         let d2 = resize_exact(&img2, 32, 16).unwrap();
         let b2 = webp_bytes(&d2, 85).unwrap();
-        assert_eq!(b1, b2, "same pixels must give identical webp bytes");
+        assert_eq!(
+            b1, b2,
+            "same process + same pixels must give identical webp bytes"
+        );
         assert_eq!(sha256_hex(&b1), sha256_hex(&b2));
     }
 

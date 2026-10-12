@@ -80,38 +80,53 @@ are `!Send`, so no image ever crosses an `.await`):
 1. Decode upload (magic-byte sniffing via the loader name; jpeg/png/webp/
    gif/avif-heif accepted; unknown → 400). Animated input collapses to frame 0;
    EXIF orientation is applied manually (the crate has no autorotate binding);
-   result normalized to RGBA sRGB. 2. **Strip + re-save in the source codec**:
-   jpeg → `.jpg[Q=90,strip=TRUE]`, png → `.png[strip=TRUE]`, webp →
-   `.webp[Q=90,strip=TRUE]`, gif → `.gif[strip=TRUE]`, avif →
-   `.avif[Q=90,compression=av1,strip=TRUE]`. sha256 of **those bytes** is the
-   content address: `originals/{sha256}.{ext}`. Raw uploads never touch storage;
-   no EXIF (GPS) survives. 3. Derivative: re-decode the stripped bytes,
-   `resize_exact` to the derived `w×h` (long edge = requested `size`, short edge
-   rounds to nearest, min 1), encode webp q85. Those bytes are deterministic for
-   identical inputs and are hashed to `derivatives/{sha256}.webp`. Manifest
+   result normalized to RGBA sRGB.
+2. **Strip + re-save in the source codec**: jpeg → `.jpg[Q=90,strip=TRUE]`,
+   png → `.png[strip=TRUE]`, webp → `.webp[Q=90,strip=TRUE]`, gif →
+   `.gif[strip=TRUE]`, avif → `.avif[Q=90,compression=av1,strip=TRUE]`. sha256
+   of **those bytes** is the content address: `originals/{sha256}.{ext}`. Raw
+   uploads never touch storage; no EXIF (GPS) survives.
+3. Derivative: re-decode the stripped bytes, `resize_exact` to the derived
+   `w×h` (long edge = requested `size`, short edge rounds to nearest, min 1),
+   encode webp q85. Those bytes are deterministic for identical inputs and are
+   hashed to `derivatives/{sha256}.webp`. Manifest
    `image_key`/`original_sha`/`derivative_sha` point at content keys; uploads
-   use put-if-absent so repeats cost nothing. 4. `duplicate_count` (prior non-
-   removed placements with the same `original_sha`) is returned additively;
-   `GET /api/images/{sha256}/count` exposes it publicly.
+   use put-if-absent so repeats cost nothing.
+4. `duplicate_count` (prior non-removed placements with the same
+   `original_sha`) is returned additively; `GET /api/images/{sha256}/count`
+   exposes it publicly.
 
 Exact-byte dedupe only. Perceptual near-dup (pHash) is a possible future knob,
-out of scope v1. Note: stripping is deterministic per libvips build; a server
-upgrade may change hashes for _new_ uploads (old keys keep resolving).
+out of scope v1. Content hashes (originals and derivatives) are
+**environment-scoped**: the product requirement is same-process stability (two
+identical uploads inside one running backend dedupe to one object); byte
+stability across libvips/libwebp builds is explicitly not required. A server
+upgrade may therefore produce new hash keys for new uploads — old keys keep
+resolving. The deployment pins libvips to Debian trixie's `8.16.1-1+deb13u2`
+in both Dockerfile stages so prod behavior matches one known build (CI gates
+run Ubuntu 24.04's libvips 8.15.1 and never assert cross-version byte
+determinism).
 
 ## Placement, cooldown, ordering
 
 Pipeline (all inside chunk-key locks, acquired sorted — deadlock-free, and paint
 order always matches `seq` order):
 
-1. Validate `size` bounds and world bounds; build derivative + hashes. 2. Open
-   tx: intersect test (GiST) → threshold = 300 s (paint) or 1 s (empty); single
-   guarded
-   `UPDATE accounts SET last_placement_at = now() WHERE id = $1 AND (last_placement_at IS NULL OR now() - last >= $threshold)`
-   — zero rows ⇒ rollback + `429` with `Retry-After`. 3.
-   `seq = nextval('placement_seq')` inside the tx (burned seqs on rollback are
-   fine — monotonic, not gapless). 4. Composite the derivative onto every
-   intersecting chunk (fetch, vips composite with pixel offset, put back). 5.
-   Insert the manifest row, `pg_notify('events', …)`, commit.
+1. Validate `size` bounds and world bounds; build derivative + hashes.
+2. Open tx: intersect test (GiST) → threshold = 300 s (paint) or 1 s (empty);
+   single guarded UPDATE — zero rows ⇒ rollback + `429` with `Retry-After`:
+
+   ```sql
+   UPDATE accounts SET last_placement_at = now()
+   WHERE id = $1
+     AND (last_placement_at IS NULL OR now() - last >= $threshold)
+   ```
+
+3. `seq = nextval('placement_seq')` inside the tx (burned seqs on rollback are
+   fine — monotonic, not gapless).
+4. Composite the derivative onto every intersecting chunk (fetch, vips
+   composite with pixel offset, put back).
+5. Insert the manifest row, `pg_notify('events', …)`, commit.
 
 Both cooldown knobs (`COOLDOWN_PAINT_SECS`, `COOLDOWN_EMPTY_SECS`) are env-
 configurable with spec defaults.
@@ -121,12 +136,12 @@ configurable with spec defaults.
 `GET /api/tiles/{z}/{x}/{y}.webp` (axum 0.8 has no suffix captures, so the last
 segment is a wildcard parsed as `<n>.webp`):
 
-1. `maxSeq` over the tile bbox (GiST-backed) = expected ETag. 2. In-memory cache
-   keyed `(z, x, y, seq)` — `z ≤ 4` never evicts (341 tiles max), higher zooms
-   use an LRU (`TILE_CACHE_ENTRIES`, 2048). 3. Object-stored tiles are trusted
-   only if the `tiles` table row's seq matches the live maxSeq; otherwise render
-   (leaf: chunk crop/scale; parent: four children) and write through object +
-   row + memory.
+1. `maxSeq` over the tile bbox (GiST-backed) = expected ETag.
+2. In-memory cache keyed `(z, x, y, seq)` — `z ≤ 4` never evicts (341 tiles
+   max), higher zooms use an LRU (`TILE_CACHE_ENTRIES`, 2048).
+3. Object-stored tiles are trusted only if the `tiles` table row's seq matches
+   the live maxSeq; otherwise render (leaf: chunk crop/scale; parent: four
+   children) and write through object + row + memory.
 
 `ETag: "maxSeq"`, `Cache-Control: no-cache` ⇒ clients revalidate and get cheap
 304s; a GET computed after a placement commit always re-renders before serving,

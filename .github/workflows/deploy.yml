@@ -191,30 +191,6 @@ jobs:
           chmod 600 kubeconfig
           echo "KUBECONFIG=$PWD/kubeconfig" >> "$GITHUB_ENV"
 
-      - name: Install / upgrade ingress-nginx
-        run: |
-          kubectl apply -f "$INGRESS_NGINX_MANIFEST"
-          kubectl -n ingress-nginx rollout status \
-            deployment/ingress-nginx-controller --timeout=300s
-          # Pin nodePorts so the LB annotation below stays stable across
-          # cluster recreates.
-          kubectl -n ingress-nginx patch service ingress-nginx-controller \
-            -p '{"spec":{"ports":[{"name":"http","port":80,"nodePort":30859},{"name":"https","port":443,"nodePort":30875}]}}'
-          # Essentials tier (free) + tcp passthrough on 443 so nginx serves
-          # the Let's Encrypt cert; health checks target /healthz on the
-          # pinned nodePorts.
-          kubectl -n ingress-nginx patch service ingress-nginx-controller \
-            -p '{"metadata":{"annotations":{"service.beta.kubernetes.io/upcloud-load-balancer-config":"{\"plan\":\"essentials\",\"frontends\":[{\"name\":\"http\",\"port\":80,\"mode\":\"http\"},{\"name\":\"https-tcp\",\"port\":443,\"mode\":\"tcp\",\"default_backend\":\"https\"}],\"backends\":[{\"name\":\"http\",\"properties\":{\"health_check_url\":\"http://:30859/healthz\",\"health_check_expected_status\":200,\"health_check_interval\":10,\"health_check_fall\":3,\"health_check_rise\":3,\"health_check_type\":\"http\",\"health_check_tls_verify\":false}},{\"name\":\"https\",\"properties\":{\"health_check_type\":\"tcp\",\"health_check_interval\":10,\"health_check_fall\":3,\"health_check_rise\":3,\"health_check_tls_verify\":false}}]}"}}}' \
-            --type=merge
-
-      - name: Install / upgrade cert-manager
-        run: |
-          kubectl apply -f "$CERT_MANAGER_MANIFEST"
-          for d in cert-manager cert-manager-webhook cert-manager-cainjector; do
-            kubectl -n cert-manager rollout status "deployment/$d" \
-              --timeout=300s
-          done
-
       - name: Settle tofu state (read-backed resources)
         working-directory: tofu
         run: tofu apply -auto-approve -refresh-only -input=false || true
@@ -222,15 +198,13 @@ jobs:
       - name: Apply manifests
         run: |
           kubectl apply -f deploy/00-namespace.yaml
-          kubectl apply -f deploy/30-issuer.yaml
           if [ "${{ needs.ready.outputs.backend }}" = "true" ]; then
             kubectl apply -f deploy/10-backend.yaml
           fi
           if [ "${{ needs.ready.outputs.web }}" = "true" ]; then
             kubectl apply -f deploy/15-web.yaml
-            kubectl apply -f deploy/20-ingress.yaml
           else
-            echo "web not .ci-ready: bootstrap placeholder serves /"
+            echo "web not .ci-ready: bootstrap placeholder is the edge"
             kubectl apply -f deploy/placeholder.yaml
           fi
 
@@ -273,9 +247,9 @@ jobs:
           ips=""
           n=0
           while [ -z "$ips" ] && [ "$n" -lt 30 ]; do
-            ips="$(kubectl -n ingress-nginx get svc ingress-nginx-controller \
-              -o json | jq -r '.status.loadBalancer.ingress[]?
-              | (.ip // .hostname)')"
+            ips="$(kubectl -n idol get svc web placeholder \
+              -o json 2>/dev/null | jq -r '.items[] | select(.status.loadBalancer.ingress)
+              | .status.loadBalancer.ingress[]? | (.ip // .hostname)')"
             [ -n "$ips" ] || sleep 10
             n=$((n + 1))
           done

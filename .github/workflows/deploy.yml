@@ -236,16 +236,20 @@ jobs:
           set -euo pipefail
           # s3_endpoint can lag service creation; refresh until it shows.
           ep=""
-          for attempt in 1 2 3 4 5; do
+          i=0
+          while [ "$i" -lt 5 ]; do
             ep="$(tofu output -raw s3_endpoint 2>/dev/null || true)"
-            [ -n "$ep" ] && [ "$ep" != "null" ] && break
+            if [ -n "$ep" ] && [ "$ep" != "null" ]; then
+              break
+            fi
             tofu apply -auto-approve -refresh-only -input=false || true
             sleep 20
+            i=$((i + 1))
           done
-          [ -n "$ep" ] && [ "$ep" != "null" ] || {
+          if [ -z "$ep" ] || [ "$ep" = "null" ]; then
             echo "warning: object storage endpoint not available; S3_ENDPOINT empty"
             ep=""
-          }
+          fi
           db="$(tofu output -raw app_database_uri)"
           test -n "$db" || { echo "app_database_uri missing" >&2; exit 1; }
           kubectl -n idol create secret generic app-env \

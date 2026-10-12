@@ -478,5 +478,65 @@
     "bytes": 547721,
     "prompt": "Girl group of fictional idols celebrating a music-show win, members hugging and laughing around a shiny trophy while golden confetti rains down, tears of joy, bright celebratory stage lighting, editorial event photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/33-encore-music-show.jpg",
+    "category": "encore-music-show",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 509640,
+    "prompt": "Encore stage in the style of a Korean music show, girl group of fictional idols waving tearfully to cameras holding microphones, glittering trophy on a pedestal in front of them, warm golden stage light, celebratory broadcast photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/34-comeback-led-stage.jpg",
+    "category": "comeback-led-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 461394,
+    "prompt": "Comeback debut stage of a girl group of fictional idols on a futuristic music-show set, towering curved LED screens pulsing neon geometry, metallic stage outfits, dramatic fog and backlight, cinematic stage photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/35-solo-ballad-stage.jpg",
+    "category": "solo-ballad-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 135689,
+    "prompt": "Female fictional idol singing a ballad alone on a huge dark stage, single warm spotlight from above, long flowing dress catching the light, emotional closed-eye expression, cinematic concert photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/36-solo-dance-break.jpg",
+    "category": "solo-dance-break",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 288850,
+    "prompt": "Dynamic solo dance-break shot of a female fictional idol mid-spin, red stage outfit with flowing fabric, hair whipping through dramatic rim light, motion blur background, high-speed performance photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/37-solo-male-ballad.jpg",
+    "category": "solo-male-ballad",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 237897,
+    "prompt": "Male fictional idol in a black suit singing an emotional ballad at a grand piano on a candle-lit stage, soft golden key light, gentle haze, intimate concert photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/38-coed-festival-stage.jpg",
+    "category": "coed-festival-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 465677,
+    "prompt": "Coed group of fictional idols performing at an outdoor university festival at dusk, mixed male and female members in casual stage outfits, cheering crowd with phone flashlights, warm festival lighting, documentary concert photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

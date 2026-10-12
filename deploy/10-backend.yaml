@@ -23,6 +23,7 @@ spec:
       containers:
         - name: backend
           image: ghcr.io/vreid/idol-appreciation.club-backend:main
+          imagePullPolicy: Always
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

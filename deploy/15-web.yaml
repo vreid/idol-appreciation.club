@@ -21,6 +21,7 @@ spec:
       containers:
         - name: web
           image: ghcr.io/vreid/idol-appreciation.club-web:main
+          imagePullPolicy: Always
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

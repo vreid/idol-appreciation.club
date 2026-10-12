@@ -155,6 +155,53 @@ pub struct ReportReq {
     placement_id: Uuid,
 }
 
+/// GET /api/admin/accounts?pending=true → pending queue, oldest first.
+/// Without the flag: all accounts, same shape.
+pub async fn admin_list_accounts(
+    State(app): State<App>,
+    Authed(admin_id): Authed,
+    axum::extract::Query(q): axum::extract::Query<PendingQuery>,
+) -> AppResult<Response> {
+    crate::auth::require_admin(&app, admin_id).await?;
+    let sql = if q.pending == Some(true) {
+        "SELECT username, created_at FROM accounts WHERE NOT approved ORDER BY created_at ASC, id ASC"
+    } else {
+        "SELECT username, created_at FROM accounts ORDER BY created_at ASC, id ASC"
+    };
+    let rows: Vec<(String, DateTime<Utc>)> = sqlx::query_as(sql).fetch_all(&app.pool).await?;
+    Ok(Json(json!(rows
+        .into_iter()
+        .map(|(username, created_at)| json!({
+            "username": username,
+            "created_at": created_at,
+        }))
+        .collect::<Vec<_>>()))
+    .into_response())
+}
+
+#[derive(Deserialize)]
+pub struct PendingQuery {
+    pending: Option<bool>,
+}
+
+/// POST /api/admin/accounts/{username}/approve → 204 (idempotent; 404 for
+/// unknown usernames).
+pub async fn admin_approve(
+    State(app): State<App>,
+    Authed(admin_id): Authed,
+    axum::extract::Path(username): axum::extract::Path<String>,
+) -> AppResult<Response> {
+    crate::auth::require_admin(&app, admin_id).await?;
+    let result = sqlx::query("UPDATE accounts SET approved = true WHERE username = $1")
+        .bind(&username)
+        .execute(&app.pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
 /// POST /api/reports → 204.
 pub async fn report(
     State(app): State<App>,

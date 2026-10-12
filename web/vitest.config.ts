@@ -14,6 +14,7 @@ export default defineConfig({
         "src/lib/**/*.test.ts",
         "src/lib/worldMap.ts",
         "src/lib/confetti.ts",
+        "src/lib/images.ts",
       ],
       thresholds: { lines: 80 },
     },

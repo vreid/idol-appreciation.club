@@ -36,6 +36,10 @@ thiserror = "2"
 lru = "0.12"
 futures = "0.3"
 bytes = "1"
+libvips = "2.3"
+
+[dev-dependencies]
+proptest = "1"
 
 [profile.release]
 opt-level = 3

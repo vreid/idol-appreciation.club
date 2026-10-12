@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: opentofu/setup-tofu@v1
+      - uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: 1.13.1
       - name: tofu fmt -check
@@ -40,7 +40,7 @@ jobs:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - uses: opentofu/setup-tofu@v1
+      - uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: 1.13.1
       - name: tofu init (backend disabled)

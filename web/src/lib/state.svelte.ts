@@ -54,6 +54,8 @@ export interface AppStore {
   readonly authPrompt: boolean;
 
   dismissToast(id: number): void;
+  /** App-level informational toast (empty placements, bad file, ...). */
+  notify(message: string): void;
   refreshMe(): Promise<void>;
   refreshCenter(): Promise<void>;
   login(username: string, password: string): Promise<boolean>;
@@ -230,6 +232,8 @@ export function createAppStore(
     },
 
     dismissToast,
+
+    notify: (message: string) => pushToast("info", message),
 
     refreshMe: doRefreshMe,
     refreshCenter: doRefreshCenter,

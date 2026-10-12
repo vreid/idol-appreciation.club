@@ -19,7 +19,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: opentofu/setup-tofu@v1
+    - uses: opentofu/setup-opentofu@v1
       with:
         tofu_version: 1.13.1
 

@@ -98,5 +98,45 @@
     "bytes": 262486,
     "prompt": "Photobook concept photo of a female fictional idol standing in a wildflower field at golden hour, flowing white summer dress, warm backlit sun flare, dreamy soft focus background, editorial fashion photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/11-fanmeet-heart.jpg",
+    "category": "fanmeet-heart",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 122014,
+    "prompt": "A cheerful female fictional idol making a finger-heart gesture toward the camera at a fan meeting, warm golden stage lights, soft bokeh crowd background, cute pastel stage outfit, heartwarming event photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/12-birthday-cafe.jpg",
+    "category": "birthday-cafe",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 123652,
+    "prompt": "Fan-organized birthday cafe display for a fictional idol, pastel banners decorated with star symbols, a beautiful cream cake, photo wall with candid prints, cozy cafe interior, cozy lifestyle photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/13-variety-pose.jpg",
+    "category": "variety-pose",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 466355,
+    "prompt": "Playful fictional idol striking a goofy variety-show pose on a bright colorful studio set, oversized novelty props, laughing expression, vibrant game-show lighting, energetic entertainment photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/14-album-flatlay.jpg",
+    "category": "album-flatlay",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 111726,
+    "prompt": "K-pop album unboxing flat lay photographed from directly above, generic pastel album sleeve with abstract star artwork, shiny photocard, CD with iridescent reflection, photocard sleeves and stickers on a clean desk, no readable text or logos, product photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
   }
 ]

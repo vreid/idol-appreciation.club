@@ -259,7 +259,7 @@ pub fn tile_from_chunk(
     } else {
         ops::resize(&crop, scale)?
     };
-    flatten_paper(&img)
+    flatten_paper(img)
 }
 
 /// Join 4 child tiles (2 across) and downsample 2x for the parent tile.
@@ -276,18 +276,24 @@ pub fn tile_from_children(children: &[VipsImage; 4]) -> Result<VipsImage, AppErr
         },
     )?;
     let half = ops::resize(&joined, 0.5)?;
-    flatten_paper(&half)
+    flatten_paper(half)
 }
 
 /// Composite the transparent render onto the opaque paper background.
-pub fn flatten_paper(img: &VipsImage) -> Result<VipsImage, AppError> {
-    Ok(ops::flatten_with_opts(
-        img,
-        &ops::FlattenOptions {
-            background: PAPER.to_vec(),
-            ..Default::default()
-        },
-    )?)
+/// Already-opaque tiles (parent levels join flattened children) pass
+/// through unchanged — flatten requires an alpha band.
+pub fn flatten_paper(img: VipsImage) -> Result<VipsImage, AppError> {
+    if img.image_hasalpha() {
+        Ok(ops::flatten_with_opts(
+            &img,
+            &ops::FlattenOptions {
+                background: PAPER.to_vec(),
+                ..Default::default()
+            },
+        )?)
+    } else {
+        Ok(img)
+    }
 }
 
 /// Encoded opaque red PNG for tests and fixtures (integration tests use
@@ -491,6 +497,11 @@ mod tests {
 /// Composite one overlay (webp bytes) onto every listed chunk in one sync
 /// section. `bases[i]` is the current chunk bytes (None = virgin chunk) for
 /// `targets[i] = (local_x, local_y)`. Returns the new webp bytes per chunk.
+///
+/// Virgin chunks embed the overlay directly: compositing onto a synthetic
+/// (embed-built) blank canvas trips a libvips save quirk ("Cannot write
+/// content to buffer") when the overlay is clipped at the canvas edge,
+/// while embed-of-decoded-overlay encodes reliably.
 pub fn composite_chunks(
     bases: Vec<Option<Vec<u8>>>,
     overlay: &[u8],
@@ -499,14 +510,38 @@ pub fn composite_chunks(
     let (ov, _) = decode(overlay)?;
     let mut out = Vec::with_capacity(bases.len());
     for (base, (lx, ly)) in bases.into_iter().zip(targets) {
-        let base = match base {
-            Some(bytes) => VipsImage::new_from_buffer(&bytes, "")?,
-            None => blank_chunk(CHUNK_CANVAS_PX)?,
+        let composed = match base {
+            Some(bytes) => {
+                let img = VipsImage::new_from_buffer(&bytes, "")?;
+                composite(&img, &ov, *lx, *ly)?
+            }
+            None => embed_canvas(&ov, *lx, *ly)?,
         };
-        let composed = composite(&base, &ov, *lx, *ly)?;
-        out.push(webp_bytes(&composed, 90)?);
+        out.push(
+            webp_bytes(&composed, 90)
+                .map_err(|e| anyhow::anyhow!("chunk webp encode: {e}"))
+                .map_err(crate::error::AppError::from)?,
+        );
     }
     Ok(out)
+}
+
+/// Transparent 1024×1024 canvas with `overlay` embedded at (x, y).
+fn embed_canvas(overlay: &VipsImage, x: i64, y: i64) -> crate::error::AppResult<VipsImage> {
+    let x = i32::try_from(x).map_err(|_| anyhow::anyhow!("embed x out of range"))?;
+    let y = i32::try_from(y).map_err(|_| anyhow::anyhow!("embed y out of range"))?;
+    Ok(ops::embed_with_opts(
+        overlay,
+        x,
+        y,
+        CHUNK_CANVAS_PX,
+        CHUNK_CANVAS_PX,
+        &ops::EmbedOptions {
+            extend: ops::Extend::Background,
+            background: vec![0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
+        },
+    )?)
 }
 
 /// Chunk canvas side used by the compositing helpers.
@@ -519,15 +554,25 @@ pub fn replay_canvas(
     canvas: Option<Vec<u8>>,
     overlays: &[(Vec<u8>, i64, i64)],
 ) -> crate::error::AppResult<Vec<u8>> {
-    let mut canvas = match canvas {
-        Some(bytes) => VipsImage::new_from_buffer(&bytes, "")?,
-        None => blank_chunk(CHUNK_CANVAS_PX)?,
+    let mut canvas = match &canvas {
+        Some(bytes) => Some(VipsImage::new_from_buffer(bytes, "")?),
+        None => None,
     };
     for (bytes, x, y) in overlays {
         let (ov, _) = decode(bytes)?;
-        canvas = composite(&canvas, &ov, *x, *y)?;
+        canvas = Some(match canvas {
+            Some(c) => composite(&c, &ov, *x, *y)?,
+            // First paint on a virgin chunk embeds directly (see
+            // composite_chunks for why not a synthetic blank).
+            None => embed_canvas(&ov, *x, *y)?,
+        });
     }
-    webp_bytes(&canvas, 90)
+    let canvas = match canvas {
+        Some(c) => c,
+        // No overlays at all → rewrite as transparent.
+        None => blank_chunk(CHUNK_CANVAS_PX)?,
+    };
+    webp_bytes(&canvas, 90).map_err(|e| anyhow::anyhow!("replay encode: {e}").into())
 }
 
 /// Render a z ≥ BASE_Z tile from its covering chunk bytes (None = blank).

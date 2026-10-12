@@ -263,13 +263,18 @@ jobs:
         run: |
           set -euo pipefail
           ips=""
-          for attempt in $(seq 1 30); do
+          n=0
+          while [ -z "$ips" ] && [ "$n" -lt 30 ]; do
             ips="$(kubectl -n ingress-nginx get svc ingress-nginx-controller \
-              -o jsonpath='{.status.loadBalancer.ingress[*].ip}' || true)"
-            [ -n "$ips" ] && break
-            sleep 10
+              -o json | jq -r '.status.loadBalancer.ingress[]?
+              | (.ip // .hostname)')"
+            [ -n "$ips" ] || sleep 10
+            n=$((n + 1))
           done
-          [ -n "$ips" ] || { echo "LoadBalancer IP never assigned" >&2; exit 1; }
+          if [ -z "$ips" ]; then
+            echo "LoadBalancer IP never assigned" >&2
+            exit 1
+          fi
           # CCM may expose an ip or a dns hostname per ingress entry.
           addrs=""
           for entry in $ips; do
@@ -278,9 +283,12 @@ jobs:
               *) addrs="$addrs $(getent ahosts "$entry" | awk '{print $1}' | sort -u | tr '\n' ' ')" ;;
             esac
           done
-          ipv4="$(printf '%s\n' $addrs | grep '\.' | head -1 || true)"
-          ipv6="$(printf '%s\n' $addrs | grep ':' | head -1 || true)"
-          [ -n "$ipv4" ] || { echo "no IPv4 address on LB" >&2; exit 1; }
+          ipv4="$(printf '%s\n' "$addrs" | tr ' ' '\n' | grep '\.' | head -1 || true)"
+          ipv6="$(printf '%s\n' "$addrs" | tr ' ' '\n' | grep ':' | head -1 || true)"
+          if [ -z "$ipv4" ]; then
+            echo "no IPv4 address on LB" >&2
+            exit 1
+          fi
           ./scripts/sync-dns.sh "$ipv4" ${ipv6:+"$ipv6"}
 
       # Tag is mutable (:main), so rollouts are driven by digest pinning:

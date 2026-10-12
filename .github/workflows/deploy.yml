@@ -238,6 +238,7 @@ jobs:
           fi
           helm upgrade --install idol chart/ \
             --namespace idol --atomic --wait --timeout 15m \
+            --take-ownership \
             --set-string images.backend.digest="${{ needs.backend-build.outputs.digest }}" \
             --set-string images.web.digest="${{ needs.web-build.outputs.digest }}" \
             "${ARGS[@]}"

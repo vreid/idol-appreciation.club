@@ -410,6 +410,26 @@
     "cost_if_known": 0.08549999999999999
   },
   {
+    "file": "idols/27-group-four-girls.jpg",
+    "category": "group-four-girls",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 501966,
+    "prompt": "Four-member girl group of fictional idols performing on a music-show stage in coordinated white and blue outfits, mirror-like LED floor reflections, sharp synchronized choreography, dynamic concert photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/28-group-five-girls.jpg",
+    "category": "group-five-girls",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 428683,
+    "prompt": "Five-member girl group of fictional idols striking an ending pose on a brightly lit music-show stage, pastel gradient LED backdrop, coordinated sparkling outfits, confetti in the air, energetic stage photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/30-group-seven-girls.jpg",
     "category": "group-seven-girls",
     "aspect_ratio": "16:9",

@@ -1048,5 +1048,25 @@
     "bytes": 370752,
     "prompt": "Winter photobook concept shot of a female fictional idol wrapped in an oversized knit blanket on a cabin porch, snow-covered pines and string lights behind, cradling a warm mug, soft morning snow light, cozy editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/90-makeup-room-bts.jpg",
+    "category": "makeup-room-bts",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 264014,
+    "prompt": "Behind-the-scenes shot of a female fictional idol getting final hair and touch-ups in a dressing room mirror ringed with bulbs, robe and curlers, stylist hands in frame, warm candid backstage photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/91-stage-wing-waiting.jpg",
+    "category": "stage-wing-waiting",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 355970,
+    "prompt": "Girl group of fictional idols waiting in the stage wings moments before going on, peeking at the packed arena through the curtain gap, hands stacked together in the middle, tense-excited expressions, candid backstage documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

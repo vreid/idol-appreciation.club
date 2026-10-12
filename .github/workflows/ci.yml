@@ -77,6 +77,8 @@ jobs:
           sudo apt-get install -y -qq libvips-dev
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
+          # match rust:trixie (gate image) so rustfmt output is identical
+          toolchain: "1.99.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
@@ -123,7 +125,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: opentofu/setup-tofu@4dc39d7d744ebdfb60e6a8f9996aad5bde26a467
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
+        with:
+          tofu_version: 1.13.1
       - working-directory: tofu
         run: tofu fmt -check -recursive
       - working-directory: tofu
@@ -144,7 +148,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: opentofu/setup-tofu@4dc39d7d744ebdfb60e6a8f9996aad5bde26a467
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
+        with:
+          tofu_version: 1.13.1
       - working-directory: tofu
         run: tofu init -input=false
       - working-directory: tofu

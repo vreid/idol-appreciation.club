@@ -48,7 +48,7 @@ project requirement.
 
 | workflow         | trigger                                   | does                                                                                                         |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `ci`             | PR + push to main                         | tofu fmt/validate/plan (PRs), oxfmt markdown, backend cargo gates, web vp gates                           |
+| `ci`             | PR + push to main                         | tofu fmt/validate/plan (PRs), oxfmt markdown, backend cargo gates, web vp gates                              |
 | `infra-apply`    | push to main touching `tofu/`, manual     | `tofu apply -auto-approve`                                                                                   |
 | `infra-destroy`  | manual, input `confirm=destroy`           | `tofu destroy -auto-approve`                                                                                 |
 | `infra-recreate` | manual                                    | destroy (best effort) then apply                                                                             |

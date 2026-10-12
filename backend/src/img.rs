@@ -327,12 +327,15 @@ pub fn composite_chunks(
     let (ov, _) = decode(overlay)?;
     // WebP sources decode to sequential-access lazy images; embedding or
     // compositing at offsets clips them, which needs random access.
-    let ov = ops::image_copy_memory(&ov)?;
+    let ov = VipsImage::image_copy_memory(ov)?;
     let mut out = Vec::with_capacity(bases.len());
     for (base, (lx, ly)) in bases.into_iter().zip(targets) {
         let composed = match base {
             Some(bytes) => {
                 let img = VipsImage::new_from_buffer(&bytes, "")?;
+                // Chunk bases decode sequential; composite blends need
+                // random access.
+                let img = VipsImage::image_copy_memory(img)?;
                 composite(&img, &ov, *lx, *ly)?
             }
             None => embed_canvas(&ov, *lx, *ly, i64::from(CHUNK_CANVAS_PX))?,

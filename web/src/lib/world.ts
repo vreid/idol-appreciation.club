@@ -21,6 +21,27 @@ export const TILE_SIZE = 256;
 export const MIN_ZOOM = 0;
 export const MAX_ZOOM = 20;
 
+/** World extent in LatLng space, y-flip aware: SW [-1, 0], NE [0, 1]. */
+export const WORLD_LAT_LNG_BOUNDS: [[number, number], [number, number]] = [
+  [-1, 0],
+  [0, 1],
+];
+
+/** Screen size (CSS px) of the full world at a given zoom. */
+export function worldScreenSize(zoom: number): number {
+  return TILE_SIZE * 2 ** zoom;
+}
+
+/** True when the whole world fits inside a viewport at the given zoom. */
+export function worldFitsViewport(
+  width: number,
+  height: number,
+  zoom: number,
+): boolean {
+  const size = worldScreenSize(zoom);
+  return size <= width && size <= height;
+}
+
 export interface WorldPoint {
   x: number;
   y: number;
@@ -39,11 +60,12 @@ export interface LatLng {
 }
 
 export function worldToLatLng(x: number, y: number): LatLng {
-  return { lat: -y / WORLD_SIZE, lng: x / WORLD_SIZE };
+  // Normalize -0 at the top edge so the exported bounds compare cleanly.
+  return { lat: y === 0 ? 0 : -y / WORLD_SIZE, lng: x / WORLD_SIZE };
 }
 
 export function latLngToWorld(lat: number, lng: number): WorldPoint {
-  return { x: lng * WORLD_SIZE, y: -lat * WORLD_SIZE };
+  return { x: lng * WORLD_SIZE, y: lat === 0 ? 0 : -lat * WORLD_SIZE };
 }
 
 /** Screen px per native world px at a given zoom. */

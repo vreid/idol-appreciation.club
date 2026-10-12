@@ -2,7 +2,7 @@
   import { onDestroy } from "svelte";
   import type { AppStore } from "../state.svelte";
   import { cooldownRemainingMs, formatCountdown } from "../cooldown";
-  import { formatDuration } from "../format";
+  import { formatDuration, timeAgo } from "../format";
 
   let {
     store,
@@ -23,11 +23,17 @@
   let username = $state("");
   let password = $state("");
   let busy = $state(false);
+  let adminOpen = $state(false);
 
   // The auth popover pops itself open when an action needs a login.
   $effect(() => {
     if (store.authPrompt) authOpen = true;
   });
+
+  function toggleAdmin(): void {
+    adminOpen = !adminOpen;
+    if (adminOpen) void store.loadAdminPending();
+  }
 
   const heldSeconds = $derived.by(() => {
     const since = store.center?.current?.since;
@@ -67,6 +73,11 @@
 
   function toggleAuth(): void {
     authOpen = !authOpen;
+  }
+
+  function switchAuthTab(tab: "login" | "register"): void {
+    authTab = tab;
+    store.clearAuthError();
   }
 </script>
 
@@ -109,7 +120,55 @@
           </span>
         {/if}
         {#if store.me.is_admin}
-          <span class="admin-tag">admin</span>
+          <div class="admin-wrap">
+            <button
+              class="btn ghost small"
+              type="button"
+              onclick={toggleAdmin}
+              title="Accounts awaiting approval"
+            >
+              admin{store.adminPending.length > 0
+                ? ` (${store.adminPending.length})`
+                : ""}
+            </button>
+            {#if adminOpen}
+              <div class="auth-pop admin-pop">
+                <div class="admin-head">
+                  <strong>Pending accounts</strong>
+                  <button
+                    class="btn ghost small"
+                    type="button"
+                    onclick={() => void store.loadAdminPending()}
+                    title="Refresh"
+                  >
+                    ↻
+                  </button>
+                </div>
+                {#if store.adminPending.length === 0}
+                  <p class="admin-empty">Nothing pending 🎉</p>
+                {:else}
+                  <ul class="admin-list">
+                    {#each store.adminPending as account (account.username)}
+                      <li>
+                        <span class="admin-name">{account.username}</span>
+                        <span class="admin-ago">
+                          {timeAgo(account.created_at, now)}
+                        </span>
+                        <button
+                          class="btn primary small"
+                          type="button"
+                          onclick={() =>
+                            void store.approveAccount(account.username)}
+                        >
+                          Approve
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/if}
+          </div>
         {/if}
         <button
           class="btn ghost small"
@@ -130,15 +189,23 @@
               <button
                 type="button"
                 class:active={authTab === "login"}
-                onclick={() => (authTab = "login")}>Log in</button
+                onclick={() => switchAuthTab("login")}>Log in</button
               >
               <button
                 type="button"
                 class:active={authTab === "register"}
-                onclick={() => (authTab = "register")}>Register</button
+                onclick={() => switchAuthTab("register")}>Register</button
               >
             </div>
             <form class="auth-form" onsubmit={submitAuth}>
+              {#if store.registrationPending}
+                <p class="auth-note ok" role="status">
+                  Account created — awaiting admin approval
+                </p>
+              {/if}
+              {#if store.authError}
+                <p class="auth-note err" role="alert">{store.authError}</p>
+              {/if}
               <input
                 name="username"
                 placeholder="username"

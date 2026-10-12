@@ -1,4 +1,9 @@
-import type { APIRequestContext } from "@playwright/test";
+import {
+  test,
+  type APIRequestContext,
+  type APIResponse,
+} from "@playwright/test";
+import { isRecord } from "../src/lib/guards";
 
 /** Stable per-run identity so retries/reruns reuse one bot account. */
 export function uniqueBotName(): string {
@@ -40,13 +45,71 @@ export async function registerAndLogin(
   });
   // 409 on a rerun with the same run id: the account already exists.
   expectRegisterAcceptable(register.status());
-  const login = await request.post("/api/auth/login", {
+  let login = await request.post("/api/auth/login", {
     data: { username, password: BOT_PASSWORD },
   });
+  if (login.status() === 403) {
+    // Approval gate active: try to self-serve via admin creds, else skip.
+    login = await approveBotAndRetryLogin(request, username);
+  }
   if (!login.ok()) {
     throw new Error(`bot login failed: HTTP ${login.status()} for ${username}`);
   }
   return username;
+}
+
+/**
+ * When the backend gates registrations behind admin approval, a bot login
+ * returns 403 "pending". With ADMIN_USERNAME/ADMIN_PASSWORD set (CI), approve
+ * the bot and retry. Without creds the running test is SKIPPED with an explicit
+ * reason, so local dev runs stay green regardless of gate state.
+ */
+async function approveBotAndRetryLogin(
+  request: APIRequestContext,
+  username: string,
+): Promise<APIResponse> {
+  const adminUser = process.env.ADMIN_USERNAME;
+  const adminPass = process.env.ADMIN_PASSWORD;
+  if (adminUser === undefined || adminPass === undefined) {
+    test.skip(true, "approval gate active; no admin creds for bot approval");
+    // test.skip aborts the running test; this keeps TypeScript happy.
+    throw new TypeError("unreachable: test.skip aborted the test");
+  }
+  const adminLogin = await request.post("/api/auth/login", {
+    data: { username: adminUser, password: adminPass },
+  });
+  if (!adminLogin.ok()) {
+    throw new Error(
+      `admin login for bot approval failed: HTTP ${adminLogin.status()}`,
+    );
+  }
+  const pending = await request.get("/api/admin/accounts?pending=true");
+  if (!pending.ok()) {
+    throw new Error(
+      `pending-accounts listing failed: HTTP ${pending.status()}`,
+    );
+  }
+  const list: unknown = await pending.json();
+  if (!Array.isArray(list)) {
+    throw new TypeError("pending-accounts response was not an array");
+  }
+  const candidates: unknown[] = list;
+  const row = candidates.find(
+    (entry) => isRecord(entry) && entry["username"] === username,
+  );
+  if (row === undefined) {
+    throw new TypeError(`bot ${username} not found in pending-accounts list`);
+  }
+  const approve = await request.post(
+    `/api/admin/accounts/${encodeURIComponent(username)}/approve`,
+    { data: {} },
+  );
+  if (!approve.ok()) {
+    throw new Error(`bot approval failed: HTTP ${approve.status()}`);
+  }
+  return request.post("/api/auth/login", {
+    data: { username, password: BOT_PASSWORD },
+  });
 }
 
 function expectRegisterAcceptable(status: number): void {

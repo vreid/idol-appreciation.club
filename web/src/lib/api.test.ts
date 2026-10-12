@@ -58,10 +58,13 @@ const samplePlacement: Placement = {
 };
 
 describe("auth flows", () => {
-  it("register posts JSON credentials", async () => {
-    const mock = fetchMock(() => jsonResponse(200, { ok: true }));
+  it("register posts JSON credentials and parses pending result", async () => {
+    const mock = fetchMock(() =>
+      jsonResponse(201, { username: "liz", pending: true }),
+    );
     const api = createApiClient({ fetch: mock.fetch });
-    await api.register("liz", "pw123456");
+    const created = await api.register("liz", "pw123456");
+    expect(created).toEqual({ username: "liz", pending: true });
     expect(mock.calls[0]?.url).toBe("/api/auth/register");
     expect(mock.calls[0]?.init.method).toBe("POST");
     expect(mock.calls[0]?.init.credentials).toBe("same-origin");
@@ -237,6 +240,27 @@ describe("report / admin remove", () => {
       "/api/admin/placements/0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10d",
     );
     expect(mock.calls[0]?.init.method).toBe("DELETE");
+  });
+
+  it("lists pending accounts for admins", async () => {
+    const mock = fetchMock(() =>
+      jsonResponse(200, [
+        { username: "newbie", created_at: "2026-10-12T09:00:00Z" },
+      ]),
+    );
+    const api = createApiClient({ fetch: mock.fetch });
+    await expect(api.pendingAccounts()).resolves.toEqual([
+      { username: "newbie", created_at: "2026-10-12T09:00:00Z" },
+    ]);
+    expect(mock.calls[0]?.url).toBe("/api/admin/accounts?pending=true");
+  });
+
+  it("posts admin approval for a username", async () => {
+    const mock = fetchMock(() => new Response(null, { status: 204 }));
+    const api = createApiClient({ fetch: mock.fetch });
+    await api.approveAccount("newbie");
+    expect(mock.calls[0]?.url).toBe("/api/admin/accounts/newbie/approve");
+    expect(mock.calls[0]?.init.method).toBe("POST");
   });
 });
 

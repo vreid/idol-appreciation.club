@@ -1,11 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import {
-  SKIP_UNHEALTHY,
-  backendHealthy,
-  registerAndLogin,
-} from "./helpers";
+import { isRecord } from "../src/lib/guards";
+import { SKIP_UNHEALTHY, backendHealthy, registerAndLogin } from "./helpers";
 
 // Deterministic far-from-center spot so runs only ever collide with
 // themselves; size 64 keeps the footprint tiny.
@@ -55,7 +52,11 @@ test("@full place flow: place, near, cooldown 429, center shape", async ({
   expect(place.status()).toBe(201);
   const placed: unknown = await place.json();
   expect(placed).toMatchObject({ x: FAR_X, y: FAR_Y, seq: expect.any(Number) });
-  const placedId = (placed as { id: number }).id;
+  if (!isRecord(placed)) throw new Error("place response was not an object");
+  const placedId = placed["id"];
+  if (typeof placedId !== "number") {
+    throw new TypeError("place response missing numeric id");
+  }
 
   const near = await request.get(
     `/api/placements/near?x=${FAR_X}&y=${FAR_Y}&r=256`,
@@ -63,12 +64,14 @@ test("@full place flow: place, near, cooldown 429, center shape", async ({
   expect(near.ok()).toBeTruthy();
   const nearby: unknown = await near.json();
   expect(Array.isArray(nearby)).toBe(true);
-  expect(
-    (nearby as { id: number; username: string }[]).some(
-      (p) => p.id === placedId && p.username === username,
-    ),
-    "placement must be visible via /api/placements/near",
-  ).toBe(true);
+  const list: unknown[] = Array.isArray(nearby) ? nearby : [];
+  const visible = list.some(
+    (p: unknown) =>
+      isRecord(p) && p["id"] === placedId && p["username"] === username,
+  );
+  expect(visible, "placement must be visible via /api/placements/near").toBe(
+    true,
+  );
 
   // Immediate overlapping placement must hit the cooldown.
   const again = await request.post("/api/place", {

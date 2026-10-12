@@ -27,7 +27,8 @@ export async function backendHealthy(
   }
 }
 
-export const SKIP_UNHEALTHY = "backend /api/health is not ok:true — skipping live E2E";
+export const SKIP_UNHEALTHY =
+  "backend /api/health is not ok:true — skipping live E2E";
 
 /** Registers (or reuses) the bot account and logs in. Returns the username. */
 export async function registerAndLogin(
@@ -43,9 +44,7 @@ export async function registerAndLogin(
     data: { username, password: BOT_PASSWORD },
   });
   if (!login.ok()) {
-    throw new Error(
-      `bot login failed: HTTP ${login.status()} for ${username}`,
-    );
+    throw new Error(`bot login failed: HTTP ${login.status()} for ${username}`);
   }
   return username;
 }

@@ -262,21 +262,28 @@ pub fn tile_from_chunk(
     flatten_paper(img)
 }
 
-/// Join 4 child tiles (2 across) and downsample 2x for the parent tile.
+/// Build the parent tile from its four child tiles (2×2, row-major):
+/// downsample each to 128×128, embed the first into a 256×256 canvas and
+/// composite the rest on top. (libvips `arrayjoin` rejects hspacing=0 on
+/// 8.15 and its failed-build path is segfault-prone, so we join by hand.)
 pub fn tile_from_children(children: &[VipsImage; 4]) -> Result<VipsImage, AppError> {
-    let mut kids = children.to_vec();
-    let joined = ops::arrayjoin_with_opts(
-        &mut kids,
-        &ops::ArrayjoinOptions {
-            across: 2,
-            background: vec![0.0, 0.0, 0.0],
-            hspacing: 0,
-            vspacing: 0,
-            ..Default::default()
-        },
-    )?;
-    let half = ops::resize(&joined, 0.5)?;
-    flatten_paper(half)
+    let half = CHUNK_CANVAS_PX / 2;
+    let quarter = TILE_EDGE / 2;
+    let mut quads = Vec::with_capacity(4);
+    for child in children {
+        let scale = quarter as f64 / f64::from(child.get_width().max(1));
+        let small = if (scale - 1.0).abs() < f64::EPSILON {
+            child.clone()
+        } else {
+            ops::resize(child, scale)?
+        };
+        quads.push(small);
+    }
+    let mut canvas = embed_canvas(&quads[0], 0, 0, TILE_EDGE)?;
+    for (quad, (x, y)) in quads[1..].iter().zip([(quarter, 0i64), (0, quarter), (quarter, quarter)]) {
+        canvas = composite(&canvas, quad, x, y)?;
+    }
+    flatten_paper(canvas)
 }
 
 /// Composite the transparent render onto the opaque paper background.
@@ -515,7 +522,7 @@ pub fn composite_chunks(
                 let img = VipsImage::new_from_buffer(&bytes, "")?;
                 composite(&img, &ov, *lx, *ly)?
             }
-            None => embed_canvas(&ov, *lx, *ly)?,
+            None => embed_canvas(&ov, *lx, *ly, i64::from(CHUNK_CANVAS_PX))?,
         };
         out.push(
             webp_bytes(&composed, 90)
@@ -526,19 +533,27 @@ pub fn composite_chunks(
     Ok(out)
 }
 
-/// Transparent 1024×1024 canvas with `overlay` embedded at (x, y).
-fn embed_canvas(overlay: &VipsImage, x: i64, y: i64) -> crate::error::AppResult<VipsImage> {
+/// Transparent `size × size` canvas with `overlay` embedded at (x, y).
+fn embed_canvas(
+    overlay: &VipsImage,
+    x: i64,
+    y: i64,
+    size: i64,
+) -> crate::error::AppResult<VipsImage> {
     let x = i32::try_from(x).map_err(|_| anyhow::anyhow!("embed x out of range"))?;
     let y = i32::try_from(y).map_err(|_| anyhow::anyhow!("embed y out of range"))?;
+    let size = i32::try_from(size).map_err(|_| anyhow::anyhow!("embed size out of range"))?;
+    // Background length must match the overlay's band count.
+    let bg = vec![0.0; overlay.get_bands().max(1) as usize];
     Ok(ops::embed_with_opts(
         overlay,
         x,
         y,
-        CHUNK_CANVAS_PX,
-        CHUNK_CANVAS_PX,
+        size,
+        size,
         &ops::EmbedOptions {
             extend: ops::Extend::Background,
-            background: vec![0.0, 0.0, 0.0, 0.0],
+            background: bg,
             ..Default::default()
         },
     )?)
@@ -546,6 +561,8 @@ fn embed_canvas(overlay: &VipsImage, x: i64, y: i64) -> crate::error::AppResult<
 
 /// Chunk canvas side used by the compositing helpers.
 const CHUNK_CANVAS_PX: i32 = 1024;
+/// Tile edge used by the pyramid join.
+const TILE_EDGE: i64 = 256;
 
 /// Sequentially composite overlays onto a canvas (moderation replay step).
 /// `canvas` is the current chunk raster bytes (None = blank), overlays are
@@ -564,7 +581,7 @@ pub fn replay_canvas(
             Some(c) => composite(&c, &ov, *x, *y)?,
             // First paint on a virgin chunk embeds directly (see
             // composite_chunks for why not a synthetic blank).
-            None => embed_canvas(&ov, *x, *y)?,
+            None => embed_canvas(&ov, *x, *y, i64::from(CHUNK_CANVAS_PX))?,
         });
     }
     let canvas = match canvas {

@@ -19,9 +19,11 @@ function makeClient(
 ): ApiClient & ClientProbe {
   const placeCalls: { x: number; y: number; size: number }[] = [];
   return {
-    register: vi.fn(() => Promise.resolve()),
+    register: vi.fn(() => Promise.resolve({ username: "bot", pending: false })),
     login: vi.fn(() => Promise.resolve()),
     logout: vi.fn(() => Promise.resolve()),
+    pendingAccounts: vi.fn(() => Promise.resolve([])),
+    approveAccount: vi.fn(() => Promise.resolve()),
     me: vi.fn(() => Promise.resolve(null)),
     place: vi.fn((req: PlaceRequest) => {
       placeCalls.push({ x: req.x, y: req.y, size: req.size });
@@ -130,6 +132,33 @@ describe("session", () => {
     expect(await store.register("gaeul", "pw")).toBe(true);
     await store.logout();
     expect(store.me).toBeNull();
+  });
+
+  it("pending registration surfaces approval notice without a session", async () => {
+    const client = makeClient({
+      register: vi.fn(() =>
+        Promise.resolve({ username: "gaeul", pending: true }),
+      ),
+    });
+    const { store } = makeStore(client);
+    expect(await store.register("gaeul", "pw")).toBe(false);
+    expect(store.registrationPending).toBe(true);
+    expect(store.me).toBeNull();
+    expect(store.toasts.some((t) => t.message.includes("admin approval"))).toBe(
+      true,
+    );
+    expect(client.me).not.toHaveBeenCalled();
+  });
+
+  it("pending 403 on login surfaces the server message inline", async () => {
+    const client = makeClient({
+      login: vi.fn(() =>
+        Promise.reject(new ApiError(403, "account pending approval")),
+      ),
+    });
+    const { store } = makeStore(client);
+    expect(await store.login("gaeul", "pw")).toBe(false);
+    expect(store.authError).toBe("account pending approval");
   });
 });
 

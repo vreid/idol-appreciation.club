@@ -11,8 +11,11 @@ import {
   tileUrl,
   tilesIntersecting,
   WORLD_CENTER,
+  WORLD_LAT_LNG_BOUNDS,
   WORLD_SIZE,
+  worldFitsViewport,
   worldScale,
+  worldScreenSize,
   worldToLatLng,
 } from "./world";
 
@@ -28,7 +31,7 @@ describe("world <-> latLng conversion", () => {
 
   it("flips y: world top (y=0) maps to lat 0, bottom to lat -1", () => {
     expect(worldToLatLng(WORLD_CENTER, 0)).toEqual({
-      lat: -0,
+      lat: 0,
       lng: 0.5,
     });
     expect(worldToLatLng(WORLD_CENTER, WORLD_SIZE)).toEqual({
@@ -154,5 +157,38 @@ describe("queryRadiusForZoom", () => {
     expect(queryRadiusForZoom(16)).toBe(256);
     expect(queryRadiusForZoom(20)).toBe(256);
     expect(queryRadiusForZoom(8)).toBe(256 * 2 ** 8);
+  });
+});
+
+describe("world bounds and fit math", () => {
+  it("exposes y-flip aware LatLng bounds for the world corners", () => {
+    // native bottom-left and top-right corners
+    const sw = worldToLatLng(0, WORLD_SIZE);
+    const ne = worldToLatLng(WORLD_SIZE, 0);
+    const [[south, west], [north, east]] = WORLD_LAT_LNG_BOUNDS;
+    expect(sw).toEqual({ lat: south, lng: west });
+    expect(ne).toEqual({ lat: north, lng: east });
+  });
+
+  it("world centre maps to the middle of the bounds", () => {
+    expect(worldToLatLng(WORLD_CENTER, WORLD_CENTER)).toEqual({
+      lat: -0.5,
+      lng: 0.5,
+    });
+  });
+
+  it("computes world screen size at integer zooms", () => {
+    expect(worldScreenSize(0)).toBe(256);
+    expect(worldScreenSize(1)).toBe(512);
+    expect(worldScreenSize(20)).toBe(268435456);
+  });
+
+  it("reports when the world fits a viewport", () => {
+    expect(worldFitsViewport(1280, 800, 0)).toBe(true);
+    // 512 <= 800 at zoom 1, 1024 > 800 at zoom 2
+    expect(worldFitsViewport(1280, 800, 1)).toBe(true);
+    expect(worldFitsViewport(1280, 800, 2)).toBe(false);
+    expect(worldFitsViewport(256, 256, 0)).toBe(true);
+    expect(worldFitsViewport(255, 800, 0)).toBe(false);
   });
 });

@@ -33,6 +33,34 @@ test.describe("@smoke static deploy checks", () => {
     expect(res.status()).toBe(200);
   });
 
+  test("reticle is centred at min zoom (world fit)", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/");
+    await page.waitForSelector(".leaflet-container");
+    await page.click(".leaflet-container");
+    // Keyboard zoom steps must be sequential; parallel presses would race.
+    // eslint-disable-next-line unicorn/no-await-in-loop
+    for (let i = 0; i < 20; i++) await page.keyboard.press("-");
+    await page.waitForTimeout(600);
+    const box = await page.evaluate(() => {
+      const container = document.querySelector(".leaflet-container");
+      const reticle = document.querySelector<HTMLElement>(".reticle");
+      if (container === null || reticle === null) return null;
+      const c = container.getBoundingClientRect();
+      const r = reticle.getBoundingClientRect();
+      return {
+        x: r.x + r.width / 2 - c.x,
+        y: r.y + r.height / 2 - c.y,
+        w: c.width,
+        h: c.height,
+      };
+    });
+    if (box === null) throw new Error("reticle or map container missing");
+    // The reticle must sit within the central quarter of the viewport.
+    expect(Math.abs(box.x - box.w / 2)).toBeLessThan(box.w * 0.125);
+    expect(Math.abs(box.y - box.h / 2)).toBeLessThan(box.h * 0.125);
+  });
+
   test("tile endpoint is reachable (non-200 tolerated pre-backend)", async ({
     request,
   }) => {

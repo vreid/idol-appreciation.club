@@ -192,9 +192,15 @@ jobs:
           kubectl apply -f "$INGRESS_NGINX_MANIFEST"
           kubectl -n ingress-nginx rollout status \
             deployment/ingress-nginx-controller --timeout=300s
-          # Essentials tier LoadBalancer (free); annotation drives the CCM.
+          # Pin nodePorts so the LB annotation below stays stable across
+          # cluster recreates.
           kubectl -n ingress-nginx patch service ingress-nginx-controller \
-            -p '{"metadata":{"annotations":{"service.beta.kubernetes.io/upcloud-load-balancer-config":"{\"plan\":\"essentials\"}"}}}' \
+            -p '{"spec":{"ports":[{"name":"http","port":80,"nodePort":30859},{"name":"https","port":443,"nodePort":30875}]}}'
+          # Essentials tier (free) + tcp passthrough on 443 so nginx serves
+          # the Let's Encrypt cert; health checks target /healthz on the
+          # pinned nodePorts.
+          kubectl -n ingress-nginx patch service ingress-nginx-controller \
+            -p '{"metadata":{"annotations":{"service.beta.kubernetes.io/upcloud-load-balancer-config":"{\"plan\":\"essentials\",\"frontends\":[{\"name\":\"http\",\"port\":80,\"mode\":\"http\"},{\"name\":\"https-tcp\",\"port\":443,\"mode\":\"tcp\",\"default_backend\":\"https\"}],\"backends\":[{\"name\":\"http\",\"properties\":{\"health_check_url\":\"http://:30859/healthz\",\"health_check_expected_status\":200,\"health_check_interval\":10,\"health_check_fall\":3,\"health_check_rise\":3,\"health_check_type\":\"http\",\"health_check_tls_verify\":false}},{\"name\":\"https\",\"properties\":{\"health_check_type\":\"tcp\",\"health_check_interval\":10,\"health_check_fall\":3,\"health_check_rise\":3,\"health_check_tls_verify\":false}}]}"}}}' \
             --type=merge
 
       - name: Install / upgrade cert-manager
@@ -264,10 +270,18 @@ jobs:
             sleep 10
           done
           [ -n "$ips" ] || { echo "LoadBalancer IP never assigned" >&2; exit 1; }
-          ipv4="$(printf '%s\n' $ips | grep '\.' | head -1 || true)"
-          ipv6="$(printf '%s\n' $ips | grep ':' | head -1 || true)"
+          # CCM may expose an ip or a dns hostname per ingress entry.
+          addrs=""
+          for entry in $ips; do
+            case "$entry" in
+              *.*.*|*:*) addrs="$addrs $entry" ;;
+              *) addrs="$addrs $(getent ahosts "$entry" | awk '{print $1}' | sort -u | tr '\n' ' ')" ;;
+            esac
+          done
+          ipv4="$(printf '%s\n' $addrs | grep '\.' | head -1 || true)"
+          ipv6="$(printf '%s\n' $addrs | grep ':' | head -1 || true)"
           [ -n "$ipv4" ] || { echo "no IPv4 address on LB" >&2; exit 1; }
-          ./scripts/sync-dns.sh "$ipv4" $ipv6
+          ./scripts/sync-dns.sh "$ipv4" ${ipv6:+"$ipv6"}
 
       # Tag is mutable (:main), so rollouts are driven by digest pinning:
       # kubectl set image is a no-op when the digest is unchanged.

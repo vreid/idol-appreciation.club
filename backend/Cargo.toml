@@ -44,6 +44,7 @@ libvips = "2.3"
 [dev-dependencies]
 proptest = "1"
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 opt-level = 3

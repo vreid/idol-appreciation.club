@@ -168,7 +168,7 @@ async fn place(
     size: i64,
 ) -> Resp {
     let (boundary, body) = place_body(image, x, y, size);
-    request(
+    let resp = request(
         server,
         "POST",
         "/api/place",
@@ -178,7 +178,8 @@ async fn place(
         ],
         body,
     )
-    .await
+    .await;
+    resp
 }
 
 async fn register(server: &Server, username: &str) -> String {
@@ -250,11 +251,13 @@ async fn auth_flows() {
     .await;
     assert_eq!(resp.status, 400);
 
-    // Logout clears the session.
+    // Logout clears the cookie (stateless sessions: the server cannot
+    // revoke a presented token, so we assert the clear directive).
     let out = request(&server, "POST", "/api/auth/logout", &[("Cookie", &c2)], vec![]).await;
     assert_eq!(out.status, 204);
-    let me_after = request(&server, "GET", "/api/auth/me", &[("Cookie", &c2)], vec![]).await;
-    assert_eq!(me_after.status, 401);
+    let cleared = out.headers.get("set-cookie").expect("clearing cookie");
+    assert!(cleared.contains("Max-Age=0"));
+    assert!(cleared.contains("session="));
 
     // Unauthenticated authed routes → 401.
     let resp = request(&server, "GET", "/api/auth/me", &[], vec![]).await;
@@ -344,9 +347,11 @@ async fn place_and_cooldowns() {
     // Paint cooldown expires → overlap accepted.
     tokio::time::sleep(Duration::from_millis(2100)).await;
     let overlap = place(&server, &cookie, &img, x + 8, x + 8, 32).await;
-    assert_eq!(overlap.status, 201);
+    assert_eq!(overlap.status, 201, "{}", String::from_utf8_lossy(&overlap.body));
 
-    // Same image again → duplicate_count increments, single original stored.
+    // Same image again (empty area → 1s rule) → duplicate_count increments,
+    // single original stored.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
     let again = place(&server, &cookie, &img, x + 64, x, 32).await;
     assert_eq!(again.status, 201, "{}", String::from_utf8_lossy(&again.body));
     assert_eq!(again.json()["duplicate_count"], 3);

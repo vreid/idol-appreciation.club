@@ -43,6 +43,34 @@ jobs:
           echo "web=$([ -f web/.ci-ready ] && echo true || echo false)" \
             >> "$GITHUB_OUTPUT"
 
+  lint:
+    name: lint (fast universal)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: markdown (oxfmt)
+        run: npx --yes oxfmt@0.72.0 --check "**/*.md"
+      - name: workflows (jactionlint)
+        run: |
+          curl -sSLf -o /tmp/jl.tar.gz \
+            https://github.com/jdx/jactionlint/releases/download/v2.1.0/jactionlint_2.1.0_linux_amd64.tar.gz
+          tar xzf /tmp/jl.tar.gz -C /tmp jactionlint
+          /tmp/jactionlint .github/workflows/*.yml
+      - name: helm (lint + template both modes)
+        run: |
+          helm lint chart
+          helm template chart > /dev/null
+          helm template chart --set web.enabled=false > /dev/null
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
+        with:
+          tofu_version: 1.13.1
+      - name: tofu fmt
+        working-directory: tofu
+        run: tofu fmt -check -recursive
+
   backend-checks:
     name: backend cargo gates
     needs: ready
@@ -94,7 +122,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: [ready, backend-checks]
+    needs: [lint, ready, backend-checks]
     # Owner gate: backend/.ci-ready implies a working Dockerfile.
     if: >-
       always() && !failure() && !cancelled() &&
@@ -129,7 +157,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: [ready, web-checks]
+    needs: [lint, ready, web-checks]
     # Owner gate: web/.ci-ready implies a working web/Dockerfile.
     if: >-
       always() && !failure() && !cancelled() &&
@@ -161,7 +189,7 @@ jobs:
 
   deploy:
     name: deploy to k8s
-    needs: [ready, backend-build, web-build]
+    needs: [lint, ready, backend-build, web-build]
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30

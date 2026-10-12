@@ -3,6 +3,7 @@ import {
   type APIRequestContext,
   type APIResponse,
 } from "@playwright/test";
+import { isRecord } from "../src/lib/guards";
 
 /** Stable per-run identity so retries/reruns reuse one bot account. */
 export function uniqueBotName(): string {
@@ -72,7 +73,7 @@ async function approveBotAndRetryLogin(
   if (adminUser === undefined || adminPass === undefined) {
     test.skip(true, "approval gate active; no admin creds for bot approval");
     // test.skip aborts the running test; this keeps TypeScript happy.
-    throw new Error("unreachable: test.skip aborted the test");
+    throw new TypeError("unreachable: test.skip aborted the test");
   }
   const adminLogin = await request.post("/api/auth/login", {
     data: { username: adminUser, password: adminPass },
@@ -90,16 +91,14 @@ async function approveBotAndRetryLogin(
   }
   const list: unknown = await pending.json();
   if (!Array.isArray(list)) {
-    throw new Error("pending-accounts response was not an array");
+    throw new TypeError("pending-accounts response was not an array");
   }
-  const row = list.find(
-    (entry) =>
-      typeof entry === "object" &&
-      entry !== null &&
-      (entry as Record<string, unknown>)["username"] === username,
+  const candidates: unknown[] = list;
+  const row = candidates.find(
+    (entry) => isRecord(entry) && entry["username"] === username,
   );
   if (row === undefined) {
-    throw new Error(`bot ${username} not found in pending-accounts list`);
+    throw new TypeError(`bot ${username} not found in pending-accounts list`);
   }
   const approve = await request.post(
     `/api/admin/accounts/${encodeURIComponent(username)}/approve`,

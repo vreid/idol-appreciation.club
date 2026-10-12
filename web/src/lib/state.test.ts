@@ -22,6 +22,8 @@ function makeClient(
     register: vi.fn(() => Promise.resolve({ username: "bot", pending: false })),
     login: vi.fn(() => Promise.resolve()),
     logout: vi.fn(() => Promise.resolve()),
+    pendingAccounts: vi.fn(() => Promise.resolve([])),
+    approveAccount: vi.fn(() => Promise.resolve()),
     me: vi.fn(() => Promise.resolve(null)),
     place: vi.fn((req: PlaceRequest) => {
       placeCalls.push({ x: req.x, y: req.y, size: req.size });

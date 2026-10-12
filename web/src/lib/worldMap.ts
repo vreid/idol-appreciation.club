@@ -9,6 +9,8 @@ import {
   tileUrl,
   tilesIntersecting,
   WORLD_CENTER,
+  WORLD_LAT_LNG_BOUNDS,
+  worldFitsViewport,
   worldScale,
   worldToLatLng,
   type BBox,
@@ -16,8 +18,6 @@ import {
 import { timeAgo } from "./format";
 import { isRecord } from "./guards";
 
-/** Bounds of the native world expressed in CRS.Simple lat/lng space. */
-const WORLD_LAT_LNG_BOUNDS = L.latLngBounds([-1, 0], [0, 1]);
 const PULSE_MS = 1400;
 
 export interface PlacementForPopup {
@@ -231,6 +231,33 @@ function wireMapEvents(internal: MapInternals): void {
   });
 }
 
+const WORLD_CENTER_LAT_LNG = worldToLatLng(WORLD_CENTER, WORLD_CENTER);
+
+/**
+ * Leaflet clamps panning via maxBounds but never re-centres the view after a
+ * resize or an interrupted pinch/scroll gesture. When the whole world fits the
+ * viewport (far-out zooms), snap the view centre onto the world centre so the
+ * 0/0 reticle renders dead-centre instead of clinging to a corner.
+ */
+function wireWorldCentering(map: L.Map): () => void {
+  const centerWorldIfFitted = (): void => {
+    const size = map.getSize();
+    if (worldFitsViewport(size.x, size.y, map.getZoom())) {
+      map.setView(WORLD_CENTER_LAT_LNG, map.getZoom(), { animate: false });
+    }
+  };
+  const onWindowResize = (): void => {
+    map.invalidateSize();
+    centerWorldIfFitted();
+  };
+  map.on("zoomend", centerWorldIfFitted);
+  window.addEventListener("resize", onWindowResize);
+  return () => {
+    window.removeEventListener("resize", onWindowResize);
+    map.off("zoomend", centerWorldIfFitted);
+  };
+}
+
 export function createWorldMap(
   container: HTMLElement,
   callbacks: MapCallbacks,
@@ -242,7 +269,7 @@ export function createWorldMap(
     crs: L.CRS.Simple,
     minZoom: MIN_ZOOM,
     maxZoom: MAX_ZOOM,
-    maxBounds: WORLD_LAT_LNG_BOUNDS,
+    maxBounds: L.latLngBounds(...WORLD_LAT_LNG_BOUNDS),
     maxBoundsViscosity: 1.0,
     zoomControl: false,
     attributionControl: false,
@@ -254,7 +281,7 @@ export function createWorldMap(
     tileSize: TILE_SIZE,
     minZoom: MIN_ZOOM,
     maxZoom: MAX_ZOOM,
-    bounds: WORLD_LAT_LNG_BOUNDS,
+    bounds: L.latLngBounds(...WORLD_LAT_LNG_BOUNDS),
   }).addTo(map);
 
   L.marker(worldToLatLng(WORLD_CENTER, WORLD_CENTER), {
@@ -267,6 +294,7 @@ export function createWorldMap(
     }),
   }).addTo(map);
 
+  const stopCentering = wireWorldCentering(map);
   map.setView(worldToLatLng(WORLD_CENTER, WORLD_CENTER), 16);
 
   const internal: MapInternals = {
@@ -330,6 +358,7 @@ export function createWorldMap(
     },
 
     destroy(): void {
+      stopCentering();
       ghost.el?.remove();
       ghost.el = null;
       map.remove();

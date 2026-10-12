@@ -1,6 +1,9 @@
 {
 	http_port 8080
 	https_port 8443
+	# Implicit auto-HTTPS redirects would race the explicit catch-all below;
+	# redirects are managed by hand so the ACME exception is honoured.
+	auto_https disable_redirects
 }
 
 idol-appreciation.club {
@@ -28,4 +31,17 @@ idol-appreciation.club {
 # www -> apex
 www.idol-appreciation.club {
 	redir https://idol-appreciation.club{uri} permanent
+}
+
+# Plain-HTTP catch-all: 308 everything to HTTPS. /.well-known/acme-challenge/*
+# stays reachable over http because ACME HTTP-01 renewals depend on it.
+http://:8080 {
+	@acme path /.well-known/acme-challenge/*
+	handle @acme {
+		root * /usr/share/caddy
+		file_server
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
 }

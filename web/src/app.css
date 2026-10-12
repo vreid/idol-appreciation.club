@@ -52,7 +52,9 @@ body {
 }
 
 .leaflet-container {
-  background: #101216;
+  /* Paper tone matching the server-rendered empty tiles so the area outside
+     the world reads as one uniform surface at every zoom. */
+  background: #f4f0e8;
   font: inherit;
 }
 

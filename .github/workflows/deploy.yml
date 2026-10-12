@@ -285,3 +285,8 @@ jobs:
       - name: Remove bootstrap placeholder
         if: needs.ready.outputs.web == 'true'
         run: kubectl delete -f deploy/placeholder.yaml --ignore-not-found=true
+      - name: Dispatch e2e
+        if: success()
+        run: gh workflow run e2e --ref main
+        env:
+          GH_TOKEN: ${{ github.token }}

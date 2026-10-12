@@ -908,5 +908,75 @@
     "bytes": 225022,
     "prompt": "Studio portrait of a female fictional idol with a platinum blonde pixie cut, bold red lip and silver eye makeup, black turtleneck, dramatic split pink-and-blue studio lighting, striking beauty editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/76-solo-blue-bob-pastel.jpg",
+    "category": "solo-blue-bob-pastel",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 204719,
+    "prompt": "Studio portrait of a female fictional idol with a pastel blue bob and blunt bangs, soft ivory knit cardigan, gentle smile looking just past the camera, clean cream studio backdrop, soft beauty editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/77-award-show-tuxedo.jpg",
+    "category": "award-show-tuxedo",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 249614,
+    "prompt": "Female fictional idol in a white tuxedo jacket with a black bow tie on an award-show red carpet, long earrings catching camera flashes, poised confident smile, evening glamour editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/78-magazine-cover-shoot.jpg",
+    "category": "magazine-cover-shoot",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 244486,
+    "prompt": "Magazine cover-style studio shot of a female fictional idol in a sculptural white blouse, minimalist gold jewelry, sleek pulled-back hair, clean sage backdrop with no text or logos, high-fashion cover editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/79-fansign-instant-photo.jpg",
+    "category": "fansign-instant-photo",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 114221,
+    "prompt": "Female fictional idol at a fan-signing event leaning over the table to sign an album while smiling up at a fan, cute hair rollers as a playful prop, warm event lighting, candid fan-event photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/80-radio-show-visit.jpg",
+    "category": "radio-show-visit",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 455296,
+    "prompt": "Girl group of fictional idols visiting a radio studio, members crammed around a glass booth table with giant headphones and microphones, laughing mid-interview, warm broadcast lighting, candid entertainment photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/81-encore-bow-thanks.jpg",
+    "category": "encore-bow-thanks",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 298244,
+    "prompt": "Female fictional idol bowing deeply at the end of a solo concert, hand on heart, ocean of lightsticks glowing in the dark arena behind her, spotlight halo, emotional concert photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/82-lightstick-holding-photocard.jpg",
+    "category": "lightstick-holding-photocard",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 360771,
+    "prompt": "Photocard-style shot of a female fictional idol proudly holding a glowing pastel star-topped lightstick beside her face, cheeky wink, fan-meeting stage background in soft bokeh, cute event photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

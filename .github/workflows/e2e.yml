@@ -1,11 +1,9 @@
 name: e2e
 
 # NON-GATING by design: never a required check, never blocks merges.
-# Runs after every successful deploy, nightly, and on demand.
+# deploy.yml dispatches this on success (workflow_run would work but the
+# lint flags it as a dangerous trigger); nightly + manual too.
 on:
-  workflow_run:
-    workflows: [deploy]
-    types: [completed]
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch: {}
@@ -14,15 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-${{ github.event.workflow_run.head_sha || github.sha }}
+  group: e2e
   cancel-in-progress: false
 
 jobs:
   e2e:
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:

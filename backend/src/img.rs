@@ -530,6 +530,22 @@ mod tests {
         // object for new uploads (old keys keep resolving).
         let (img1, _) = decode(&red_png(100, 50)).unwrap();
         let d1 = resize_exact(&img1, 32, 16).unwrap();
+        // TEMP DIAGNOSTICS
+        unsafe {
+            extern "C" {
+                fn vips_error_buffer() -> *const std::os::raw::c_char;
+            }
+            let e = vips_error_buffer();
+            if !e.is_null() {
+                println!("vips error buffer pre-existing: {:?}", std::ffi::CStr::from_ptr(e));
+            }
+        }
+        let png_try = d1.image_write_to_buffer(".png");
+        println!("harness .png save: {:?}", png_try.as_ref().map(|b| b.len()));
+        let webp_plain = d1.image_write_to_buffer(".webp");
+        println!("harness .webp save: {:?}", webp_plain.as_ref().map(|b| b.len()));
+        let webp_q = d1.image_write_to_buffer(".webp[Q=85]");
+        println!("harness .webp[Q=85] save: {:?}", webp_q.as_ref().map(|b| b.len()));
         let b1 = webp_bytes(&d1, 85).unwrap();
         let (img2, _) = decode(&red_png(100, 50)).unwrap();
         let d2 = resize_exact(&img2, 32, 16).unwrap();

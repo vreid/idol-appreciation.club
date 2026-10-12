@@ -1038,5 +1038,15 @@
     "bytes": 371118,
     "prompt": "Night street portrait of a female fictional idol under glowing shop signage after rain, glossy pavement reflections, silver bomber jacket, confident stance with hands in pockets, cinematic street editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/89-photobook-winter-cabin.jpg",
+    "category": "photobook-winter-cabin",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 370752,
+    "prompt": "Winter photobook concept shot of a female fictional idol wrapped in an oversized knit blanket on a cabin porch, snow-covered pines and string lights behind, cradling a warm mug, soft morning snow light, cozy editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

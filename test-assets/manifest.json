@@ -538,5 +538,25 @@
     "bytes": 465677,
     "prompt": "Coed group of fictional idols performing at an outdoor university festival at dusk, mixed male and female members in casual stage outfits, cheering crowd with phone flashlights, warm festival lighting, documentary concert photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/39-variety-game-pose.jpg",
+    "category": "variety-game-pose",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 373227,
+    "prompt": "Female fictional idol striking an exaggerated comedic pose during a variety game show, giant foam finger prop, bright yellow studio set, laughing expression mid-shout, vibrant broadcast lighting, energetic entertainment photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/40-airport-winter.jpg",
+    "category": "airport-winter",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 353840,
+    "prompt": "Candid airport photo of a female fictional idol in a long puffer coat, chunky knit scarf, and beanie pulling a suitcase through a glass terminal, soft morning light, effortless off-duty style, editorial street photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

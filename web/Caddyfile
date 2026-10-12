@@ -7,16 +7,22 @@ idol-appreciation.club {
 	encode zstd gzip
 	root * /usr/share/caddy
 
-	# SSE: keep /api/events unbuffered end-to-end.
-	reverse_proxy /api/* backend.idol.svc.cluster.local:8080 {
-		flush_interval -1
+	# route preserves written order: proxy /api BEFORE try_files can
+	# rewrite it to index.html. SSE: flush_interval -1 keeps events live.
+	route {
+		reverse_proxy /api/* backend.idol.svc.cluster.local:8080 {
+			flush_interval -1
+		}
+
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+		@index path / /index.html
+		header @index Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
 	}
-
-	header /assets/* Cache-Control "public, max-age=31536000, immutable"
-	header /index.html Cache-Control "no-cache"
-
-	try_files {path} /index.html
-	file_server
 }
 
 # www -> apex

@@ -10,12 +10,32 @@
     "cost_if_known": 0.08549999999999999
   },
   {
+    "file": "idols/01-solo-female-closeup.jpg",
+    "category": "solo-female-closeup",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 338349,
+    "prompt": "Photocard-style close-up portrait of a young Korean woman fictional idol, soft wavy hair, flawless dewy idol makeup, gentle confident smile, soft pastel lavender studio background, beauty lighting, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/02-solo-male-stage.jpg",
     "category": "solo-male-stage",
     "aspect_ratio": "16:9",
     "width": 2730,
     "height": 1536,
     "bytes": 230929,
+    "prompt": "Full-body shot of a male Korean fictional idol mid-performance on a huge concert stage, stylish stage costume, dramatic spotlight beams and haze, singing into a headset mic, cinematic concert photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/02-solo-male-stage.jpg",
+    "category": "solo-male-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 202822,
     "prompt": "Full-body shot of a male Korean fictional idol mid-performance on a huge concert stage, stylish stage costume, dramatic spotlight beams and haze, singing into a headset mic, cinematic concert photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
   },
@@ -30,12 +50,32 @@
     "cost_if_known": 0.08549999999999999
   },
   {
+    "file": "idols/03-group-five.jpg",
+    "category": "group-five",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 491908,
+    "prompt": "Five-member coed K-pop group of fictional idols lined up shoulder to shoulder on a music-show stage, coordinated black-and-white stage outfits, colorful LED backdrop, group promo photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/04-lightstick-ocean.jpg",
     "category": "lightstick-ocean",
     "aspect_ratio": "16:9",
     "width": 2730,
     "height": 1536,
     "bytes": 410669,
+    "prompt": "Concert crowd seen from the stage point of view at night, thousands of glowing pastel lightsticks waving in the dark like an ocean, distant silhouette of a fictional idol performing, cinematic wide arena photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/04-lightstick-ocean.jpg",
+    "category": "lightstick-ocean",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 329525,
     "prompt": "Concert crowd seen from the stage point of view at night, thousands of glowing pastel lightsticks waving in the dark like an ocean, distant silhouette of a fictional idol performing, cinematic wide arena photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
   },

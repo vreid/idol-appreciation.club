@@ -75,6 +75,10 @@ post() { # post URL curl-args... -> prints response body, fails hard on HTTP err
 }
 
 # --- auth: register (tolerate "already exists"), then login -------------------
+if [ "$DRY_RUN" = "1" ]; then
+  echo "==> DRY RUN: computing placements only (no network requests)"
+else
+
 echo "==> Registering seed account '${SEED_USERNAME}' at ${BASE_URL}"
 REG_CODE=$(curl -sS -o /dev/null -w '%{http_code}' -c "$JAR" -X POST \
   "${BASE_URL%/}/api/auth/register" -H 'Content-Type: application/json' \
@@ -91,39 +95,33 @@ post "${BASE_URL%/}/api/auth/login" -c "$JAR" -X POST \
   -d "{\"username\":\"${SEED_USERNAME}\",\"password\":\"${SEED_PASSWORD}\"}" >/dev/null
 echo "    login OK"
 
+fi  # DRY_RUN
+
 # --- placements ---------------------------------------------------------------
 CX=$WORLD_CENTER; CY=$WORLD_CENTER
 HALF=$((SLOT / 2))             # 256
 STEP=$((HALF + GUTTER + SLOT)) # 256+128+512 = 896: top-left y of the nearest ring row above the center image
 
-# category order (02..16) mapped to ring slots, row-major starting top-left.
-# Ring pitch is 640px (512px slot + 128px gutter), centered on the world
-# center. Row top-lefts (y offsets relative to center): -1536, -896, +384,
-# +1024; the nearest rows sit 128px clear of the center image rect (the
-# size-512 center image is 384x512, i.e. y -256..+256). Column top-lefts
-# (x offsets relative to center): -1216, -576, +64, +704 (also 640px pitch).
-# 16 slots, 15 used: bottom-right slot stays empty.
-FILES=()
-for f in "$IDOLS_DIR"/0[2-9]-*.* "$IDOLS_DIR"/1[0-6]-*.*; do
-  [ -e "$f" ] || continue
-  FILES+=("$f")
-done
-if [ "${#FILES[@]}" -ne 15 ]; then
-  echo "ERROR: expected 15 non-center images in $IDOLS_DIR (02..16), found ${#FILES[@]}" >&2
-  exit 1
-fi
+# scaled_size FILE -> prints "PWxPH" after the server scales the long edge to $SLOT
+scaled_size() {
+  local d w h
+  d=$(img_dims "$1"); w=${d%x*}; h=${d#*x}
+  if [ "$w" -ge "$h" ]; then
+    printf '%dx%d' "$SLOT" $(( SLOT * h / w ))
+  else
+    printf '%dx%d' $(( SLOT * w / h )) "$SLOT"
+  fi
+}
 
-# 1) category 01 centered exactly on the world center
-F01=$(ls "$IDOLS_DIR"/01-*.* 2>/dev/null | head -1 || true)
-[ -n "$F01" ] || { echo "ERROR: missing $IDOLS_DIR/01-*.*" >&2; exit 1; }
-DIMS=$(img_dims "$F01"); W=${DIMS%x*}; H=${DIMS#*x}
-# server scales the long edge to $SLOT
-if [ "$W" -ge "$H" ]; then PW=$SLOT; PH=$(( SLOT * H / W )); else PH=$SLOT; PW=$(( SLOT * W / H )); fi
-X01=$(( CX - PW / 2 )); Y01=$(( CY - PH / 2 ))
-
-place() { # place FILE X Y
-  local file=$1 x=$2 y=$3 name
+place() { # place FILE X Y -> post (or just record in dry-run) + record the rect
+  local file=$1 x=$2 y=$3 name dims pw ph
   name=$(basename "$file")
+  dims=$(scaled_size "$file"); pw=${dims%x*}; ph=${dims#*x}
+  RECTS+=("$x $y $pw $ph $name")
+  if [ "$DRY_RUN" = "1" ]; then
+    printf 'DRY  %-28s at (%d, %d) size=%dx%d\n' "$name" "$x" "$y" "$pw" "$ph"
+    return 0
+  fi
   printf '==> Placing %-28s at (%d, %d) size=%d ... ' "$name" "$x" "$y" "$SLOT"
   post "${BASE_URL%/}/api/place" -b "$JAR" -X POST \
     -F "image=@${file}" -F "x=${x}" -F "y=${y}" -F "size=${SLOT}" >/dev/null
@@ -131,18 +129,104 @@ place() { # place FILE X Y
   sleep 1.5
 }
 
-place "$F01" "$X01" "$Y01"
+center_place() { # center_place FILE -> place FILE centered on the world center
+  local file=$1 dims pw ph
+  dims=$(scaled_size "$file"); pw=${dims%x*}; ph=${dims#*x}
+  place "$file" $(( CX - pw / 2 )) $(( CY - ph / 2 ))
+}
 
-# 2) ring slots for 02..16 (last slot unused)
-ROWS=( -$((STEP + PITCH)) -$STEP $((HALF + GUTTER)) $((HALF + GUTTER + PITCH)) )
-COLS=( -1216 -576 64 704 )
-i=0
-for ROW in "${ROWS[@]}"; do
-  for COL in "${COLS[@]}"; do
-    [ "$i" -lt "${#FILES[@]}" ] || break
-    place "${FILES[$i]}" $(( CX + COL )) $(( CY + ROW ))
-    i=$((i + 1))
+if [ "$SEED_ALL" = "1" ]; then
+  # SEED_ALL: 01 centered exactly on the world center (center-holder
+  # leaderboard), the other images centered in the cells of an 11x11 grid
+  # around it. Grid pitch is 640px (512px cell + 128px gutter) so every
+  # pair of placements is non-overlapping with >=128px clearance; the
+  # middle cell (0,0) is left free for the center image.
+  F01=$(ls "$IDOLS_DIR"/01-*.* 2>/dev/null | head -1 || true)
+  [ -n "$F01" ] || { echo "ERROR: missing $IDOLS_DIR/01-*.*" >&2; exit 1; }
+  FILES_ALL=()
+  for f in "$IDOLS_DIR"/*.jpg; do
+    [ -e "$f" ] || continue
+    if [ "$f" != "$F01" ]; then FILES_ALL+=("$f"); fi
   done
-done
+  N=${#FILES_ALL[@]}
+  echo "==> SEED_ALL: center image + ${N} images on an 11x11 grid (640px pitch)"
+  center_place "$F01"
+  i=0
+  for ROW in -5 -4 -3 -2 -1 0 1 2 3 4 5; do
+    for COL in -5 -4 -3 -2 -1 0 1 2 3 4 5; do
+      if [ "$ROW" -eq 0 ] && [ "$COL" -eq 0 ]; then continue; fi
+      [ "$i" -lt "$N" ] || break 2
+      f="${FILES_ALL[$i]}"
+      dims=$(scaled_size "$f"); pw=${dims%x*}; ph=${dims#*x}
+      place "$f" $(( CX + COL * PITCH - pw / 2 )) $(( CY + ROW * PITCH - ph / 2 ))
+      i=$((i + 1))
+    done
+  done
+  echo "==> Done: $((N + 1)) images placed (SEED_ALL)."
 
-echo "==> Done: 16 images placed."
+else
+  # Default 16-image layout: category order (02..16) mapped to ring slots,
+  # row-major starting top-left.
+  # Ring pitch is 640px (512px slot + 128px gutter), centered on the world
+  # center. Row top-lefts (y offsets relative to center): -1536, -896, +384,
+  # +1024; the nearest rows sit 128px clear of the center image rect (the
+  # size-512 center image is 384x512, i.e. y -256..+256). Column top-lefts
+  # (x offsets relative to center): -1216, -576, +64, +704 (also 640px pitch).
+  # 16 slots, 15 used: bottom-right slot stays empty.
+  FILES=()
+  for f in "$IDOLS_DIR"/0[2-9]-*.* "$IDOLS_DIR"/1[0-6]-*.*; do
+    [ -e "$f" ] || continue
+    FILES+=("$f")
+  done
+  if [ "${#FILES[@]}" -ne 15 ]; then
+    echo "ERROR: expected 15 non-center images in $IDOLS_DIR (02..16), found ${#FILES[@]}" >&2
+    exit 1
+  fi
+
+  # 1) category 01 centered exactly on the world center
+  F01=$(ls "$IDOLS_DIR"/01-*.* 2>/dev/null | head -1 || true)
+  [ -n "$F01" ] || { echo "ERROR: missing $IDOLS_DIR/01-*.*" >&2; exit 1; }
+  center_place "$F01"
+
+  # 2) ring slots for 02..16 (last slot unused)
+  ROWS=( -$((STEP + PITCH)) -$STEP $((HALF + GUTTER)) $((HALF + GUTTER + PITCH)) )
+  COLS=( -1216 -576 64 704 )
+  i=0
+  for ROW in "${ROWS[@]}"; do
+    for COL in "${COLS[@]}"; do
+      [ "$i" -lt "${#FILES[@]}" ] || break
+      place "${FILES[$i]}" $(( CX + COL )) $(( CY + ROW ))
+      i=$((i + 1))
+    done
+  done
+
+  echo "==> Done: 16 images placed."
+fi
+
+# --- verify: every computed placement rect is pairwise non-overlapping --------
+if [ "${#RECTS[@]}" -eq 0 ]; then
+  echo "ERROR: no placements were computed" >&2
+  exit 1
+fi
+: > "$RECTS_FILE"
+for r in "${RECTS[@]}"; do printf '%s\n' "$r" >> "$RECTS_FILE"; done
+python3 - "$RECTS_FILE" <<'PYEOF'
+import sys
+rects = []
+for line in open(sys.argv[1]):
+    x, y, w, h, name = line.split(None, 4)
+    rects.append((int(x), int(y), int(w), int(h), name.strip()))
+bad = []
+for i in range(len(rects)):
+    for j in range(i + 1, len(rects)):
+        a, b = rects[i], rects[j]
+        if (a[0] < b[0] + b[2] and b[0] < a[0] + a[2]
+                and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]):
+            bad.append((a[4], b[4]))
+print(f"==> Checked {len(rects)} placements for pairwise overlap")
+if bad:
+    for n1, n2 in bad:
+        print(f"OVERLAP: {n1} <-> {n2}", file=sys.stderr)
+    sys.exit(f"{len(bad)} overlapping placement pairs")
+print("==> OK: all placements pairwise non-overlapping")
+PYEOF

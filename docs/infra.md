@@ -61,13 +61,12 @@ touching them declares `environment: production`. `GITHUB_TOKEN` gets
 
 ### Workflow lint discipline
 
-One stack mutation at a time: `infra-apply`, `infra-destroy`,
-`infra-recreate` and `deploy` share the `idol-stack` concurrency group —
-runs queue instead of overlapping (no tofu state locks, no kubeconfig for
-a half-Ready cluster). `infra-apply` and `infra-recreate` chain deploy
-automatically on success (`gh workflow run deploy.yml`), so apply ->
-deploy is deterministic; pushes to main auto-queue behind any in-flight
-apply.
+One stack mutation at a time: `infra-apply`, `infra-destroy`, `infra-recreate`
+and `deploy` share the `idol-stack` concurrency group — runs queue instead of
+overlapping (no tofu state locks, no kubeconfig for a half-Ready cluster).
+`infra-apply` and `infra-recreate` chain deploy automatically on success
+(`gh workflow run deploy.yml`), so apply -> deploy is deterministic; pushes to
+main auto-queue behind any in-flight apply.
 
 `jactionlint` (jdx fork, v2.1.0 release binary) is the first CI job and MUST
 pass locally before every push:

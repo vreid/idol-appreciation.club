@@ -415,7 +415,12 @@ pub fn render_leaf_tile(
     native_size: i64,
 ) -> crate::error::AppResult<Vec<u8>> {
     let chunk = match chunk {
-        Some(bytes) => VipsImage::new_from_buffer(&bytes, "")?,
+        Some(bytes) => {
+            // WebP chunk blobs decode to sequential images; materialize
+            // once so crop/flatten/encode can read in any order.
+            let img = VipsImage::new_from_buffer(&bytes, "")?;
+            VipsImage::image_copy_memory(img)?
+        }
         None => blank_chunk(CHUNK_CANVAS_PX)?,
     };
     let tile = tile_from_chunk(&chunk, offset_x, offset_y, native_size)?;

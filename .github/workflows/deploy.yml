@@ -11,7 +11,7 @@ on:
       - scripts/sync-dns.sh
 
 concurrency:
-  group: deploy
+  group: idol-stack
   cancel-in-progress: false
 
 permissions:

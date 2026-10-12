@@ -542,7 +542,7 @@ async fn near_center_reports() {
     assert!(all.iter().any(|u| u["username"] == "holder2"));
 
     // report + image count.
-    let pid = p2.json()["id"].clone();
+    let pid = p2.json()["id"].as_str().unwrap().to_owned();
     let report = request(
         &server,
         "POST",
@@ -573,7 +573,7 @@ async fn admin_removal_updates_everything() {
     place(&server, &admin, &png(32, 32), cx, cx, 32).await;
     let p2 = place(&server, &user, &png(48, 48), cx + 4, cx + 4, 48).await;
     assert_eq!(p2.status, 201);
-    let pid = p2.json()["id"].clone();
+    let pid = p2.json()["id"].as_str().unwrap().to_owned();
 
     // Non-admin → 403.
     let forbidden = request(

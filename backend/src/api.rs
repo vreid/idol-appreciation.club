@@ -162,7 +162,7 @@ pub async fn report(
     Json(req): Json<ReportReq>,
 ) -> AppResult<Response> {
     let exists: Option<(i64,)> =
-        sqlx::query_as("SELECT 1 FROM placements WHERE id = $1 AND removed_at IS NULL")
+        sqlx::query_as("SELECT 1::bigint FROM placements WHERE id = $1 AND removed_at IS NULL")
             .bind(req.placement_id)
             .fetch_optional(&app.pool)
             .await?;

@@ -9,7 +9,7 @@ on:
         type: string
 
 concurrency:
-  group: infra
+  group: idol-stack
   cancel-in-progress: false
 
 permissions:

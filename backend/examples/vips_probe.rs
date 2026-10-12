@@ -1,64 +1,66 @@
-//! Container debug probe: isolates which vips op breaks webp buffering in
-//! minimal Debian builds. Run: cargo run --example vips_probe
+//! Container debug probe: runs the EXACT test pipeline through the crate
+//! (crate init + decode + resize_exact + webp_bytes) to isolate the env
+//! difference that makes webp buffering fail in minimal Debian builds.
+//! Run: cargo run --example vips_probe
 
-use libvips::{ops, VipsApp, VipsImage};
+use idol_appreciation_club_backend::img::{decode, init, resize_exact, webp_bytes};
+use libvips::{ops, VipsImage};
+
+fn red_png(w: u32, h: u32) -> Vec<u8> {
+    let black = ops::black(w as i32, h as i32).unwrap();
+    let img = ops::bandjoin_const(&black, &mut [220.0, 40.0, 40.0, 255.0]).unwrap();
+    ops::pngsave_buffer(&img).unwrap()
+}
 
 fn main() {
-    let app = VipsApp::new("vips_probe", true).expect("init");
-    app.concurrency_set(1);
+    // Reproduce the test harness: init + ops from a SPAWNED thread.
+    let h = std::thread::spawn(|| run("thread"));
+    h.join().unwrap();
+    run("main");
+}
 
-    let black = ops::black(100i32, 50).unwrap();
-    println!("step1 black: bands={} w={} h={}", black.get_bands(), black.get_width(), black.get_height());
+fn run(tag: &str) {
+    init().unwrap();
+    println!("=== {tag} ===");
 
-    let img = ops::bandjoin_const(&black, &mut [220.0f64, 40.0, 40.0, 255.0]).unwrap();
-    println!("step2 bandjoin: bands={}", img.get_bands());
+    let png = red_png(100, 50);
+    println!("step1 png: {} bytes", png.len());
 
-    match ops::pngsave_buffer(&img) {
-        Ok(png) => println!("step3 pngsave: {} bytes", png.len()),
+    let (img1, fmt) = match decode(&png) {
+        Ok(v) => v,
         Err(e) => {
-            println!("step3 pngsave FAILED: {e:?}");
+            println!("step2 decode FAILED: {e:?}");
             return;
         }
+    };
+    println!("step2 decode ok: format={fmt:?} bands={} w={} h={}",
+        img1.get_bands(), img1.get_width(), img1.get_height());
+
+    let d1 = match resize_exact(&img1, 32, 16) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("step3 resize_exact FAILED: {e:?}");
+            return;
+        }
+    };
+    println!("step3 resize_exact ok: bands={} w={} h={}",
+        d1.get_bands(), d1.get_width(), d1.get_height());
+
+    match webp_bytes(&d1, 85) {
+        Ok(b) => println!("step4 webp OK: {} bytes", b.len()),
+        Err(e) => println!("step4 webp FAILED: {e:?}"),
     }
 
-    let png = match ops::pngsave_buffer(&img) {
-        Ok(p) => p,
-        Err(e) => return,
-    };
-    let dec = VipsImage::new_from_buffer(&png, "").unwrap();
-    println!("step4 decode: bands={} w={} h={}", dec.get_bands(), dec.get_width(), dec.get_height());
-
-    let pm = match ops::premultiply(&dec) {
-        Ok(p) => p,
+    // Same encode after full materialization:
+    let solid = match VipsImage::image_copy_memory(d1) {
+        Ok(v) => v,
         Err(e) => {
-            println!("step5 premultiply FAILED: {e:?}");
+            println!("step5 copy_memory FAILED: {e:?}");
             return;
         }
     };
-    let rs = match ops::resize(&pm, 0.32) {
-        Ok(r) => r,
-        Err(e) => {
-            println!("step6 resize FAILED: {e:?}");
-            return;
-        }
-    };
-    let up = match ops::unpremultiply(&rs) {
-        Ok(u) => u,
-        Err(e) => {
-            println!("step7 unpremultiply FAILED: {e:?}");
-            return;
-        }
-    };
-    println!("step7: w={} h={} bands={}", up.get_width(), up.get_height(), up.get_bands());
-
-    match up.image_write_to_buffer(".webp[Q=85]") {
-        Ok(b) => println!("step8 webp OK: {} bytes", b.len()),
-        Err(e) => println!("step8 webp FAILED: {e:?}"),
-    }
-
-    // Direct save without the premultiply pipeline:
-    match dec.image_write_to_buffer(".webp[Q=85]") {
-        Ok(b) => println!("step9 raw-decode webp OK: {} bytes", b.len()),
-        Err(e) => println!("step9 raw-decode webp FAILED: {e:?}"),
+    match webp_bytes(&solid, 85) {
+        Ok(b) => println!("step5 materialized webp OK: {} bytes", b.len()),
+        Err(e) => println!("step5 materialized webp FAILED: {e:?}"),
     }
 }

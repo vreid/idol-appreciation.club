@@ -978,5 +978,65 @@
     "bytes": 360771,
     "prompt": "Photocard-style shot of a female fictional idol proudly holding a glowing pastel star-topped lightstick beside her face, cheeky wink, fan-meeting stage background in soft bokeh, cute event photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/83-airport-group-departure.jpg",
+    "category": "airport-group-departure",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 461119,
+    "prompt": "Girl group of fictional idols walking together through an airport terminal in coordinated off-duty travel outfits, rolling suitcases and cozy hoodies, one member waving at cameras, candid travel street photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/84-duo-acoustic-cafe.jpg",
+    "category": "duo-acoustic-cafe",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 365357,
+    "prompt": "Two-member female fictional idol unit performing an intimate acoustic session in a tiny cafe, one with a guitar and one singing, string lights and listeners' silhouettes in the foreground, warm candid live photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/85-neon-night-stage.jpg",
+    "category": "neon-night-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 518217,
+    "prompt": "Girl group of fictional idols performing under a canopy of neon signage on a futuristic street-stage set, wet asphalt reflections, coordinated neon-accent outfits, dynamic mid-choreography freeze, cinematic stage photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/86-rainy-window-photocard.jpg",
+    "category": "rainy-window-photocard",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 284662,
+    "prompt": "Moody photocard portrait of a female fictional idol resting her chin on her hand beside a rain-streaked window, soft grey daylight, cozy knit sweater, wistful gaze, quiet editorial portrait photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/87-photo-booth-fourcut.jpg",
+    "category": "photo-booth-fourcut",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 157249,
+    "prompt": "Photo-booth style shot of a four-member fictional idol girl group squeezed into frame in matching pastel hoodies, playful peace signs and heart gestures, bright flash lighting, cute candid booth photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/88-neon-street-night.jpg",
+    "category": "neon-street-night",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 371118,
+    "prompt": "Night street portrait of a female fictional idol under glowing shop signage after rain, glossy pavement reflections, silver bomber jacket, confident stance with hands in pockets, cinematic street editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

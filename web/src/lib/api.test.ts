@@ -86,7 +86,7 @@ describe("auth flows", () => {
 
   it("me() maps 200 to Me and 401 to null", async () => {
     const me = {
-      id: 3,
+      id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a0e1",
       username: "gaeul",
       is_admin: true,
       cooldown_until: "2026-10-12T10:00:00Z",

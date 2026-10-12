@@ -7,7 +7,7 @@
 import { isRecord } from "./guards";
 
 export interface Me {
-  id: number;
+  id: string;
   username: string;
   is_admin: boolean;
   cooldown_until: string | null;
@@ -190,7 +190,7 @@ function placementFields(obj: Record<string, unknown>): Placement {
 function meOf(body: unknown): Me {
   const obj = expectObject(body);
   return {
-    id: num(obj, "id"),
+    id: str(obj, "id"),
     username: str(obj, "username"),
     is_admin: bool(obj, "is_admin"),
     cooldown_until: nullableStr(obj, "cooldown_until"),

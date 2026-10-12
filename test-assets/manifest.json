@@ -158,5 +158,15 @@
     "bytes": 101037,
     "prompt": "Extreme close-up beauty shot of a fictional idol's face, rainbow prism light refracting across flawless dewy skin, glitter freckles, glossy lips, iridescent highlighter, high-end beauty editorial photography, macro 100mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/30-group-seven-girls.jpg",
+    "category": "group-seven-girls",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 589974,
+    "prompt": "Epic wide shot of a seven-member girl group of fictional idols filling a massive award-show stage, elaborate silver-and-white stage costumes, towering LED columns and laser beams, powerful synchronized choreography, cinematic wide concert photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

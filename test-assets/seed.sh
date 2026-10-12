@@ -9,15 +9,25 @@
 #   - The other 15 images fill a 4-column ring of 512px slots with 128px
 #     gutters around the center image (2 rows above, 2 rows below), all slots
 #     non-overlapping so every placement lands on empty space.
+# Modes (env):
+#   SEED_ALL=1      place ALL idols/*.jpg images: 01 centered on the world
+#                   center, the rest centered in the cells of an 11x11 grid
+#                   (512px cells, 128px gutters, 640px pitch) around it.
+#   SEED_DRY_RUN=1  compute placements, verify pairwise non-overlap locally
+#                   with a pure-python3 stub, and post nothing.
 # Cooldown (300s) only applies to overlapping placements; empty-space
 # placements need a ~1s gap, so we sleep 1.5s between posts.
 #
-# Requires: curl, python3 (no PIL needed - image headers are parsed directly).
+# Requires: curl, python3 (no PIL needed - image headers are parsed directly);
+# with SEED_DRY_RUN=1 only python3 is needed.
 set -euo pipefail
 
 BASE_URL=${1:?usage: seed.sh BASE_URL SEED_USERNAME SEED_PASSWORD}
 SEED_USERNAME=${2:?usage: seed.sh BASE_URL SEED_USERNAME SEED_PASSWORD}
 SEED_PASSWORD=${3:?usage: seed.sh BASE_URL SEED_USERNAME SEED_PASSWORD}
+
+SEED_ALL=${SEED_ALL:-0}       # 1 -> place every image on the full grid
+DRY_RUN=${SEED_DRY_RUN:-0}    # 1 -> compute + verify placements only
 
 IDOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/idols"
 WORLD_CENTER=134217728
@@ -26,7 +36,9 @@ GUTTER=128
 PITCH=$((SLOT + GUTTER)) # 640
 
 JAR="$(mktemp)"
-trap 'rm -f "$JAR"' EXIT
+RECTS_FILE="$(mktemp)"
+trap 'rm -f "$JAR" "$RECTS_FILE"' EXIT
+RECTS=()
 
 # img_dims FILE -> prints "WxH" parsed from PNG or JPEG headers (pure python3).
 img_dims() {

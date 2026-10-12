@@ -70,7 +70,7 @@ describe("session", () => {
     const client = makeClient({
       me: vi.fn(() =>
         Promise.resolve({
-          id: 1,
+          id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a0e2",
           username: "rei",
           is_admin: false,
           cooldown_until: null,
@@ -99,7 +99,7 @@ describe("session", () => {
     const client = makeClient({
       me: vi.fn(() =>
         Promise.resolve({
-          id: 2,
+          id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a0e4",
           username: "liz",
           is_admin: true,
           cooldown_until: null,
@@ -268,7 +268,7 @@ describe("reports and admin removal", () => {
     const client = makeClient({
       me: () =>
         Promise.resolve({
-          id: 1,
+          id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a0e3",
           username: "u",
           is_admin: false,
           cooldown_until: null,

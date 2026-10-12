@@ -190,8 +190,8 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `LISTEN_ADDR=0.0.0.0:8080`, `PUBLIC_BASE_URL`, `STATIC_DIR=../web/dist`,
 `COOLDOWN_PAINT_SECS=300`, `COOLDOWN_EMPTY_SECS=1`, `MAX_UPLOAD_BYTES=10485760`,
 `MIN_SIZE=16`, `MAX_SIZE=2048`, `TILE_CACHE_ENTRIES=2048`, `RUST_LOG=info`,
-`REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate
-external signups behind admin approval).
+`REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
+signups behind admin approval).
 
 `S3_ENDPOINT=file:///path` selects a local-filesystem store (dev only); anything
 else is an S3 endpoint (`allow_http` for plain-http endpoints).

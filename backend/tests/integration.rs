@@ -45,6 +45,16 @@ impl Resp {
 }
 
 async fn start_server(paint_secs: i64, empty_secs: i64, max_upload: usize) -> Server {
+    start_server_gated(false, paint_secs, empty_secs, max_upload).await
+}
+
+/// `approval_required = true` gates new signups behind admin approval.
+async fn start_server_gated(
+    approval_required: bool,
+    paint_secs: i64,
+    empty_secs: i64,
+    max_upload: usize,
+) -> Server {
     // Pin a modern postgres: the module default is 11-alpine, too old for
     // generated columns.
     let container = postgres::Postgres::default()
@@ -74,6 +84,7 @@ async fn start_server(paint_secs: i64, empty_secs: i64, max_upload: usize) -> Se
         min_size: 16,
         max_size: 2048,
         tile_cache_entries: 256,
+        registration_approval_required: approval_required,
     };
     let (state, app): (App, _) = build_app(cfg).await.expect("build app (pool + migrations)");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -696,4 +707,157 @@ async fn static_fallback_is_graceful() {
     let api404 = request(&server, "GET", "/api/nope", &[], vec![]).await;
     assert_eq!(api404.status, 404);
     assert_eq!(api404.json()["error"], "not found");
+}
+
+// -------------------------------------------------------------------------
+// Admin-approved registration.
+// -------------------------------------------------------------------------
+
+async fn raw_register(server: &Server, username: &str) -> Resp {
+    request(
+        server,
+        "POST",
+        "/api/auth/register",
+        &[("Content-Type", "application/json")],
+        format!(r#"{{"username":"{username}","password":"hunter2hunter2"}}"#).into_bytes(),
+    )
+    .await
+}
+
+async fn raw_login(server: &Server, username: &str) -> Resp {
+    request(
+        server,
+        "POST",
+        "/api/auth/login",
+        &[("Content-Type", "application/json")],
+        format!(r#"{{"username":"{username}","password":"hunter2hunter2"}}"#).into_bytes(),
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approval_gate_full_flow() {
+    let server = start_server_gated(true, 0, 1, 10 * 1024 * 1024).await;
+
+    // Bootstrap admin: always approved, gets a session.
+    let admin = register(&server, "root").await;
+    assert!(admin.starts_with("session="));
+
+    // External signup: pending, no session cookie issued.
+    let resp = raw_register(&server, "newbie").await;
+    assert_eq!(resp.status, 201);
+    let body: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+    assert_eq!(body["pending"], true);
+    assert_eq!(body["username"], "newbie");
+    assert!(resp.cookie().is_none(), "pending accounts get no session");
+
+    // Queue shows the pending account oldest-first; admin itself absent.
+    let queue = request(
+        &server,
+        "GET",
+        "/api/admin/accounts?pending=true",
+        &[("Cookie", &admin)],
+        vec![],
+    )
+    .await;
+    assert_eq!(queue.status, 200);
+    let q: serde_json::Value = serde_json::from_slice(&queue.body).unwrap();
+    let names: Vec<&str> = q
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["username"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["newbie"]);
+
+    // Login before approval → 403 pending, no session.
+    let resp = raw_login(&server, "newbie").await;
+    assert_eq!(resp.status, 403);
+    assert!(String::from_utf8_lossy(&resp.body).contains("account pending approval"));
+    assert!(resp.cookie().is_none());
+
+    // Non-admin approve → 403. (First approve newbie via admin so the
+    // non-admin can hold a session at all.)
+    let appr = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/newbie/approve",
+        &[("Cookie", &admin)],
+        vec![],
+    )
+    .await;
+    assert_eq!(appr.status, 204);
+
+    // Idempotent: approving again is still 204.
+    let appr = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/newbie/approve",
+        &[("Cookie", &admin)],
+        vec![],
+    )
+    .await;
+    assert_eq!(appr.status, 204);
+
+    // Unknown username → 404.
+    let appr = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/ghost/approve",
+        &[("Cookie", &admin)],
+        vec![],
+    )
+    .await;
+    assert_eq!(appr.status, 404);
+
+    // Approved: login works, and the account can place art.
+    let resp = raw_login(&server, "newbie").await;
+    assert_eq!(resp.status, 200);
+    let cookie = resp.cookie().expect("approved login sets session");
+    assert!(cookie.starts_with("session="));
+    let place = request(
+        &server,
+        "POST",
+        "/api/place",
+        &[
+            ("Cookie", &cookie),
+            ("Content-Type", "multipart/form-data; boundary=X"),
+        ],
+        multipart("X", &[("x", "0"), ("y", "0"), ("size", "16")], &png(16, 16)),
+    )
+    .await;
+    assert_eq!(
+        place.status,
+        201,
+        "{}",
+        String::from_utf8_lossy(&place.body)
+    );
+
+    // Second pending signup; the approved NON-admin cannot approve it.
+    let resp = raw_register(&server, "second").await;
+    assert_eq!(resp.status, 201);
+    let forbidden = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/second/approve",
+        &[("Cookie", &cookie)],
+        vec![],
+    )
+    .await;
+    assert_eq!(forbidden.status, 403);
+    // ...and the second account still cannot log in.
+    let resp = raw_login(&server, "second").await;
+    assert_eq!(resp.status, 403);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approval_flag_off_auto_approves() {
+    let server = start_server(0, 1, 10 * 1024 * 1024).await;
+    let resp = raw_register(&server, "openc").await;
+    assert_eq!(resp.status, 201);
+    let body: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+    assert_eq!(body["pending"], false);
+    assert!(resp.cookie().is_some(), "auto-approved register logs in");
+    let resp = raw_login(&server, "openc").await;
+    assert_eq!(resp.status, 200);
 }

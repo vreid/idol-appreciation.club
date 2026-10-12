@@ -171,13 +171,27 @@ admin; a partial unique index makes "exactly one admin" race-free (loser retries
 as a normal account). Trade-off: logout can only clear the cookie — a presented
 token stays valid until expiry (no session store).
 
+Registration approval gate (external signups only; local development is
+unaffected): when `REGISTRATION_APPROVAL_REQUIRED=true`, new accounts start
+unapproved — register answers `201 {username, pending: true}` with NO session
+cookie, login answers `403 {"error":"account pending approval"}`, and an admin
+approves via `GET /api/admin/accounts?pending=true` (oldest first) and
+`POST /api/admin/accounts/{username}/approve` (`204`, idempotent, `404` unknown
+user, `403` non-admin). The env defaults to false so backend/dev/e2e work never
+touches the gate; production sets it true. The bootstrap admin is always
+approved (and admins bypass the login gate), so a gated fresh deployment cannot
+lock itself out; the migration backfills `approved=true` for every pre-gate
+account.
+
 ## Configuration
 
 Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `S3_SECRET_ACCESS_KEY`, `SESSION_SECRET` (≥ 32 bytes). Optional with defaults:
 `LISTEN_ADDR=0.0.0.0:8080`, `PUBLIC_BASE_URL`, `STATIC_DIR=../web/dist`,
 `COOLDOWN_PAINT_SECS=300`, `COOLDOWN_EMPTY_SECS=1`, `MAX_UPLOAD_BYTES=10485760`,
-`MIN_SIZE=16`, `MAX_SIZE=2048`, `TILE_CACHE_ENTRIES=2048`, `RUST_LOG=info`.
+`MIN_SIZE=16`, `MAX_SIZE=2048`, `TILE_CACHE_ENTRIES=2048`, `RUST_LOG=info`,
+`REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate
+external signups behind admin approval).
 
 `S3_ENDPOINT=file:///path` selects a local-filesystem store (dev only); anything
 else is an S3 endpoint (`allow_http` for plain-http endpoints).

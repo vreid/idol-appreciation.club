@@ -219,3 +219,44 @@ costs cents.
   resolve it (getent) before upserting records.
 - The LB list endpoint is `GET /1.3/load-balancer` (dash), not `/load_balancer`.
 - Plan listing lives at `GET /1.3/plan` (singular).
+
+## Serving-path transition: Caddy-direct edge (2026-10-12)
+
+The ingress-nginx + cert-manager serving path was replaced by a Caddy-direct
+edge. Winning reason: the UpCloud CCM load balancer for ingress-nginx fought the
+TLS chain three ways (default HTTP health checks killing members, stale member
+ports after nodePort re-pinning, and the LB auto-terminating TLS with its own
+*.upcloudlb.com certificate), while Caddy does HTTP-01, SPA fallback, API
+proxying and SSE unbuffering in one place.
+
+Current edge:
+
+- `web` Service is **type=LoadBalancer** (Essentials plan): port 80 -> Caddy
+  8080, port 443 (TCP passthrough) -> Caddy 8443. TCP health checks.
+- `web/Caddyfile` (baked into the web image): automatic Let's Encrypt for
+  `idol-appreciation.club` + www->apex redirect, `route` block so `/api/*`
+  proxies to `backend.idol.svc.cluster.local:8080` BEFORE `try_files` can
+  rewrite it, `flush_interval -1` for SSE, immutable asset caching.
+- ingress-nginx and cert-manager are **not installed** by deploy.yml anymore;
+  `deploy/20-ingress.yaml` and `deploy/30-issuer.yaml` are dead files kept only
+  for history.
+- Bootstrap without the web image: `deploy/placeholder.yaml` becomes the edge
+  (plain HTTP LoadBalancer) and is deleted once web is ready.
+- Because images are tag-pinned (`:main`), all Deployments set
+  `imagePullPolicy: Always` (a node-cached `:main` otherwise masks new pushes;
+  the deploy job additionally pins exact digests via
+  `kubectl set image ...@digest`).
+
+Cluster-level-by-hand changes made during the outage were repo-ified:
+securityContext relaxations (`deploy/10-backend.yaml`: image USER idol is
+non-numeric so kubelet cannot verify runAsNonRoot; `deploy/15-web.yaml`:
+seccomp/capability hardening broke caddy exec), imagePullPolicy Always, and the
+Caddyfile itself.
+
+### PR mode (2026-10-12)
+
+Main is now protected: squash-merge only, auto-merge enabled,
+delete-branch-on-merge, required checks = ci.yml jobs (tofu fmt+validate,
+jactionlint, oxfmt markdown, owner readiness markers, backend cargo gates, web
+vp gates, tofu plan). Direct pushes to main are being phased out; agents work on
+branches and use `gh pr merge --auto --squash`.

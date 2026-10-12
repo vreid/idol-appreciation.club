@@ -558,5 +558,25 @@
     "bytes": 353840,
     "prompt": "Candid airport photo of a female fictional idol in a long puffer coat, chunky knit scarf, and beanie pulling a suitcase through a glass terminal, soft morning light, effortless off-duty style, editorial street photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/41-airport-summer.jpg",
+    "category": "airport-summer",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 326882,
+    "prompt": "Candid airport photo of a female fictional idol in light summer travel fashion, linen co-ord set with a small crossbody bag and cap, wheeling a suitcase past terminal windows, natural daylight, off-duty street style photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/42-rehearsal-room.jpg",
+    "category": "rehearsal-room",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 309449,
+    "prompt": "Girl group of fictional idols rehearsing in a mirror-walled practice room late at night, casual sweats and sneakers, water bottles and phones along the wall, one member checking a choreography video, candid documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

@@ -33,5 +33,19 @@ jobs:
       - name: tofu destroy
         run: tofu destroy -auto-approve -input=false
         working-directory: tofu
+      - name: Delete orphaned CCM load balancers
+        if: always()
+        run: |
+          set -o pipefail
+          # Destroying the cluster does not remove LBs the CCM provisioned
+          # for LoadBalancer Services - they keep billing until deleted.
+          set -e
+          for lb in $(curl -s -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+              https://api.upcloud.com/1.3/load-balancer \
+              | jq -r '.[] | select(.name | startswith("${{ env.CLUSTER }}")) | .uuid'); do
+            echo "deleting LB $lb"
+            curl -s -X DELETE -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+              "https://api.upcloud.com/1.3/load-balancer/$lb" -o /dev/null -w "%{http_code}\n"
+          done
       - name: Summary
         run: echo "### infra destroyed (hourly billing stopped)" >> "$GITHUB_STEP_SUMMARY"

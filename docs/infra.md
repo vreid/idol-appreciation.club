@@ -327,3 +327,26 @@ git diff --check                           # whitespace
 CI is fail-fast: `lint (all areas)` aggregates every linter; one red lint skips
 ALL slow test jobs within ~90s. `ci-ok` fails on any skipped gate, so skipping
 is never a merge path.
+
+## Admin account
+
+`scripts/bootstrap-admin.sh` is idempotent: credentials live only in the k8s
+secret `admin-account` (namespace idol); first run generates a random 32-char
+password, later runs reuse it. It registers via the public API, promotes the
+account (`is_admin=true`) and demotes every other admin (e2e bots used to win
+the first-registered race; 9 were demoted on 2026-10-12), then verifies via
+`/api/auth/me`.
+
+- retrieval:
+  `kubectl -n idol get secret admin-account -o jsonpath='{.data.username}' | base64 -d`
+  (same for `.data.password`)
+- approve a user (approval feature):
+  `./scripts/bootstrap-admin.sh --approve USERNAME` (psql `approved=true`; if
+  the column/migration hasn't landed yet the temporary fallback is
+  `psql "$ADMIN_URI_APP" -c "UPDATE accounts SET approved=true WHERE username='<seed>'"`)
+- rotation (v1, no change-password endpoint yet): generate a new password,
+  update the secret, then `UPDATE accounts SET password_hash=...` via psql with
+  an argon2 hash in the backend's format. Backend TODO: proper change-password
+  endpoint.
+
+Seed runbook: register seed account -> approve it -> SEED_ALL.

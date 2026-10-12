@@ -7,6 +7,7 @@ import type {
   ApiClient,
   CenterInfo,
   Me,
+  PendingAccount,
   Placement,
   PlacedPlacement,
 } from "./api";
@@ -60,6 +61,15 @@ export interface AppStore {
   refreshCenter(): Promise<void>;
   login(username: string, password: string): Promise<boolean>;
   register(username: string, password: string): Promise<boolean>;
+  /** True right after a registration that awaits admin approval. */
+  readonly registrationPending: boolean;
+  /** Last auth error message, for inline display in the auth form. */
+  readonly authError: string;
+  clearAuthError(): void;
+  /** Admin: accounts awaiting approval. */
+  readonly adminPending: readonly PendingAccount[];
+  loadAdminPending(): Promise<void>;
+  approveAccount(username: string): Promise<void>;
   logout(): Promise<void>;
   promptAuth(): void;
   dismissAuth(): void;
@@ -183,23 +193,34 @@ export function createAppStore(
     }
   }
 
+  let registrationPending = $state(false);
+  let authError = $state("");
+  let adminPending = $state<PendingAccount[]>([]);
+
   async function authenticate(
     action: "login" | "register",
     username: string,
     password: string,
   ): Promise<boolean> {
+    registrationPending = false;
+    authError = "";
     try {
       if (action === "login") {
         await client.login(username, password);
       } else {
-        await client.register(username, password);
+        const created = await client.register(username, password);
+        if (created.pending) {
+          // External approval gate: no session yet, account awaits an admin.
+          registrationPending = true;
+          pushToast("info", "Account created — awaiting admin approval");
+          return false;
+        }
       }
     } catch (err) {
-      // While authenticating, a 401 IS the answer: show the server's words.
-      pushToast(
-        "error",
-        err instanceof ApiError ? err.message : describeApiError(err),
-      );
+      // While authenticating, an error status IS the answer: surface the
+      // server's words inline (e.g. 403 "account pending approval").
+      authError = err instanceof ApiError ? err.message : describeApiError(err);
+      pushToast("error", authError);
       return false;
     }
     await doRefreshMe();
@@ -209,6 +230,24 @@ export function createAppStore(
       action === "login" ? "Welcome back" : "Account created, welcome";
     pushToast("success", `${verb}, ${who}!`);
     return true;
+  }
+
+  async function loadAdminPending(): Promise<void> {
+    try {
+      adminPending = await client.pendingAccounts();
+    } catch (err) {
+      pushToast("error", describeApiError(err));
+    }
+  }
+
+  async function approveAccount(username: string): Promise<void> {
+    try {
+      await client.approveAccount(username);
+      adminPending = adminPending.filter((a) => a.username !== username);
+      pushToast("success", `Approved ${username}`);
+    } catch (err) {
+      pushToast("error", describeApiError(err));
+    }
   }
 
   return {
@@ -252,6 +291,20 @@ export function createAppStore(
     login: (username, password) => authenticate("login", username, password),
     register: (username, password) =>
       authenticate("register", username, password),
+    get registrationPending() {
+      return registrationPending;
+    },
+    get authError() {
+      return authError;
+    },
+    clearAuthError() {
+      authError = "";
+    },
+    get adminPending() {
+      return adminPending;
+    },
+    loadAdminPending,
+    approveAccount,
 
     async logout(): Promise<void> {
       try {

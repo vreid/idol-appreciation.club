@@ -13,6 +13,16 @@ export interface Me {
   cooldown_until: string | null;
 }
 
+export interface RegisterResult {
+  username: string;
+  pending: boolean;
+}
+
+export interface PendingAccount {
+  username: string;
+  created_at: string;
+}
+
 export interface Placement {
   id: string;
   username: string;
@@ -73,7 +83,7 @@ export interface PlaceRequest {
 }
 
 export interface ApiClient {
-  register: (username: string, password: string) => Promise<void>;
+  register: (username: string, password: string) => Promise<RegisterResult>;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   /** null when not signed in (401/403). */
@@ -83,6 +93,8 @@ export interface ApiClient {
   center: () => Promise<CenterInfo>;
   report: (placementId: string) => Promise<void>;
   removePlacement: (placementId: string) => Promise<void>;
+  pendingAccounts: () => Promise<PendingAccount[]>;
+  approveAccount: (username: string) => Promise<void>;
 }
 
 export interface ApiClientDeps {
@@ -187,6 +199,14 @@ function placementFields(obj: Record<string, unknown>): Placement {
   };
 }
 
+function registerOf(body: unknown): RegisterResult {
+  const obj = expectObject(body);
+  return {
+    username: str(obj, "username"),
+    pending: bool(obj, "pending"),
+  };
+}
+
 function meOf(body: unknown): Me {
   const obj = expectObject(body);
   return {
@@ -195,6 +215,19 @@ function meOf(body: unknown): Me {
     is_admin: bool(obj, "is_admin"),
     cooldown_until: nullableStr(obj, "cooldown_until"),
   };
+}
+
+function pendingAccountsOf(body: unknown): PendingAccount[] {
+  if (!Array.isArray(body)) {
+    throw new ApiError(0, "expected an array of pending accounts");
+  }
+  return body.map((entry) => {
+    const obj = expectObject(entry);
+    return {
+      username: str(obj, "username"),
+      created_at: str(obj, "created_at"),
+    };
+  });
 }
 
 function placementsNearOf(body: unknown): Placement[] {
@@ -282,8 +315,14 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
   }
 
   return {
-    register: (username, password) =>
-      postJson("/api/auth/register", { username, password }),
+    register: async (username, password) =>
+      registerOf(
+        await request("/api/auth/register", {
+          method: "POST",
+          json: true,
+          body: JSON.stringify({ username, password }),
+        }),
+      ),
     login: (username, password) =>
       postJson("/api/auth/login", { username, password }),
     logout: () => postJson("/api/auth/logout", {}),
@@ -318,6 +357,10 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
     center: async () => centerOf(await request("/api/center")),
     report: (placementId) =>
       postJson("/api/reports", { placement_id: placementId }),
+    pendingAccounts: async () =>
+      pendingAccountsOf(await request("/api/admin/accounts?pending=true")),
+    approveAccount: (username) =>
+      postJson(`/api/admin/accounts/${encodeURIComponent(username)}/approve`, {}),
     removePlacement: async (placementId) => {
       await request(`/api/admin/placements/${placementId}`, {
         method: "DELETE",

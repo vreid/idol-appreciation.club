@@ -23,11 +23,17 @@
   let username = $state("");
   let password = $state("");
   let busy = $state(false);
+  let adminOpen = $state(false);
 
   // The auth popover pops itself open when an action needs a login.
   $effect(() => {
     if (store.authPrompt) authOpen = true;
   });
+
+  function toggleAdmin(): void {
+    adminOpen = !adminOpen;
+    if (adminOpen) void store.loadAdminPending();
+  }
 
   const heldSeconds = $derived.by(() => {
     const since = store.center?.current?.since;
@@ -67,6 +73,11 @@
 
   function toggleAuth(): void {
     authOpen = !authOpen;
+  }
+
+  function switchAuthTab(tab: "login" | "register"): void {
+    authTab = tab;
+    store.clearAuthError();
   }
 </script>
 

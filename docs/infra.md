@@ -310,3 +310,20 @@ Streamed SigV4 PUTs (boto3 default signed payload) fail with
 `XAmzContentSHA256Mismatch` through UpCloud's object-storage LB; presigned URLs
 and header-signed PUTs work. Backend blob uploads must be verified early; if
 streamed PUTs fail in Rust too, switch to buffered/presigned writes.
+
+## Contributing / PR checklist (ALL agents)
+
+Before EVERY PR, from the repo root:
+
+```
+npx --yes oxfmt@0.72.0 --write "**/*.md"   # markdown (second-md-failure rule)
+cd web && vp check && vp test; cd ..       # web: typecheck+lint+fmt, tests
+cd backend && cargo fmt --check && cargo clippy --all-targets -- -D warnings; cd ..
+helm lint chart                            # chart changes
+/tmp/jactionlint .github/workflows/*.yml   # workflow changes (or the release binary)
+git diff --check                           # whitespace
+```
+
+CI is fail-fast: `lint (all areas)` aggregates every linter; one red lint skips
+ALL slow test jobs within ~90s. `ci-ok` fails on any skipped gate, so skipping
+is never a merge path.

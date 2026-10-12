@@ -698,5 +698,175 @@
     "bytes": 111202,
     "prompt": "Extreme beauty close-up of a female fictional idol, rainbow prism light bands sweeping across dewy skin and a glossy eyelid, tiny crystal freckles on the cheekbone, wet-look glossy lips, high-end beauty editorial photography, macro 100mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/55-beauty-water-light.jpg",
+    "category": "beauty-water-light",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 136722,
+    "prompt": "Extreme beauty close-up of a female fictional idol with rippling water-light reflections dancing across her face as if from a pool, slicked wet hair, luminous highlighter, serene expression, artistic beauty editorial photography, macro 100mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/56-beauty-glitter-dew.jpg",
+    "category": "beauty-glitter-dew",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 86352,
+    "prompt": "Extreme beauty close-up of a female fictional idol with fine gold glitter dusted along her cheekbone and temple, dewy glass skin, a single silver hoop catching the light, soft studio glow, luxury beauty campaign photography, macro 100mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/57-photobook-flower-field.jpg",
+    "category": "photobook-flower-field",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 239391,
+    "prompt": "Photobook spread of a female fictional idol twirling in a wildflower field at golden hour, flowing pastel sundress, arms out, sun flare behind her shoulder, dreamy soft-focus hills, editorial fashion photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/58-photobook-city-night.jpg",
+    "category": "photobook-city-night",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 374173,
+    "prompt": "Photobook concept shot of a female fictional idol on a rainy city street at night, clear umbrella tilted back, neon signs reflecting in wet pavement, long trench coat, cinematic nocturnal editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/59-photobook-hanbok-modern.jpg",
+    "category": "photobook-hanbok-modern",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 237682,
+    "prompt": "Modern hanbok concept portrait of a female fictional idol, contemporary embroidered hanbok in soft jade and ivory with wide flowing sleeves, standing in a minimalist palace courtyard at dusk, lanterns glowing softly, high-fashion editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/60-photobook-sporty.jpg",
+    "category": "photobook-sporty",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 349611,
+    "prompt": "Sporty photobook concept shot of a female fictional idol in a retro tracksuit mid-jump on an outdoor basketball court, dynamic freeze-frame, late-afternoon sun, chain-link fence bokeh, energetic editorial sports photography, 70mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/61-photobook-y2k-retro.jpg",
+    "category": "photobook-y2k-retro",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 343326,
+    "prompt": "Y2K retro photobook concept shot of a female fictional idol with twin buns and butterfly hair clips, shiny silver crop top and low-rise jeans, leaning on a metallic locker wall, playful retro editorial photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/62-photobook-cyber.jpg",
+    "category": "photobook-cyber",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 252516,
+    "prompt": "Cyber photobook concept shot of a female fictional idol in a chrome-accented bodysuit with glowing circuit-line makeup, inside a dark server-room corridor of blinking lights, futuristic high-fashion editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/63-photobook-campus-autumn.jpg",
+    "category": "photobook-campus-autumn",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 353624,
+    "prompt": "Campus photobook concept shot of a female fictional idol in a school-style uniform cardigan sitting on outdoor stone steps with books, ginkgo leaves falling around her, soft autumn afternoon light, youthful editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/64-lightstick-ocean-arena.jpg",
+    "category": "lightstick-ocean-arena",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 541704,
+    "prompt": "Aerial wide shot of a packed arena at night during a fictional idol concert, tens of thousands of pastel lightsticks forming a glowing gradient ocean, tiny stage glowing in the distance, epic cinematic event photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/65-festival-fireworks.jpg",
+    "category": "festival-fireworks",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 588676,
+    "prompt": "Outdoor festival finale at night, girl group of fictional idols silhouetted on a glowing main stage as enormous golden fireworks burst over the crowd, thousands of lightsticks waving below, epic cinematic concert photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/66-university-festival.jpg",
+    "category": "university-festival",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 459382,
+    "prompt": "Girl group of fictional idols performing at an outdoor university festival stage at dusk, string lights and scaffolding stage, members in coordinated casual denim, students cheering with glow sticks, warm documentary concert photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/67-christmas-stage.jpg",
+    "category": "christmas-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 414947,
+    "prompt": "Girl group of fictional idols in elegant white-and-red winter gowns performing on a music-show stage decorated with giant snowflakes and warm fairy lights, gentle fake snow falling, festive broadcast stage photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/68-halloween-stage.jpg",
+    "category": "halloween-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 397763,
+    "prompt": "Girl group of fictional idols in playful Halloween concept costumes performing on a stage set with giant pumpkins and purple-orange lighting, cobweb props and fog, energetic broadcast stage photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/69-water-festival-stage.jpg",
+    "category": "water-festival-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 748931,
+    "prompt": "Girl group of fictional idols performing at a summer water festival, splashing water arcs catching sunlight over the crowd, members laughing in coordinated sporty stage outfits, energetic outdoor concert photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/70-girlgroup-ballad-stage.jpg",
+    "category": "girlgroup-ballad-stage",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 316555,
+    "prompt": "Girl group of fictional idols performing a gentle ballad on a music-show stage, seated on glowing cube stools in soft flowing dresses, warm amber lighting and drifting particles, emotional broadcast stage photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/71-suit-concept-teaser.jpg",
+    "category": "suit-concept-teaser",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 235977,
+    "prompt": "Suit-concept teaser photo of a female fictional idol in a tailored black three-piece suit with a loose tie, leaning against a dark studio wall with dramatic side light, smoldering confident gaze, high-fashion editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

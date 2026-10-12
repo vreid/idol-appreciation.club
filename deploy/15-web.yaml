@@ -18,11 +18,21 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        # kubelet chowns the PVC root to this gid so uid 1000 (caddy)
+        # can create /data/caddy.
+        fsGroup: 1000
+      volumes:
+        - name: caddy-data
+          persistentVolumeClaim:
+            claimName: caddy-data
+        - name: caddy-config
+          configMap:
+            name: caddy-config
       containers:
         - name: web
           image: ghcr.io/vreid/idol-appreciation.club-web:main
           imagePullPolicy: Always
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http
@@ -35,6 +45,13 @@ spec:
             limits:
               cpu: 500m
               memory: 256Mi
+          volumeMounts:
+            - name: caddy-data
+              mountPath: /data
+            - name: caddy-config
+              mountPath: /etc/caddy/Caddyfile
+              subPath: Caddyfile
+              readOnly: true
           readinessProbe:
             tcpSocket:
               port: 8080
@@ -50,6 +67,63 @@ spec:
           # privilege escalation, drop the rest.
           securityContext:
             allowPrivilegeEscalation: false
+---
+# Edge config lives in a ConfigMap so routing/TLS changes never need an
+# image rebuild. Kept in sync with web/Caddyfile (the image's baked-in
+# default for bare-container runs).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caddy-config
+  namespace: idol
+data:
+  Caddyfile: |
+    {
+    	http_port 8080
+    	https_port 8443
+    }
+    
+    idol-appreciation.club {
+    	encode zstd gzip
+    	root * /usr/share/caddy
+    
+    	# route preserves written order: proxy /api BEFORE try_files can
+    	# rewrite it to index.html. SSE: flush_interval -1 keeps events live.
+    	route {
+    		reverse_proxy /api/* backend.idol.svc.cluster.local:80 {
+    			flush_interval -1
+    		}
+    
+    		@immutable path /assets/*
+    		header @immutable Cache-Control "public, max-age=31536000, immutable"
+    
+    		@index path / /index.html
+    		header @index Cache-Control "no-cache"
+    
+    		try_files {path} /index.html
+    		file_server
+    	}
+    }
+    
+    # www -> apex
+    www.idol-appreciation.club {
+    	redir https://idol-appreciation.club{uri} permanent
+    }
+---
+# Caddy's ACME account + issued certs must survive pod restarts: every
+# restart otherwise re-rans ACME and burns Let's Encrypt duplicate-cert
+# budget (5/week per FQDN).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: caddy-data
+  namespace: idol
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: upcloud-block-storage-standard
+  resources:
+    requests:
+      storage: 1Gi
 ---
 # Caddy-direct edge: this Service is THE LoadBalancer. Caddy terminates
 # TLS (8443) with its own Let's Encrypt cert (HTTP-01 via the 80->8080

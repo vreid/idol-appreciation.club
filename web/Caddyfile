@@ -10,7 +10,7 @@ idol-appreciation.club {
 	# route preserves written order: proxy /api BEFORE try_files can
 	# rewrite it to index.html. SSE: flush_interval -1 keeps events live.
 	route {
-		reverse_proxy /api/* backend.idol.svc.cluster.local:8080 {
+		reverse_proxy /api/* backend.idol.svc.cluster.local:80 {
 			flush_interval -1
 		}
 

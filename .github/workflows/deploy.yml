@@ -5,10 +5,14 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/workflows/deploy.yml
+      - .github/actions/tofu-setup/**
       - backend/**
+      - chart/**
       - web/**
       - deploy/**
       - scripts/sync-dns.sh
+      - scripts/bootstrap-admin.sh
 
 concurrency:
   group: idol-stack

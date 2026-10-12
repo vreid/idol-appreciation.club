@@ -33,6 +33,8 @@ export function burstConfetti(
         ],
         { duration: DURATION_MS, easing: "cubic-bezier(.16,.8,.32,1)" },
       )
-      .addEventListener("finish", () => piece.remove());
+      .addEventListener("finish", () => {
+        piece.remove();
+      });
   }
 }

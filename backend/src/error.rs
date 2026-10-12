@@ -50,9 +50,8 @@ impl IntoResponse for AppError {
         };
         let mut resp = (status, axum::Json(json!({ "error": msg }))).into_response();
         if let Some(secs) = retry_after {
-            if let Ok(v) = secs.max(1).try_into() {
-                resp.headers_mut().insert("retry-after", v);
-            }
+            let v = axum::http::HeaderValue::from(secs.max(1));
+            resp.headers_mut().insert("retry-after", v);
         }
         resp
     }

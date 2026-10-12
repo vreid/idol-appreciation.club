@@ -120,7 +120,7 @@ async fn try_insert(
     .bind(as_admin)
     .fetch_one(&app.pool)
     .await?;
-    let mut resp = (
+    let resp = (
         axum::http::StatusCode::CREATED,
         Json(json!({ "id": id, "username": username, "is_admin": result.0 })),
     )

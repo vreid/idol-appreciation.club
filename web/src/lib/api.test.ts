@@ -11,11 +11,11 @@ function jsonResponse(
   body: unknown,
   headers?: Record<string, string>,
 ): Response {
-  const response = new Response(body === null ? null : JSON.stringify(body), {
-    status,
-    headers,
-  });
-  return response;
+  const init: ResponseInit = { status };
+  if (headers !== undefined) {
+    init.headers = headers;
+  }
+  return new Response(body === null ? null : JSON.stringify(body), init);
 }
 
 function urlOf(input: RequestInfo | URL): string {
@@ -42,6 +42,10 @@ function jsonBody(request: RecordedRequest | undefined): unknown {
   if (typeof body !== "string") throw new Error("expected a string body");
   return JSON.parse(body);
 }
+
+const offlineFetch: typeof fetch = () =>
+  Promise.reject(new TypeError("offline"));
+const failingFetch: typeof fetch = () => Promise.reject(new Error("x"));
 
 const samplePlacement: Placement = {
   id: 11,
@@ -216,14 +220,12 @@ describe("report / admin remove", () => {
 
 describe("transport errors", () => {
   it("maps rejected fetch to status 0 ApiError", async () => {
-    const boom: typeof fetch = () => Promise.reject(new TypeError("offline"));
-    const api = createApiClient({ fetch: boom });
+    const api = createApiClient({ fetch: offlineFetch });
     await expect(api.center()).rejects.toMatchObject({ status: 0 });
   });
 
   it("network failure during place also surfaces as status 0", async () => {
-    const boom: typeof fetch = () => Promise.reject(new Error("x"));
-    const api = createApiClient({ fetch: boom });
+    const api = createApiClient({ fetch: failingFetch });
     await expect(
       api.place({ image: new Blob(), fileName: "a", x: 0, y: 0, size: 16 }),
     ).rejects.toMatchObject({ status: 0 });

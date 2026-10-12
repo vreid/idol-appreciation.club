@@ -1,6 +1,6 @@
 //! Tile pyramid: lazy rendering from chunks, maxSeq staleness, caching.
 
-use crate::error::{AppError, AppResult};
+use crate::error::{internal, AppError, AppResult};
 use crate::img;
 use crate::state::App;
 use crate::world::{
@@ -12,7 +12,6 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use lru::LruCache;
-use sqlx::Row;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Mutex as StdMutex;
@@ -167,35 +166,32 @@ async fn tile_bytes_inner(app: &App, z: i64, x: i64, y: i64) -> AppResult<(Bytes
 }
 
 /// Render + encode the tile from its sources (chunk for z ≥ BASE_Z, the
-/// four child tiles below).
+/// four child tiles below). Pixel work is boxed into spawn_blocking.
 async fn render_tile(app: &App, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
-    let img = if z >= BASE_Z {
+    let bytes = if z >= BASE_Z {
         let (cx, cy) = tile_chunk(z, x, y);
         let key = crate::world::chunk_key(cx, cy);
-        let chunk = match crate::store::get_bytes(&app.store, &key).await? {
-            Some(bytes) => {
-                libvips::VipsImage::new_from_buffer(&bytes, "").map_err(AppError::from)?
-            }
-            None => img::blank_chunk(CHUNK_PX as i32)?,
-        };
+        let chunk = crate::store::get_bytes(&app.store, &key).await?;
         let (ox, oy) = tile_offset_in_chunk(z, x, y);
-        img::tile_from_chunk(&chunk, ox, oy, tile_native_size(z))?
+        let native = tile_native_size(z);
+        tokio::task::spawn_blocking(move || img::render_leaf_tile(chunk, ox, oy, native))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?
     } else {
-        let mut children: [libvips::VipsImage; 4] = core::array::from_fn(|_| {
-            // Placeholder; replaced in the loop below before any use.
-            libvips::ops::black(1, 1).expect("placeholder image")
-        });
-        for (i, (dx, dy)) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)]
-            .into_iter()
-            .enumerate()
-        {
+        let mut children: Vec<Vec<u8>> = Vec::with_capacity(4);
+        for (dx, dy) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)] {
             let (child_bytes, _) = tile_bytes(app, z + 1, 2 * x + dx, 2 * y + dy).await?;
-            children[i] = libvips::VipsImage::new_from_buffer(&child_bytes, "")
-                .map_err(AppError::from)?;
+            children.push(child_bytes.to_vec());
         }
-        img::tile_from_children(&children)?
+        let kids: [Vec<u8>; 4] =
+            children.try_into().map_err(|_| internal("children count"))?;
+        tokio::task::spawn_blocking(move || img::render_parent_tile(&kids))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?
     };
-    Ok(Bytes::from(img::webp_bytes(&img, 80)?))
+    Ok(Bytes::from(bytes))
 }
 
 /// TILE_PX must divide a chunk exactly at BASE_Z for the recursion to line

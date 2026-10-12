@@ -28,8 +28,10 @@ export default defineConfig({
       // `_tiles`; the dangling underscore is the library's name, not ours.
       "no-underscore-dangle": ["error", { allow: ["_tiles"] }],
       // Factory functions build the map and the API client; 50 lines is
-      // unworkable for DI-heavy glue, 120 is still a hard cap.
+      // unworkable for DI-heavy glue, 120 is still a hard cap. Files cap at
+      // 400: these modules are cohesive single-responsibility units.
       "max-lines-per-function": ["error", { max: 120 }],
+      "max-lines": ["error", { max: 400 }],
       // DOM/Leaflet/Svelte event params have no readonly counterparts.
       "typescript/prefer-readonly-parameter-types": "off",
     },

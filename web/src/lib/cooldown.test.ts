@@ -48,7 +48,11 @@ describe("Countdown", () => {
     const ticks: number[] = [];
     const countdown = new Countdown(
       "2026-10-12T12:00:02Z",
-      { onTick: (ms) => ticks.push(ms) },
+      {
+        onTick: (ms) => {
+          ticks.push(ms);
+        },
+      },
       500,
     );
     countdown.start();
@@ -62,7 +66,14 @@ describe("Countdown", () => {
     let expired = 0;
     const countdown = new Countdown(
       "2026-10-12T12:00:01Z",
-      { onTick: (ms) => ticks.push(ms), onExpire: () => expired++ },
+      {
+        onTick: (ms) => {
+          ticks.push(ms);
+        },
+        onExpire: () => {
+          expired++;
+        },
+      },
       500,
     );
     countdown.start();
@@ -74,7 +85,11 @@ describe("Countdown", () => {
 
   it("does nothing for a null deadline", () => {
     const ticks: number[] = [];
-    const countdown = new Countdown(null, { onTick: (ms) => ticks.push(ms) });
+    const countdown = new Countdown(null, {
+      onTick: (ms) => {
+        ticks.push(ms);
+      },
+    });
     countdown.start();
     vi.advanceTimersByTime(5000);
     expect(ticks).toEqual([]);
@@ -85,7 +100,12 @@ describe("Countdown", () => {
     let expired = 0;
     const countdown = new Countdown(
       "2026-10-12T11:59:59Z",
-      { onTick: () => {}, onExpire: () => expired++ },
+      {
+        onTick: () => {},
+        onExpire: () => {
+          expired++;
+        },
+      },
       500,
     );
     countdown.start();
@@ -99,7 +119,11 @@ describe("Countdown", () => {
     const ticks: number[] = [];
     const countdown = new Countdown(
       "2026-10-12T12:10:00Z",
-      { onTick: (ms) => ticks.push(ms) },
+      {
+        onTick: (ms) => {
+          ticks.push(ms);
+        },
+      },
       500,
     );
     countdown.start();

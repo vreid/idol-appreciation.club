@@ -19,7 +19,8 @@ permissions:
   packages: write
 
 env:
-  IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:main
+  BACKEND_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:main
+  WEB_IMAGE: ghcr.io/vreid/idol-appreciation.club-web:main
   CLUSTER: idol-canvas
   INGRESS_NGINX_MANIFEST: https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.13.3/deploy/static/provider/cloud/deploy.yaml
   CERT_MANAGER_MANIFEST: https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
@@ -27,7 +28,7 @@ env:
 jobs:
   backend-checks:
     name: backend cargo gates
-    if: hashFiles('backend/Cargo.toml') != ''
+    if: hashFiles('backend/.ci-ready') != ''
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -40,35 +41,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - name: cargo fmt --check
-        run: cargo fmt --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: cargo test
-        run: cargo test
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
 
   web-checks:
     name: web vp gates
-    if: hashFiles('web/package.json') != ''
+    if: hashFiles('web/.ci-ready') != ''
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
-      - uses: voidzero-dev/setup-vp@v1
-      - name: vp install
-        run: vp install
-      - name: vp check
-        run: vp check
-      - name: vp test
-        run: vp test
+      - uses: voidzero-dev/setup-vp@v1.21.2
+      - run: vp install
+      - run: vp check
+      - run: vp test
 
-  build:
+  backend-build:
     name: build backend image
-    # Owner gate: only once backend/.ci-ready is committed (implies a
-    # working Dockerfile and passing cargo gates).
-    if: hashFiles('backend/.ci-ready') != ''
+    needs: [backend-checks]
+    # Owner gate: backend/.ci-ready implies a working Dockerfile.
+    if: |
+      always() &&
+      hashFiles('backend/.ci-ready') != '' &&
+      !failure() && !cancelled()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,18 +77,48 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
+        id: push
         with:
           context: backend
           platforms: linux/amd64
           push: true
-          tags: ${{ env.IMAGE }}
+          tags: ${{ env.BACKEND_IMAGE }}
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+
+  web-build:
+    name: build web image
+    needs: [web-checks]
+    # Owner gate: web/.ci-ready implies a working web/Dockerfile.
+    if: |
+      always() &&
+      hashFiles('web/.ci-ready') != '' &&
+      !failure() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        id: push
+        with:
+          context: web
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.WEB_IMAGE }}
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
 
   deploy:
     name: deploy to k8s
-    needs: [build]
+    needs: [backend-build, web-build]
     if: ${{ !failure() && !cancelled() }}
-    environment: production
     runs-on: ubuntu-latest
+    environment: production
     env:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -100,7 +128,7 @@ jobs:
       - name: Set up tofu (reads outputs from state)
         uses: ./.github/actions/tofu-setup
 
-      - uses: azure/setup-kubectl@v4
+      - uses: Azure/setup-kubectl@v5.2.0
 
       - name: Fetch kubeconfig from UpCloud
         run: |
@@ -118,9 +146,9 @@ jobs:
       - name: Install / upgrade ingress-nginx
         run: |
           kubectl apply -f "$INGRESS_NGINX_MANIFEST"
-          kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller \
-            --timeout=300s
-          # Essentials tier LoadBalancer (free); annotation drives the UpCloud CCM.
+          kubectl -n ingress-nginx rollout status \
+            deployment/ingress-nginx-controller --timeout=300s
+          # Essentials tier LoadBalancer (free); annotation drives the CCM.
           kubectl -n ingress-nginx patch service ingress-nginx-controller \
             -p '{"metadata":{"annotations":{"service.beta.kubernetes.io/upcloud-load-balancer-config":"{\"plan\":\"essentials\"}"}}}' \
             --type=merge
@@ -129,7 +157,8 @@ jobs:
         run: |
           kubectl apply -f "$CERT_MANAGER_MANIFEST"
           for d in cert-manager cert-manager-webhook cert-manager-cainjector; do
-            kubectl -n cert-manager rollout status "deployment/$d" --timeout=300s
+            kubectl -n cert-manager rollout status "deployment/$d" \
+              --timeout=300s
           done
 
       - name: Settle tofu state (read-backed resources)
@@ -140,11 +169,14 @@ jobs:
         run: |
           kubectl apply -f deploy/00-namespace.yaml
           kubectl apply -f deploy/30-issuer.yaml
-          if [ -n "$(ls backend/.ci-ready 2>/dev/null || true)" ]; then
+          if [ -f backend/.ci-ready ]; then
             kubectl apply -f deploy/10-backend.yaml
+          fi
+          if [ -f web/.ci-ready ]; then
+            kubectl apply -f deploy/15-web.yaml
             kubectl apply -f deploy/20-ingress.yaml
           else
-            echo "backend not .ci-ready: deploying bootstrap placeholder"
+            echo "web not .ci-ready: bootstrap placeholder serves /"
             kubectl apply -f deploy/placeholder.yaml
           fi
 
@@ -161,7 +193,7 @@ jobs:
             sleep 20
           done
           [ -n "$ep" ] && [ "$ep" != "null" ] || {
-            echo "warning: object storage endpoint not available yet; S3_ENDPOINT will be empty"
+            echo "warning: object storage endpoint not available; S3_ENDPOINT empty"
             ep=""
           }
           db="$(tofu output -raw app_database_uri)"
@@ -180,21 +212,35 @@ jobs:
       - name: Sync DNS to LoadBalancer IP
         run: |
           set -euo pipefail
+          ips=""
           for attempt in $(seq 1 30); do
             ips="$(kubectl -n ingress-nginx get svc ingress-nginx-controller \
               -o jsonpath='{.status.loadBalancer.ingress[*].ip}' || true)"
-            test -n "$ips" && break
+            [ -n "$ips" ] && break
             sleep 10
           done
-          test -n "${ips:-}" || { echo "LoadBalancer IP never assigned" >&2; exit 1; }
+          [ -n "$ips" ] || { echo "LoadBalancer IP never assigned" >&2; exit 1; }
           ipv4="$(printf '%s\n' $ips | grep '\.' | head -1 || true)"
           ipv6="$(printf '%s\n' $ips | grep ':' | head -1 || true)"
-          test -n "$ipv4" || { echo "no IPv4 address on LB" >&2; exit 1; }
+          [ -n "$ipv4" ] || { echo "no IPv4 address on LB" >&2; exit 1; }
           ./scripts/sync-dns.sh "$ipv4" $ipv6
 
-      - name: Remove bootstrap placeholder and wait for backend
-        if: hashFiles('backend/.ci-ready') != ''
+      # Tag is mutable (:main), so rollouts are driven by digest pinning:
+      # kubectl set image is a no-op when the digest is unchanged.
+      - name: Roll out backend (if image changed)
+        if: needs.backend-build.outputs.digest != ''
         run: |
-          kubectl delete -f deploy/placeholder.yaml --ignore-not-found=true
-          kubectl -n idol rollout restart deployment/backend
+          kubectl -n idol set image deployment/backend \
+            backend="${BACKEND_IMAGE}@${{ needs.backend-build.outputs.digest }}"
           kubectl -n idol rollout status deployment/backend --timeout=300s
+
+      - name: Roll out web (if image changed)
+        if: needs.web-build.outputs.digest != ''
+        run: |
+          kubectl -n idol set image deployment/web \
+            web="${WEB_IMAGE}@${{ needs.web-build.outputs.digest }}"
+          kubectl -n idol rollout status deployment/web --timeout=300s
+
+      - name: Remove bootstrap placeholder
+        if: hashFiles('web/.ci-ready') != ''
+        run: kubectl delete -f deploy/placeholder.yaml --ignore-not-found=true

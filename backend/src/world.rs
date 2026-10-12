@@ -44,6 +44,9 @@ impl Rect {
     }
 
     /// Open-interior intersection (zero-area touch does not count).
+    /// Geometry contract used by tests and property tests; production
+    /// intersection decisions run in SQL against the GiST bbox index.
+    #[allow(dead_code)]
     pub fn intersects(&self, other: &Rect) -> bool {
         self.x < other.x + other.w
             && other.x < self.x + self.w
@@ -51,7 +54,8 @@ impl Rect {
             && other.y < self.y + self.h
     }
 
-    /// Half-open point containment.
+    /// Half-open point containment. Geometry contract (see intersects).
+    #[allow(dead_code)]
     pub const fn contains(&self, px: i64, py: i64) -> bool {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
@@ -188,9 +192,19 @@ mod tests {
             Rect::new(1023, 1023, 2, 2).chunk_keys(),
             vec![(0, 0), (1, 0), (0, 1), (1, 1)]
         );
-        // A 2048-px placement touches 2x2 chunks.
+        // A 2048-px placement at 500 spans px 500..=2547 → 3x3 chunks.
+        assert_eq!(Rect::new(500, 500, 2048, 2048).chunk_keys().len(), 9);
         assert_eq!(
             Rect::new(500, 500, 2048, 2048).chunk_keys(),
+            vec![
+                (0, 0), (1, 0), (2, 0),
+                (0, 1), (1, 1), (2, 1),
+                (0, 2), (1, 2), (2, 2),
+            ]
+        );
+        // Aligned 2048-px placement spans exactly 2x2.
+        assert_eq!(
+            Rect::new(0, 0, 2048, 2048).chunk_keys(),
             vec![(0, 0), (1, 0), (0, 1), (1, 1)]
         );
         // Max placement at world edge.
@@ -247,5 +261,130 @@ mod tests {
         assert_eq!(derive_w_h(1, 1000, 16), (1, 16)); // clamped to >=1
         assert_eq!(derive_w_h(1000, 1, 16), (16, 1));
         assert_eq!(derive_w_h(7, 7, 2048), (2048, 2048));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn tile_at_native(z: i64, px: i64, py: i64) -> (i64, i64) {
+    let size = tile_native_size(z);
+    (px / size, py / size)
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn tile_native_roundtrip_all_zooms(
+            z in 0i64..=20,
+            x in 0u32..(1u32 << 11),
+            y in 0u32..(1u32 << 11),
+            fx in 0u32..256,
+            fy in 0u32..256,
+        ) {
+            let n = 1i64 << z;
+            let (x, y) = (i64::from(x) % n, i64::from(y) % n);
+            let bounds = tile_bounds(z, x, y);
+            // In-world.
+            prop_assert!(bounds.x >= 0 && bounds.y >= 0);
+            prop_assert!(bounds.x + bounds.w <= WORLD_PX);
+            prop_assert!(bounds.y + bounds.h <= WORLD_PX);
+            // Sample points inside the tile round-trip back to (x, y).
+            let px = bounds.x + i64::from(fx) * bounds.w / 256;
+            let py = bounds.y + i64::from(fy) * bounds.h / 256;
+            prop_assert_eq!(tile_at_native(z, px, py), (x, y));
+            // Bottom-right edge (exclusive) belongs to the next tile.
+            prop_assert_ne!(tile_at_native(z, bounds.x + bounds.w, bounds.y), (x, y));
+        }
+
+        #[test]
+        fn boundary_tiles_valid_at_every_zoom(z in 0i64..=20) {
+            let n = 1i64 << z;
+            prop_assert!(is_valid_tile(z, 0, 0));
+            prop_assert!(is_valid_tile(z, n - 1, n - 1));
+            prop_assert!(!is_valid_tile(z, n, 0));
+            prop_assert!(!is_valid_tile(z, 0, n));
+            let last = tile_bounds(z, n - 1, n - 1);
+            prop_assert_eq!(last.x + last.w, WORLD_PX);
+            prop_assert_eq!(last.y + last.h, WORLD_PX);
+        }
+
+        #[test]
+        fn invalid_tile_rejection(z in -2i64..=22, x in -2i64..=(1i64 << 21), y in -2i64..=(1i64 << 21)) {
+            let expected = z >= 0 && z <= 20 && x >= 0 && x < (1i64 << z) && y >= 0 && y < (1i64 << z);
+            prop_assert_eq!(is_valid_tile(z, x, y), expected);
+        }
+
+        #[test]
+        fn chunk_keys_cover_rect_exactly(
+            x in 0i64..WORLD_PX,
+            y in 0i64..WORLD_PX,
+            w in 1i64..=2048i64,
+            h in 1i64..=2048i64,
+        ) {
+            let rect = Rect::new(x, y, w, h);
+            let keys = rect.chunk_keys();
+            // Exact expected count from 1024-boundary arithmetic.
+            let (x0, x1) = rect.chunk_x_range();
+            let (y0, y1) = rect.chunk_y_range();
+            prop_assert_eq!(keys.len(), ((x1 - x0 + 1) * (y1 - y0 + 1)) as usize);
+            // Each listed chunk actually intersects the rect; every chunk
+            // containing the rect's corners is listed.
+            for (cx, cy) in &keys {
+                let c = Rect::new(cx * CHUNK_PX, cy * CHUNK_PX, CHUNK_PX, CHUNK_PX);
+                prop_assert!(rect.intersects(&c));
+            }
+            prop_assert_eq!(*keys.first().unwrap(), (x0, y0));
+            prop_assert_eq!(*keys.last().unwrap(), (x1, y1));
+            // Sample points across the rect land in the listed chunks.
+            let px = x + w / 2;
+            let py = y + h / 2;
+            prop_assert!(keys.contains(&(px / CHUNK_PX, py / CHUNK_PX)));
+        }
+
+        #[test]
+        fn derive_w_h_properties(
+            sw in 1i64..=10000,
+            sh in 1i64..=10000,
+            l in 16i64..=2048,
+        ) {
+            let (w, h) = derive_w_h(sw, sh, l);
+            prop_assert!(w >= 1 && h >= 1);
+            if sw >= sh {
+                prop_assert_eq!(w, l);
+                prop_assert!(h <= l);
+            } else {
+                prop_assert_eq!(h, l);
+                prop_assert!(w <= l);
+            }
+            prop_assert_eq!(max_component(w, h), l);
+        }
+
+        #[test]
+        fn intersection_matches_closed_box_overlap(
+            ax in 0i64..500, ay in 0i64..500,
+            aw in 1i64..100, ah in 1i64..100,
+            bx in -5i64..550, by in -5i64..550,
+            bw in 1i64..100, bh in 1i64..100,
+        ) {
+            let a = Rect::new(ax, ay, aw, ah);
+            let b = Rect::new(bx, by, bw, bh);
+            let open = a.x < b.x + b.w && b.x < a.x + a.w
+                && a.y < b.y + b.h && b.y < a.y + a.h;
+            prop_assert_eq!(a.intersects(&b), open);
+            // Zero-area overlap never counts.
+            if a.x + a.w == b.x || b.x + b.w == a.x
+                || a.y + a.h == b.y || b.y + b.h == a.y {
+                let touching = (a.x + a.w == b.x || b.x + b.w == a.x)
+                    && !(a.y < b.y + b.h && b.y < a.y + a.h && a.x < b.x + b.w && b.x < a.x + a.w);
+                if touching { prop_assert!(!a.intersects(&b)); }
+            }
+        }
+    }
+
+    fn max_component(w: i64, h: i64) -> i64 {
+        if w > h { w } else { h }
     }
 }

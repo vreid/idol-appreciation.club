@@ -4,6 +4,8 @@
  * stub it; the app injects globalThis.fetch.
  */
 
+import { isRecord } from "./guards";
+
 export interface Me {
   id: number;
   username: string;
@@ -117,7 +119,7 @@ function messageOf(body: unknown, status: number): string {
 }
 
 function expectObject(body: unknown): Record<string, unknown> {
-  if (typeof body !== "object" || body === null) {
+  if (!isRecord(body)) {
     throw new ApiError(0, "unexpected response body");
   }
   return body;
@@ -161,6 +163,82 @@ interface RequestOptions {
   json?: boolean;
 }
 
+function placementOf(body: unknown): PlacedPlacement {
+  const obj = expectObject(body);
+  return {
+    id: num(obj, "id"),
+    x: num(obj, "x"),
+    y: num(obj, "y"),
+    w: num(obj, "w"),
+    h: num(obj, "h"),
+    seq: num(obj, "seq"),
+  };
+}
+
+function placementFields(obj: Record<string, unknown>): Placement {
+  return {
+    id: num(obj, "id"),
+    username: str(obj, "username"),
+    x: num(obj, "x"),
+    y: num(obj, "y"),
+    w: num(obj, "w"),
+    h: num(obj, "h"),
+    created_at: str(obj, "created_at"),
+  };
+}
+
+function meOf(body: unknown): Me {
+  const obj = expectObject(body);
+  return {
+    id: num(obj, "id"),
+    username: str(obj, "username"),
+    is_admin: bool(obj, "is_admin"),
+    cooldown_until: nullableStr(obj, "cooldown_until"),
+  };
+}
+
+function placementsNearOf(body: unknown): Placement[] {
+  if (!Array.isArray(body)) {
+    throw new ApiError(0, "expected an array of placements");
+  }
+  return body.map((raw) => placementFields(expectObject(raw)));
+}
+
+function centerOf(body: unknown): CenterInfo {
+  const obj = expectObject(body);
+  const rawCurrent = obj["current"];
+  let current: CenterHolder | null = null;
+  if (rawCurrent !== null && rawCurrent !== undefined) {
+    const cur = expectObject(rawCurrent);
+    const placement = expectObject(cur["placement"]);
+    current = {
+      username: str(cur, "username"),
+      since: str(cur, "since"),
+      placement: {
+        id: num(placement, "id"),
+        x: num(placement, "x"),
+        y: num(placement, "y"),
+        w: num(placement, "w"),
+        h: num(placement, "h"),
+      },
+    };
+  }
+  const rawAllTime = obj["all_time"];
+  if (!Array.isArray(rawAllTime)) {
+    throw new ApiError(0, 'missing "all_time" array');
+  }
+  return {
+    current,
+    all_time: rawAllTime.map((raw) => {
+      const entry = expectObject(raw);
+      return {
+        username: str(entry, "username"),
+        seconds: num(entry, "seconds"),
+      };
+    }),
+  };
+}
+
 export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
   const doFetch = deps.fetch ?? fetch;
 
@@ -168,16 +246,19 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
     url: string,
     options: RequestOptions = {},
   ): Promise<unknown> {
+    const init: RequestInit = {
+      method: options.method ?? "GET",
+      credentials: "same-origin",
+    };
+    if (options.json === true) {
+      init.headers = { "Content-Type": "application/json" };
+    }
+    if (options.body !== undefined) {
+      init.body = options.body;
+    }
     let response: Response;
     try {
-      response = await doFetch(url, {
-        method: options.method ?? "GET",
-        credentials: "same-origin",
-        headers: options.json
-          ? { "Content-Type": "application/json" }
-          : undefined,
-        body: options.body,
-      });
+      response = await doFetch(url, init);
     } catch (cause) {
       throw new ApiError(0, `network error: ${String(cause)}`);
     }
@@ -200,33 +281,15 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
     });
   }
 
-  function placementOf(body: unknown): PlacedPlacement {
-    const obj = expectObject(body);
-    return {
-      id: num(obj, "id"),
-      x: num(obj, "x"),
-      y: num(obj, "y"),
-      w: num(obj, "w"),
-      h: num(obj, "h"),
-      seq: num(obj, "seq"),
-    };
-  }
-
   return {
     register: (username, password) =>
       postJson("/api/auth/register", { username, password }),
     login: (username, password) =>
       postJson("/api/auth/login", { username, password }),
-    logout: async () => postJson("/api/auth/logout", {}),
+    logout: () => postJson("/api/auth/logout", {}),
     me: async () => {
       try {
-        const obj = expectObject(await request("/api/auth/me"));
-        return {
-          id: num(obj, "id"),
-          username: str(obj, "username"),
-          is_admin: bool(obj, "is_admin"),
-          cooldown_until: nullableStr(obj, "cooldown_until"),
-        };
+        return meOf(await request("/api/auth/me"));
       } catch (cause) {
         if (cause instanceof ApiError && [401, 403].includes(cause.status)) {
           return null;
@@ -240,7 +303,9 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       form.append("x", String(req.x));
       form.append("y", String(req.y));
       form.append("size", String(req.size));
-      return placementOf(await request("/api/place", form));
+      return placementOf(
+        await request("/api/place", { method: "POST", body: form }),
+      );
     },
     near: async (x, y, r) => {
       const query = new URLSearchParams({
@@ -248,61 +313,15 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         y: String(y),
         r: String(r),
       });
-      const body = await request(`/api/placements/near?${query}`);
-      if (!Array.isArray(body)) {
-        throw new ApiError(0, "expected an array of placements");
-      }
-      return body.map((raw) => {
-        const obj = expectObject(raw);
-        return {
-          id: num(obj, "id"),
-          username: str(obj, "username"),
-          x: num(obj, "x"),
-          y: num(obj, "y"),
-          w: num(obj, "w"),
-          h: num(obj, "h"),
-          created_at: str(obj, "created_at"),
-        };
-      });
+      return placementsNearOf(await request(`/api/placements/near?${query}`));
     },
-    center: async () => {
-      const obj = expectObject(await request("/api/center"));
-      const rawCurrent = obj["current"];
-      let current: CenterHolder | null = null;
-      if (rawCurrent !== null && rawCurrent !== undefined) {
-        const cur = expectObject(rawCurrent);
-        const placement = expectObject(cur["placement"]);
-        current = {
-          username: str(cur, "username"),
-          since: str(cur, "since"),
-          placement: {
-            id: num(placement, "id"),
-            x: num(placement, "x"),
-            y: num(placement, "y"),
-            w: num(placement, "w"),
-            h: num(placement, "h"),
-          },
-        };
-      }
-      const rawAllTime = obj["all_time"];
-      if (!Array.isArray(rawAllTime)) {
-        throw new ApiError(0, 'missing "all_time" array');
-      }
-      return {
-        current,
-        all_time: rawAllTime.map((raw) => {
-          const entry = expectObject(raw);
-          return {
-            username: str(entry, "username"),
-            seconds: num(entry, "seconds"),
-          };
-        }),
-      };
-    },
-    report: async (placementId) =>
+    center: async () => centerOf(await request("/api/center")),
+    report: (placementId) =>
       postJson("/api/reports", { placement_id: placementId }),
     removePlacement: async (placementId) => {
-      await request(`/api/admin/placements/${placementId}`);
+      await request(`/api/admin/placements/${placementId}`, {
+        method: "DELETE",
+      });
     },
   };
 }

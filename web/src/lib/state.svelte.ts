@@ -93,6 +93,18 @@ const TOAST_MS = 4000;
 const ERROR_TOAST_MS = 6000;
 const MAX_UPLOAD_MB = Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024);
 
+function isAuthStatus(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 401 || err.status === 403);
+}
+
+function describeApiError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (isAuthStatus(err)) return "You need to be logged in for that";
+    return err.message;
+  }
+  return "Something went wrong, please retry";
+}
+
 export function createAppStore(
   client: ApiClient,
   deps: AppStoreDeps = {},
@@ -100,7 +112,10 @@ export function createAppStore(
   const createObjectUrl =
     deps.createObjectUrl ?? ((blob: Blob) => URL.createObjectURL(blob));
   const revokeObjectUrl =
-    deps.revokeObjectUrl ?? ((url: string) => URL.revokeObjectURL(url));
+    deps.revokeObjectUrl ??
+    ((url: string) => {
+      URL.revokeObjectURL(url);
+    });
   const toastMs = deps.toastMs ?? TOAST_MS;
   const errorToastMs = deps.errorToastMs ?? ERROR_TOAST_MS;
 
@@ -120,27 +135,15 @@ export function createAppStore(
     const id = nextToastId++;
     toasts.push({ id, kind, message });
     setTimeout(
-      () => dismissToast(id),
+      () => {
+        dismissToast(id);
+      },
       kind === "error" ? errorToastMs : toastMs,
     );
   }
 
   function dismissToast(id: number): void {
     toasts = toasts.filter((toast) => toast.id !== id);
-  }
-
-  function isAuthStatus(err: unknown): boolean {
-    return (
-      err instanceof ApiError && (err.status === 401 || err.status === 403)
-    );
-  }
-
-  function describeApiError(err: unknown): string {
-    if (err instanceof ApiError) {
-      if (isAuthStatus(err)) return "You need to be logged in for that";
-      return err.message;
-    }
-    return "Something went wrong, please retry";
   }
 
   function requireAuth(): boolean {
@@ -239,7 +242,9 @@ export function createAppStore(
 
     dismissToast,
 
-    notify: (message: string) => pushToast("info", message),
+    notify: (message: string) => {
+      pushToast("info", message);
+    },
 
     refreshMe: doRefreshMe,
     refreshCenter: doRefreshCenter,
@@ -324,9 +329,9 @@ export function createAppStore(
       } catch (err) {
         if (err instanceof ApiError && err.status === 429) {
           const wait =
-            err.retryAfterSeconds !== null
-              ? ` Try again in ${err.retryAfterSeconds}s.`
-              : "";
+            err.retryAfterSeconds === null
+              ? ""
+              : ` Try again in ${err.retryAfterSeconds}s.`;
           pushToast("error", `Cooldown active.${wait}`);
         } else if (isAuthStatus(err)) {
           requireAuth();

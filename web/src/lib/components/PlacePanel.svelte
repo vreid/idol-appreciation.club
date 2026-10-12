@@ -2,6 +2,8 @@
   import type { AppStore } from "../state.svelte";
 
   let { store }: { store: AppStore } = $props();
+
+  const ghost = $derived(store.ghostSize());
 </script>
 
 {#if store.placeMode !== "idle"}
@@ -23,11 +25,10 @@
       />
       <label class="place-slider">
         <span>
-          {@const size = store.ghostSize()}
           Long edge
           <b>{store.longEdge}px</b>
           →
-          {size.w}×{size.h}px
+          {ghost.w}×{ghost.h}px
         </span>
         <input
           type="range"

@@ -10,15 +10,18 @@ export function cooldownRemainingMs(
   return Math.max(0, until - nowMs);
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
 /** "1:05" under an hour, "1:02:03" above. */
 export function formatCountdown(ms: number): string {
   const totalSeconds = Math.ceil(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  if (hours > 0) return `${hours}:${pad(minutes)}:${pad(seconds)}`;
-  return `${minutes}:${pad(seconds)}`;
+  if (hours > 0) return `${hours}:${pad2(minutes)}:${pad2(seconds)}`;
+  return `${minutes}:${pad2(seconds)}`;
 }
 
 export interface CountdownCallbacks {
@@ -45,7 +48,9 @@ export class Countdown {
     this.expiredNotified = false;
     if (this.cooldownUntil === null) return;
     this.tick();
-    this.intervalId = setInterval(() => this.tick(), this.intervalMs);
+    this.intervalId = setInterval(() => {
+      this.tick();
+    }, this.intervalMs);
   }
 
   stop(): void {

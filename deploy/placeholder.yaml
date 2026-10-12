@@ -11,10 +11,21 @@ data:
   index.html: |
     <!doctype html>
     <html lang="en">
-      <head><meta charset="utf-8"><title>idol-appreciation.club</title></head>
-      <body style="font-family: system-ui; max-width: 40rem; margin: 4rem auto">
+      <head>
+        <meta charset="utf-8">
+        <meta http-equiv="refresh" content="30">
+        <title>idol-appreciation.club</title>
+      </head>
+      <body style="font-family: system-ui; max-width: 40rem;
+                   margin: 4rem auto">
         <h1>idol-appreciation.club</h1>
-        <p>bootstrapping&hellip; the canvas arrives soon.</p>
+        <p>bootstrapping&hellip; the canvas arrives soon.
+           (page refreshes every 30s)</p>
+        <p id="stamp">last deployed: 2026-10-12T17:59:24Z (UTC)</p>
+        <script>
+          document.getElementById('stamp').textContent =
+            'last deployed: ' + new Date().toISOString() + ' (UTC)';
+        </script>
       </body>
     </html>
 ---

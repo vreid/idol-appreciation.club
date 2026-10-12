@@ -6,7 +6,7 @@ import {
   it,
   vi,
 } from "vite-plus/test";
-import { ApiError, type ApiClient } from "./api";
+import { ApiError, type ApiClient, type PlaceRequest } from "./api";
 import { DEFAULT_LONG_EDGE } from "./sizing";
 import { createAppStore } from "./state.svelte";
 
@@ -23,7 +23,7 @@ function makeClient(
     login: vi.fn(() => Promise.resolve()),
     logout: vi.fn(() => Promise.resolve()),
     me: vi.fn(() => Promise.resolve(null)),
-    place: vi.fn((req) => {
+    place: vi.fn((req: PlaceRequest) => {
       placeCalls.push({ x: req.x, y: req.y, size: req.size });
       return Promise.resolve({
         id: 1,
@@ -48,7 +48,9 @@ function makeStore(client: ApiClient = makeClient()) {
   const revoked: string[] = [];
   const store = createAppStore(client, {
     createObjectUrl: () => `blob:fake-${++urls}`,
-    revokeObjectUrl: (url) => revoked.push(url),
+    revokeObjectUrl: (url) => {
+      revoked.push(url);
+    },
   });
   return { store, revoked };
 }

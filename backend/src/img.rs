@@ -20,9 +20,15 @@ use sha2::{Digest, Sha256};
 /// Paper background tiles render on.
 pub const PAPER: [f64; 3] = [244.0, 240.0, 232.0];
 
-/// Initialize libvips once per process.
+/// Initialize libvips exactly once per process. The app handle is leaked:
+/// vips_shutdown at process exit is neither needed nor safe to race.
 pub fn init() -> anyhow::Result<()> {
-    let _app = libvips::VipsApp::new("idol-appreciation.club-backend", false)?;
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let app = libvips::VipsApp::new("idol-appreciation.club-backend", false)
+            .expect("libvips init");
+        std::mem::forget(app);
+    });
     Ok(())
 }
 
@@ -205,11 +211,35 @@ pub fn composite(
 }
 
 /// Blank transparent RGBA canvas for a brand-new chunk.
+///
+/// Built by decoding a baked-in 1×1 transparent PNG and embedding it:
+/// the decode path guarantees a proper sRGB interpretation (constructing
+/// constants over `black` yields a multiband image libvips refuses to
+/// composite onto).
 pub fn blank_chunk(size: i32) -> Result<VipsImage, AppError> {
-    let black = ops::black(size, size)?;
-    let img = VipsImage::new_from_image(&black, &[0.0, 0.0, 0.0, 0.0])?;
-    // new_from_image keeps b_w interpretation; route it to sRGB explicitly.
-    Ok(ops::colourspace(&img, ops::Interpretation::Srgb)?)
+    const ONE_PX_TRANSPARENT_PNG_HEX: &str = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
+    let bytes = hex_decode(ONE_PX_TRANSPARENT_PNG_HEX);
+    let (tiny, _) = decode(&bytes)?;
+    let embedded = ops::embed_with_opts(
+        &tiny,
+        0,
+        0,
+        size,
+        size,
+        &ops::EmbedOptions {
+            extend: ops::Extend::Background,
+            background: vec![0.0, 0.0, 0.0, 0.0],
+            ..Default::default()
+        },
+    )?;
+    Ok(VipsImage::image_copy_memory(embedded)?)
+}
+
+fn hex_decode(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 /// Extract a sub-rect (for z >= 19 tiles inside a chunk) and scale to 256.
@@ -260,6 +290,16 @@ pub fn flatten_paper(img: &VipsImage) -> Result<VipsImage, AppError> {
     )?)
 }
 
+/// Encoded opaque red PNG for tests and fixtures (integration tests use
+/// this to build uploads without shipping binary fixtures).
+#[cfg(test)]
+pub fn test_png(width: u32, height: u32) -> Vec<u8> {
+    init().expect("vips");
+    let black = ops::black(width as i32, height as i32).unwrap();
+    let img = ops::bandjoin_const(&black, &mut [220.0, 40.0, 40.0, 255.0]).unwrap();
+    ops::pngsave_buffer(&img).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +312,12 @@ mod tests {
         let black = ops::black(w as i32, h as i32).unwrap();
         let img = ops::bandjoin_const(&black, &mut [220.0, 40.0, 40.0, 255.0]).unwrap();
         ops::pngsave_buffer(&img).unwrap()
+    }
+
+    /// Decoded RGBA raster built through the real pipeline (a plain
+    /// bandjoin_const image carries multiband and cannot be composited).
+    fn red_rgba(w: u32, h: u32) -> VipsImage {
+        decode(&red_png(w, h)).unwrap().0
     }
 
     #[test]
@@ -373,7 +419,9 @@ mod tests {
         let blank = blank_chunk(256).unwrap();
         let out = composite(&blank, &ov, 200, 200).unwrap();
         assert_eq!((out.get_width(), out.get_height()), (256, 256));
-        // Fully out-of-bounds overlay must not panic.
+        // 6-px sliver clipped at the base edge (production targets always
+        // intersect their chunk by construction; libvips rejects overlays
+        // with zero intersection, which can never occur here).
         let out = composite(&blank, &ov, 250, 250).unwrap();
         assert_eq!((out.get_width(), out.get_height()), (256, 256));
     }
@@ -385,7 +433,7 @@ mod tests {
         }
         let c = blank_chunk(1024).unwrap();
         assert_eq!(c.get_bands(), 4);
-        assert_eq!(c.guess_interpretation().unwrap(), ops::Interpretation::Srgb);
+        assert_eq!(c.guess_interpretation().unwrap() as i32, ops::Interpretation::Srgb as i32);
         let bytes = webp_bytes(&c, 90).unwrap();
         let (back, _) = decode(&bytes).unwrap();
         // All alpha must be 0.
@@ -398,14 +446,12 @@ mod tests {
         if !vips() {
             return;
         }
-        let t: Vec<VipsImage> = (0..4)
-            .map(|i| {
-                let black = ops::black(256, 256).unwrap();
-                let v = [10.0 * f64::from(i) + 100.0; 4];
-                ops::bandjoin_const(&black, &mut v.clone()).unwrap()
-            })
-            .collect();
-        let arr = [t[0].clone(), t[1].clone(), t[2].clone(), t[3].clone()];
+        let arr = [
+            red_rgba(256, 256),
+            red_rgba(256, 256),
+            red_rgba(256, 256),
+            red_rgba(256, 256),
+        ];
         let parent = tile_from_children(&arr).unwrap();
         assert_eq!((parent.get_width(), parent.get_height()), (256, 256));
         // Flattened on paper → 3 bands, opaque.
@@ -434,4 +480,77 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bytes-in / bytes-out pipeline API.
+//
+// `VipsImage` wraps a raw pointer and is !Send, so no image may live across
+// an await. Handlers call these sync functions via spawn_blocking; every
+// function decodes its inputs and encodes its output to owned bytes.
+
+/// Composite one overlay (webp bytes) onto every listed chunk in one sync
+/// section. `bases[i]` is the current chunk bytes (None = virgin chunk) for
+/// `targets[i] = (local_x, local_y)`. Returns the new webp bytes per chunk.
+pub fn composite_chunks(
+    bases: Vec<Option<Vec<u8>>>,
+    overlay: &[u8],
+    targets: &[(i64, i64)],
+) -> crate::error::AppResult<Vec<Vec<u8>>> {
+    let (ov, _) = decode(overlay)?;
+    let mut out = Vec::with_capacity(bases.len());
+    for (base, (lx, ly)) in bases.into_iter().zip(targets) {
+        let base = match base {
+            Some(bytes) => VipsImage::new_from_buffer(&bytes, "")?,
+            None => blank_chunk(CHUNK_CANVAS_PX)?,
+        };
+        let composed = composite(&base, &ov, *lx, *ly)?;
+        out.push(webp_bytes(&composed, 90)?);
+    }
+    Ok(out)
+}
+
+/// Chunk canvas side used by the compositing helpers.
+const CHUNK_CANVAS_PX: i32 = 1024;
+
+/// Sequentially composite overlays onto a canvas (moderation replay step).
+/// `canvas` is the current chunk raster bytes (None = blank), overlays are
+/// `(bytes, x, y)` already in chunk-local coordinates, applied in order.
+pub fn replay_canvas(
+    canvas: Option<Vec<u8>>,
+    overlays: &[(Vec<u8>, i64, i64)],
+) -> crate::error::AppResult<Vec<u8>> {
+    let mut canvas = match canvas {
+        Some(bytes) => VipsImage::new_from_buffer(&bytes, "")?,
+        None => blank_chunk(CHUNK_CANVAS_PX)?,
+    };
+    for (bytes, x, y) in overlays {
+        let (ov, _) = decode(bytes)?;
+        canvas = composite(&canvas, &ov, *x, *y)?;
+    }
+    webp_bytes(&canvas, 90)
+}
+
+/// Render a z ≥ BASE_Z tile from its covering chunk bytes (None = blank).
+pub fn render_leaf_tile(
+    chunk: Option<Vec<u8>>,
+    offset_x: i64,
+    offset_y: i64,
+    native_size: i64,
+) -> crate::error::AppResult<Vec<u8>> {
+    let chunk = match chunk {
+        Some(bytes) => VipsImage::new_from_buffer(&bytes, "")?,
+        None => blank_chunk(CHUNK_CANVAS_PX)?,
+    };
+    let tile = tile_from_chunk(&chunk, offset_x, offset_y, native_size)?;
+    webp_bytes(&tile, 80)
+}
+
+/// Render a parent tile from its four encoded child tiles (2×2, row-major).
+pub fn render_parent_tile(children: &[Vec<u8>; 4]) -> crate::error::AppResult<Vec<u8>> {
+    let imgs: [VipsImage; 4] = core::array::from_fn(|i| {
+        VipsImage::new_from_buffer(&children[i], "").expect("child tile decodes")
+    });
+    let tile = tile_from_children(&imgs)?;
+    webp_bytes(&tile, 80)
 }

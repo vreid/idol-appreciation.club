@@ -19,31 +19,20 @@ class FakeEventSource implements EventSourceLike {
   readyState = 0;
   closed = false;
 
-  private openListeners: (() => void)[] = [];
-  private messageListeners: ((event: { data: string }) => void)[] = [];
-  private errorListeners: (() => void)[] = [];
+  private listeners: {
+    type: "open" | "message" | "error";
+    fn: (event: { data: string }) => void;
+  }[] = [];
 
   constructor(public readonly url: string) {
     FakeEventSource.instances.push(this);
   }
 
-  addEventListener(type: "open", listener: () => void): void;
-  addEventListener(
-    type: "message",
-    listener: (event: { data: string }) => void,
-  ): void;
-  addEventListener(type: "error", listener: () => void): void;
   addEventListener(
     type: "open" | "message" | "error",
-    listener: (event?: { data: string }) => void,
+    listener: (event: { data: string }) => void,
   ): void {
-    if (type === "open") {
-      this.openListeners.push(listener);
-    } else if (type === "message") {
-      this.messageListeners.push(listener);
-    } else {
-      this.errorListeners.push(listener);
-    }
+    this.listeners.push({ type, fn: listener });
   }
 
   close(): void {
@@ -51,16 +40,22 @@ class FakeEventSource implements EventSourceLike {
   }
 
   emitOpen(): void {
-    for (const listener of this.openListeners) listener();
+    for (const { type, fn } of this.listeners) {
+      if (type === "open") fn({ data: "" });
+    }
   }
 
   emitMessage(data: string): void {
-    for (const listener of this.messageListeners) listener({ data });
+    for (const { type, fn } of this.listeners) {
+      if (type === "message") fn({ data });
+    }
   }
 
   fail(closed: boolean): void {
     this.readyState = closed ? 2 : 1;
-    for (const listener of this.errorListeners) listener();
+    for (const { type, fn } of this.listeners) {
+      if (type === "error") fn({ data: "" });
+    }
   }
 }
 
@@ -135,7 +130,9 @@ describe("SseClient", () => {
   it("delivers parsed events to the handler and drops garbage", () => {
     const seen: unknown[] = [];
     const client = new SseClient({
-      onEvent: (e) => seen.push(e),
+      onEvent: (e) => {
+        seen.push(e);
+      },
       sourceFactory: factory(),
     });
     client.start();

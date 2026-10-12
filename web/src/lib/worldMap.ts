@@ -14,6 +14,7 @@ import {
   type BBox,
 } from "./world";
 import { timeAgo } from "./format";
+import { isRecord } from "./guards";
 
 /** Bounds of the native world expressed in CRS.Simple lat/lng space. */
 const WORLD_LAT_LNG_BOUNDS = L.latLngBounds([-1, 0], [0, 1]);
@@ -58,33 +59,25 @@ export interface WorldMapController {
   destroy(): void;
 }
 
-interface LeafletTileRecord {
-  el?: unknown;
-}
-
-function isTileIndex(
-  value: unknown,
-): value is Record<string, LeafletTileRecord> {
-  return typeof value === "object" && value !== null;
-}
-
 function tileImageOf(
-  tiles: Record<string, LeafletTileRecord>,
+  tiles: Record<string, unknown>,
   key: string,
 ): HTMLImageElement | null {
-  const record = tiles[key];
-  if (record === undefined) return null;
+  const record: unknown = tiles[key];
+  if (!isRecord(record)) return null;
   const el = record["el"];
   return el instanceof HTMLImageElement ? el : null;
 }
 
 /** Refetch every rendered tile intersecting the bbox (ETag/no-cache tiles). */
 function invalidateTiles(tileLayer: L.TileLayer, bbox: BBox): void {
-  // Leaflet keeps rendered tiles in the undocumented `_tiles` index keyed
-  // "z:x:y"; narrowed with `in` because the shape is a library internal.
-  if (!("_tiles" in tileLayer)) return;
-  const tiles: unknown = tileLayer._tiles;
-  if (!isTileIndex(tiles)) return;
+  // Leaflet keeps rendered tiles in the undocumented, protected `_tiles`
+  // index keyed "z:x:y". Read it through a widened alias — the shape is
+  // re-validated before use because the library does not publish it.
+  const internal: object = tileLayer;
+  if (!("_tiles" in internal)) return;
+  const tiles: unknown = internal["_tiles"];
+  if (!isRecord(tiles)) return;
   for (const key of tilesIntersecting(Object.keys(tiles), bbox)) {
     const el = tileImageOf(tiles, key);
     const tile = parseTileKey(key);
@@ -100,7 +93,7 @@ function addPulseRect(map: L.Map, bbox: BBox): void {
       worldToLatLng(bbox.x, bbox.y),
       worldToLatLng(bbox.x + bbox.w, bbox.y + bbox.h),
     ),
-    { className: "pulse-rect", interactive: false, keyboard: false },
+    { className: "pulse-rect", interactive: false },
   ).addTo(map);
   setTimeout(() => {
     map.removeLayer(rect);
@@ -113,7 +106,7 @@ function bboxRectangle(map: L.Map, bbox: BBox, className: string): L.Rectangle {
       worldToLatLng(bbox.x, bbox.y),
       worldToLatLng(bbox.x + bbox.w, bbox.y + bbox.h),
     ),
-    { className, interactive: false, keyboard: false },
+    { className, interactive: false },
   ).addTo(map);
 }
 
@@ -202,10 +195,49 @@ function setGhostImage(
   positionGhost(map, ghost);
 }
 
+interface MapInternals {
+  map: L.Map;
+  tileLayer: L.TileLayer;
+  ghost: GhostState;
+  callbacks: MapCallbacks;
+  highlight: { current: L.Rectangle | null };
+}
+
+function wireMapEvents(internal: MapInternals): void {
+  const { map, ghost, callbacks, highlight } = internal;
+  map.on("click", (event: L.LeafletMouseEvent) => {
+    const world = latLngToWorld(event.latlng.lat, event.latlng.lng);
+    callbacks.onMapClick(world.x, world.y);
+  });
+  map.on("mousemove", (event: L.LeafletMouseEvent) => {
+    ghost.pointer = event.containerPoint;
+    positionGhost(map, ghost);
+  });
+  map.on("move", () => {
+    positionGhost(map, ghost);
+  });
+  map.on("movestart", () => {
+    ghost.moving = true;
+  });
+  map.on("moveend", () => {
+    ghost.moving = false;
+    positionGhost(map, ghost);
+  });
+  map.on("popupclose", () => {
+    if (highlight.current !== null) {
+      map.removeLayer(highlight.current);
+      highlight.current = null;
+    }
+  });
+}
+
 export function createWorldMap(
   container: HTMLElement,
   callbacks: MapCallbacks,
 ): WorldMapController {
+  // L.map is Leaflet's map factory, not Array.prototype.map — the
+  // no-array-callback-reference heuristic false-positives here.
+  // eslint-disable-next-line unicorn/no-array-callback-reference
   const map = L.map(container, {
     crs: L.CRS.Simple,
     minZoom: MIN_ZOOM,
@@ -237,38 +269,15 @@ export function createWorldMap(
 
   map.setView(worldToLatLng(WORLD_CENTER, WORLD_CENTER), 16);
 
-  const ghost: GhostState = {
-    el: null,
-    native: { w: 0, h: 0 },
-    pointer: null,
-    moving: false,
+  const internal: MapInternals = {
+    map,
+    tileLayer,
+    callbacks,
+    ghost: { el: null, native: { w: 0, h: 0 }, pointer: null, moving: false },
+    highlight: { current: null },
   };
-  let highlight: L.Rectangle | null = null;
-
-  map.on("click", (event: L.LeafletMouseEvent) => {
-    const world = latLngToWorld(event.latlng.lat, event.latlng.lng);
-    callbacks.onMapClick(world.x, world.y);
-  });
-  map.on("mousemove", (event: L.LeafletMouseEvent) => {
-    ghost.pointer = event.containerPoint;
-    positionGhost(map, ghost);
-  });
-  map.on("move", () => {
-    positionGhost(map, ghost);
-  });
-  map.on("movestart", () => {
-    ghost.moving = true;
-  });
-  map.on("moveend", () => {
-    ghost.moving = false;
-    positionGhost(map, ghost);
-  });
-  map.on("popupclose", () => {
-    if (highlight !== null) {
-      map.removeLayer(highlight);
-      highlight = null;
-    }
-  });
+  wireMapEvents(internal);
+  const { ghost, highlight } = internal;
 
   return {
     invalidateBBox(bbox: BBox): void {
@@ -306,10 +315,10 @@ export function createWorldMap(
     },
 
     showPlacement(p: PlacementForPopup): void {
-      if (highlight !== null) {
-        map.removeLayer(highlight);
+      if (highlight.current !== null) {
+        map.removeLayer(highlight.current);
       }
-      highlight = bboxRectangle(map, p, "highlight-rect");
+      highlight.current = bboxRectangle(map, p, "highlight-rect");
       L.popup({ className: "world-popup", closeButton: true })
         .setLatLng(worldToLatLng(p.x + p.w / 2, p.y + p.h / 2))
         .setContent(popupContent(p, callbacks, map))

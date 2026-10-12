@@ -1,3 +1,7 @@
+# Public ingress: /api -> backend, / -> web, TLS via cert-manager.
+# The /api/events SSE stream gets its own ingress so nginx applies
+# long timeouts and no buffering for that prefix only (longest-prefix
+# routing wins over the /api rule).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,7 +10,6 @@ metadata:
   labels:
     app.kubernetes.io/part-of: idol-appreciation.club
   annotations:
-    # www.idol-appreciation.club -> idol-appreciation.club redirect.
     nginx.ingress.kubernetes.io/from-to-www-redirect: "true"
 spec:
   ingressClassName: nginx
@@ -19,7 +22,46 @@ spec:
     - host: idol-appreciation.club
       http:
         paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 80
           - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: idol-api-events-sse
+  namespace: idol
+  labels:
+    app.kubernetes.io/part-of: idol-appreciation.club
+  annotations:
+    # Server-sent events: keep the stream open and unbuffered.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_cache off;
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - idol-appreciation.club
+      secretName: letsencrypt-idol
+  rules:
+    - host: idol-appreciation.club
+      http:
+        paths:
+          - path: /api/events
             pathType: Prefix
             backend:
               service:

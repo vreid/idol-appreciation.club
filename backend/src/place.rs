@@ -14,23 +14,13 @@ use uuid::Uuid;
 
 /// Pure cooldown rule (seconds, fractional for exact boundary tests):
 /// returns Err(retry_after_seconds) when the placement must be rejected.
-pub fn cooldown_check(
-    intersects: bool,
-    elapsed_secs: f64,
-    threshold_secs: i64,
-) -> Result<(), i64> {
+pub fn cooldown_check(elapsed_secs: f64, threshold_secs: i64) -> Result<(), i64> {
     let threshold = f64::from(threshold_secs as i32);
     if elapsed_secs >= threshold {
         return Ok(());
     }
     let retry = (threshold - elapsed_secs).ceil() as i64;
     Err(retry.max(1))
-}
-
-#[derive(Debug)]
-enum Part {
-    Image(Vec<u8>),
-    Field(String),
 }
 
 async fn read_multipart(
@@ -107,34 +97,41 @@ pub async fn place(
             "size must be within the configured bounds",
         ));
     }
-    let (src, format) = img::decode(&image_bytes)?;
-    let (w, h) = derive_w_h(
-        i64::from(src.get_width()),
-        i64::from(src.get_height()),
-        size,
-    );
+    // Sync pixel stage (libvips is !Send): decode, strip metadata,
+    // re-save in the source codec, hash; then build the deterministic
+    // webp derivative from the stripped raster.
+    let pipeline = tokio::task::spawn_blocking(move || -> AppResult<_> {
+        let (src, format) = img::decode(&image_bytes)?;
+        let (w, h) = derive_w_h(
+            i64::from(src.get_width()),
+            i64::from(src.get_height()),
+            size,
+        );
+        // Strip ALL metadata (EXIF/XMP/ICC) and re-save in the source
+        // codec; sha256 of these bytes is the content address. No GPS or
+        // EXIF data ever leaves the process.
+        let stripped = img::strip_resave(&src, format)?;
+        let (derivative_src, _) = img::decode(&stripped)?;
+        let dw = i32::try_from(w).map_err(|_| internal("width overflow"))?;
+        let dh = i32::try_from(h).map_err(|_| internal("height overflow"))?;
+        let derivative = img::resize_exact(&derivative_src, dw, dh)?;
+        let derivative_bytes = img::webp_bytes(&derivative, 85)?;
+        Ok((stripped, format, (w, h), derivative_bytes))
+    })
+    .await
+    .map_err(internal)??;
+    let (stripped, format, (w, h), derivative_bytes) = pipeline;
     if x < 0 || y < 0 || x + w > WORLD_PX || y + h > WORLD_PX {
         return Err(AppError::BadRequest("rect out of world bounds"));
     }
     let rect = Rect::new(x, y, w, h);
-
-    // Content-addressed originals: strip ALL metadata, re-save in source
-    // codec, hash those exact bytes. No EXIF/GPS ever leaves the process.
-    let stripped = img::strip_resave(&src, format)?;
     let original_sha = img::sha256_hex(&stripped);
     let original_key = format!("originals/{original_sha}.{}", format.ext());
-
-    // Deterministic derivative, content-addressed too. Derived from the
-    // stripped, normalized raster so the bytes are upload-quirk-stable.
-    // Stripping does not change dimensions, so (w, h) still apply.
-    let (derivative_img, _) = img::decode(&stripped)?;
-    let derivative = img::resize_exact(&derivative_img, w as i32, h as i32)?;
-    let derivative_bytes = img::webp_bytes(&derivative, 85)?;
     let derivative_sha = img::sha256_hex(&derivative_bytes);
     let image_key = format!("derivatives/{derivative_sha}.webp");
 
     // Upload derivative first (dedup); original second.
-    crate::store::put_if_absent(&app.store, &image_key, derivative_bytes).await?;
+    crate::store::put_if_absent(&app.store, &image_key, derivative_bytes.clone()).await?;
     crate::store::put_if_absent(&app.store, &original_key, stripped).await?;
 
     let id = Uuid::now_v7();
@@ -183,7 +180,7 @@ pub async fn place(
         let elapsed = last
             .map(|(t,)| (Utc::now() - t).num_milliseconds() as f64 / 1000.0)
             .unwrap_or(0.0);
-        return match cooldown_check(intersects.0, elapsed, threshold) {
+        return match cooldown_check(elapsed, threshold) {
             Ok(()) => Err(AppError::Cooldown(threshold.max(1))),
             Err(retry) => Err(AppError::Cooldown(retry)),
         };
@@ -196,7 +193,7 @@ pub async fn place(
 
     // Paint chunks before the row commits: tiles/ETags advance only when
     // the rasters already show the placement.
-    crate::chunks::composite_placement(&app, rect, &derivative).await?;
+    crate::chunks::composite_placement(&app, rect, derivative_bytes).await?;
 
     let duplicate_count: (i64,) = sqlx::query_as(
         "SELECT count(*) FROM placements
@@ -308,4 +305,37 @@ pub async fn admin_delete(
         .await?;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cooldown_check;
+
+    /// Exact cooldown boundaries; fractional elapsed seconds model
+    /// "just under" vs "at" the threshold (299.99s vs 300s).
+    #[test]
+    fn paint_cooldown_boundary() {
+        assert!(cooldown_check(299.99, 300).is_err());
+        assert_eq!(cooldown_check(299.99, 300), Err(1));
+        assert_eq!(cooldown_check(299.5, 300), Err(1));
+        assert_eq!(cooldown_check(299.0, 300), Err(1));
+        assert_eq!(cooldown_check(300.0, 300), Ok(()));
+        assert_eq!(cooldown_check(300.001, 300), Ok(()));
+        assert_eq!(cooldown_check(100_000.0, 300), Ok(()));
+    }
+
+    #[test]
+    fn empty_space_cooldown_boundary() {
+        assert_eq!(cooldown_check(0.0, 1), Err(1));
+        assert_eq!(cooldown_check(0.99, 1), Err(1));
+        assert_eq!(cooldown_check(1.0, 1), Ok(()));
+        assert_eq!(cooldown_check(2.0, 1), Ok(()));
+    }
+
+    #[test]
+    fn retry_after_always_positive() {
+        // Never less than 1 second, even for a 1ms gap.
+        assert_eq!(cooldown_check(0.001, 1), Err(1));
+        assert_eq!(cooldown_check(0.0, 300), Err(300));
+    }
 }

@@ -13,12 +13,11 @@ export type WorldEvent =
 export interface EventSourceLike {
   readyState: number;
   close(): void;
-  addEventListener(type: "open", listener: () => void): void;
+  /** Listener always receives a message-shaped event; open/error ignore it. */
   addEventListener(
-    type: "message",
+    type: "open" | "message" | "error",
     listener: (event: { data: string }) => void,
   ): void;
-  addEventListener(type: "error", listener: () => void): void;
 }
 
 export type EventSourceFactory = (url: string) => EventSourceLike;

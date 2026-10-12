@@ -60,7 +60,7 @@ jobs:
         run: |
           docker buildx build --target builder -t backend-builder \
             --cache-from type=gha --cache-to type=gha,mode=max \
-            --load backend
+            --load .
           docker run --rm backend-builder bash -lc '
             rustup component add rustfmt clippy
             cargo fmt --check

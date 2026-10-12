@@ -468,5 +468,15 @@
     "bytes": 393903,
     "prompt": "Girl group of fictional idols frozen mid dance-break on a music-show stage, five dancers in sharp synchronized poses, dust and haze kicking up under strobe lights, high-speed concert photography, 70mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/32-girlgroup-music-win.jpg",
+    "category": "girlgroup-music-win",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 547721,
+    "prompt": "Girl group of fictional idols celebrating a music-show win, members hugging and laughing around a shiny trophy while golden confetti rains down, tears of joy, bright celebratory stage lighting, editorial event photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

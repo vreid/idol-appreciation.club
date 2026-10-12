@@ -14,7 +14,7 @@ pub fn router(state: App) -> Router {
         .route("/api/auth/logout", post(handlers::logout))
         .route("/api/auth/me", get(handlers::me))
         .route("/api/place", post(place::place))
-        .route("/api/tiles/{z}/{x}/{y}.webp", get(tiles::get_tile))
+        .route("/api/tiles/{z}/{x}/{*y}", get(tiles::get_tile))
         .route("/api/placements/near", get(api::near))
         .route("/api/center", get(api::center))
         .route("/api/events", get(events::sse))

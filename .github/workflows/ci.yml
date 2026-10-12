@@ -12,27 +12,37 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   actionlint:
-    name: workflow lint
+    name: jactionlint (workflow lint)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - name: actionlint over all workflows
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: jactionlint over all workflows
         run: |
-          curl -sSLf \
-            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
-          | tar xz -C /tmp actionlint
-          /tmp/actionlint -color .github/workflows/*.yml
+          curl -sSLf -o /tmp/jl.tar.gz \
+            https://github.com/jdx/jactionlint/releases/download/v2.1.0/jactionlint_2.1.0_linux_amd64.tar.gz
+          tar xzf /tmp/jl.tar.gz -C /tmp jactionlint
+          /tmp/jactionlint .github/workflows/*.yml
 
   ready:
     name: owner readiness markers
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       backend: ${{ steps.r.outputs.backend }}
       web: ${{ steps.r.outputs.web }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - id: r
         run: |
           echo "backend=$([ -f backend/.ci-ready ] && echo true || echo false)" \
@@ -43,9 +53,12 @@ jobs:
   tofu-fmt-validate:
     name: tofu fmt + validate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: opentofu/setup-opentofu@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
         with:
           tofu_version: 1.13.1
       - name: tofu fmt -check
@@ -62,12 +75,15 @@ jobs:
     name: tofu plan (PRs only)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: production
     env:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: opentofu/setup-opentofu@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
         with:
           tofu_version: 1.13.1
       - name: tofu init (backend disabled)
@@ -83,9 +99,12 @@ jobs:
   markdown-fmt:
     name: prettier markdown
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
       # Gate covers every *.md in the repo (README, docs/, agents' notes);
@@ -98,15 +117,18 @@ jobs:
     needs: ready
     if: needs.ready.outputs.backend == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: backend
       - run: cargo fmt --check
@@ -118,12 +140,15 @@ jobs:
     needs: ready
     if: needs.ready.outputs.web == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: voidzero-dev/setup-vp@v1.21.2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af
       - run: vp install
       # vp check = tsgo typecheck + oxlint + oxfmt; vp test = vitest with
       # coverage threshold (>=80% on src/lib, enforced by web/ config).

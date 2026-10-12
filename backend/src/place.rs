@@ -180,6 +180,7 @@ pub async fn place(
         let elapsed = last
             .map(|(t,)| (Utc::now() - t).num_milliseconds() as f64 / 1000.0)
             .unwrap_or(0.0);
+        eprintln!("COOLDOWN_DEBUG intersects={intersects} elapsed={elapsed:.3} threshold={threshold}");
         return match cooldown_check(elapsed, threshold) {
             Ok(()) => Err(AppError::Cooldown(threshold.max(1))),
             Err(retry) => Err(AppError::Cooldown(retry)),

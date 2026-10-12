@@ -25,7 +25,7 @@ spec:
           image: ghcr.io/vreid/idol-appreciation.club-web:main
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 80
+            - containerPort: 8080
               name: http
           resources:
             requests:
@@ -36,12 +36,12 @@ spec:
               memory: 256Mi
           readinessProbe:
             tcpSocket:
-              port: http
+              port: 8080
             initialDelaySeconds: 3
             periodSeconds: 10
           livenessProbe:
             tcpSocket:
-              port: http
+              port: 8080
             initialDelaySeconds: 10
             periodSeconds: 20
           securityContext:
@@ -63,4 +63,4 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: http
+      targetPort: 8080

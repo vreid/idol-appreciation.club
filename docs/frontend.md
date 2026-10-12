@@ -91,9 +91,10 @@ Configured in `web/vite.config.ts` under `lint`:
 - Store (`state.svelte.ts`): auth flows, toasts lifecycle, full place flow incl.
   429 cooldown toast, auth prompts, report/remove rules.
 
-Coverage gate: `vp test --coverage` fails below **80% lines** on `src/lib/**`
-(config in `vitest.config.ts`). Excluded as DOM-only glue: `worldMap.ts`,
-`confetti.ts`, `images.ts`. Latest run: **93.26% lines**.
+Coverage gate: `vp test --coverage` fails below **80% lines** on the logic
+modules (`src/lib/*.ts`; `.svelte` components are render-only glue). DOM-only
+helpers excluded: `worldMap.ts`, `confetti.ts`, `images.ts`. Latest run: **93.5%
+lines**.
 
 ## Coordinate system (read before touching the map)
 
@@ -159,10 +160,13 @@ JS gzipped is 68 kB against the 150 kB target; the only runtime deps are Svelte
 
 - `vp check` exit 0 (fmt + oxlint + tsgo type check); `vpr check`: svelte-check
   0 errors/0 warnings + tsc clean.
-- `vp test`: 83 passing; `vp test --coverage`: 93.26% lines.
+- `vp test`: 83 passing; `vp test --coverage`: 93.5% lines.
 - `vp build` produces `web/dist` with hashed assets (sizes above).
 - `vp dev` smoke: page compiles and boots with zero console errors; browser
   check confirmed topbar, 0/0 chip, center reticle, modals, auth popover,
   Escape-to-close. `/api` 502s with no backend running, surfaced as toasts —
   expected without the backend.
-- Docker image built and smoke-tested over HTTP (see Verification).
+- Docker: image builds (multi-stage, 93.6 MB); HTTP-verified — `/` and
+  `/index.html` send `no-cache`, `/assets/*` send
+  `public, max-age=31536000, immutable` + gzip, unknown routes fall back to
+  index.html with 200.

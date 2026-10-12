@@ -16,7 +16,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   BACKEND_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:main
@@ -29,11 +28,14 @@ jobs:
   ready:
     name: owner readiness markers
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       backend: ${{ steps.r.outputs.backend }}
       web: ${{ steps.r.outputs.web }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - id: r
         run: |
           echo "backend=$([ -f backend/.ci-ready ] && echo true || echo false)" \
@@ -46,15 +48,18 @@ jobs:
     needs: ready
     if: needs.ready.outputs.backend == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: backend
       - run: cargo fmt --check
@@ -66,18 +71,24 @@ jobs:
     needs: ready
     if: needs.ready.outputs.web == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: voidzero-dev/setup-vp@v1.21.2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af
       - run: vp install
       - run: vp check
       - run: vp test
 
   backend-build:
     name: build backend image
+    permissions:
+      contents: read
+      packages: write
     needs: [ready, backend-checks]
     # Owner gate: backend/.ci-ready implies a working Dockerfile.
     if: >-
@@ -85,15 +96,20 @@ jobs:
       needs.ready.outputs.backend == 'true' &&
       needs.backend-checks.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+        with:
+          cache-binary: false
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         id: push
         with:
           context: backend
@@ -105,6 +121,9 @@ jobs:
 
   web-build:
     name: build web image
+    permissions:
+      contents: read
+      packages: write
     needs: [ready, web-checks]
     # Owner gate: web/.ci-ready implies a working web/Dockerfile.
     if: >-
@@ -112,15 +131,20 @@ jobs:
       needs.ready.outputs.web == 'true' &&
       needs.web-checks.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+        with:
+          cache-binary: false
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         id: push
         with:
           context: web
@@ -135,17 +159,20 @@ jobs:
     needs: [ready, backend-build, web-build]
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: production
     env:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
       - name: Set up tofu (reads outputs from state)
         uses: ./.github/actions/tofu-setup
 
-      - uses: Azure/setup-kubectl@v5.2.0
+      - uses: Azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e
 
       - name: Fetch kubeconfig from UpCloud
         run: |

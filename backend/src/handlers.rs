@@ -145,7 +145,7 @@ pub async fn login(State(app): State<App>, Json(req): Json<LoginReq>) -> AppResu
         return Err(AppError::Unauthorized);
     };
     if !verify_password(&hash, &req.password) {
-        return Err(AppError::BadRequest("invalid credentials"));
+        return Err(AppError::Unauthorized);
     }
     let mut resp = (axum::http::StatusCode::OK, Json(json!({ "id": id }))).into_response();
     let token = issue(&app.cfg.session_secret, id, chrono::Utc::now().timestamp());

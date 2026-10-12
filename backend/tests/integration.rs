@@ -13,6 +13,7 @@ use idol_appreciation_club_backend::state::App;
 use idol_appreciation_club_backend::build_app;
 use testcontainers_modules::postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use testcontainers_modules::testcontainers::ImageExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -44,7 +45,10 @@ impl Resp {
 }
 
 async fn start_server(paint_secs: i64, empty_secs: i64, max_upload: usize) -> Server {
+    // Pin a modern postgres: the module default is 11-alpine, too old for
+    // generated columns.
     let container = postgres::Postgres::default()
+        .with_tag("16-alpine")
         .start()
         .await
         .expect("start postgres container");

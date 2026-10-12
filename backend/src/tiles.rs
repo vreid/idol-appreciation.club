@@ -82,7 +82,14 @@ pub async fn get_tile(
     axum::extract::Path((z, x, y)): axum::extract::Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
-    let parse = |s: &str| s.strip_suffix(".webp").unwrap_or(s).parse::<i64>().ok();
+    // axum 0.8 has no suffix captures, so the last segment is a wildcard
+    // that must be exactly "<n>.webp".
+    let parse = |s: &str| {
+        if s.contains('/') {
+            return None;
+        }
+        s.strip_suffix(".webp").unwrap_or(s).parse::<i64>().ok()
+    };
     let (Some(z), Some(x), Some(y)) = (parse(&z), parse(&x), parse(&y)) else {
         return Err(AppError::NotFound);
     };

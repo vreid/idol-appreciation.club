@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { formatDuration, timeAgo } from "./format";
 
 const NOW = Date.parse("2026-10-12T12:00:00Z");

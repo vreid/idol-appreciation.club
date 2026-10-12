@@ -4,8 +4,8 @@ use crate::auth::{cookie_value, claims_from_headers, issue, set_cookie, Authed};
 use crate::error::{AppError, AppResult};
 use crate::state::App;
 use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, SaltString};
-use argon2::Argon2;
-use axum::extract::{FromRef, State};
+use argon2::{Argon2, PasswordVerifier};
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -70,19 +70,16 @@ pub async fn register(
         Ok(r) => r,
         Err(e) => {
             // Lost the single-admin race → retry as a normal account.
-            if e.as_db_error().and_then(|d| d.constraint()) == Some("accounts_single_admin") {
+            if constraint_of(&e) == Some("accounts_single_admin") {
                 try_insert(&app, id, &req.username, &hash, false).await.map_err(|e| {
-                    if e.as_db_error().and_then(|d| d.constraint())
-                        == Some("accounts_username_key")
+                    if constraint_of(&e) == Some("accounts_username_key")
                     {
                         AppError::Conflict
                     } else {
                         AppError::from(e)
                     }
                 })?
-            } else if e.as_db_error().and_then(|d| d.constraint())
-                == Some("accounts_username_key")
-            {
+            } else if constraint_of(&e) == Some("accounts_username_key") {
                 return Err(AppError::Conflict);
             } else {
                 return Err(AppError::from(e));
@@ -96,6 +93,13 @@ pub async fn register(
     );
     set_cookie(&mut resp, cookie_value(&token, app.cfg.secure_cookies()));
     Ok(resp)
+}
+
+fn constraint_of(e: &sqlx::Error) -> Option<&str> {
+    match e {
+        sqlx::Error::Database(db) => db.constraint(),
+        _ => None,
+    }
 }
 
 async fn try_insert(
@@ -116,11 +120,12 @@ async fn try_insert(
     .bind(as_admin)
     .fetch_one(&app.pool)
     .await?;
-    Ok((
+    let mut resp = (
         axum::http::StatusCode::CREATED,
         Json(json!({ "id": id, "username": username, "is_admin": result.0 })),
-    ))
-        .into_response()
+    )
+        .into_response();
+    Ok(resp)
 }
 
 #[derive(Deserialize)]

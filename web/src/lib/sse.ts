@@ -13,9 +13,12 @@ export type WorldEvent =
 export interface EventSourceLike {
   readyState: number;
   close(): void;
-  onopen: (() => void) | null;
-  onmessage: ((event: { data: string }) => void) | null;
-  onerror: (() => void) | null;
+  addEventListener(type: "open", listener: () => void): void;
+  addEventListener(
+    type: "message",
+    listener: (event: { data: string }) => void,
+  ): void;
+  addEventListener(type: "error", listener: () => void): void;
 }
 
 export type EventSourceFactory = (url: string) => EventSourceLike;
@@ -70,18 +73,18 @@ function readBBox(data: object): [number, number, number, number] | null {
 
 /** True when an event bbox covers the 0/0 world center point. */
 export function eventTouchesCenter(
-  bbox: [number, number, number, number],
+  bbox: readonly [number, number, number, number],
 ): boolean {
   const [x, y, w, h] = bbox;
   return bboxContainsPoint({ x, y, w, h }, WORLD_CENTER, WORLD_CENTER);
 }
 
 export class SseClient {
-  private readonly options: Required<Pick<SseClientOptions, "onEvent">> & {
-    sourceFactory: EventSourceFactory;
-    initialBackoffMs: number;
-    maxBackoffMs: number;
-  };
+  private readonly onEvent: (event: WorldEvent) => void;
+  private readonly sourceFactory: EventSourceFactory;
+  private readonly initialBackoffMs: number;
+  private readonly maxBackoffMs: number;
+
   private source: EventSourceLike | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs: number;
@@ -89,19 +92,19 @@ export class SseClient {
   private running = false;
 
   constructor(options: SseClientOptions) {
-    this.options = {
-      onEvent: options.onEvent,
-      sourceFactory: options.sourceFactory ?? defaultSourceFactory,
-      initialBackoffMs: options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS,
-      maxBackoffMs: options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS,
-    };
-    this.backoffMs = this.options.initialBackoffMs;
+    this.onEvent = options.onEvent;
+    this.sourceFactory =
+      options.sourceFactory ?? ((url) => new EventSource(url));
+    this.initialBackoffMs =
+      options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
+    this.maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
+    this.backoffMs = this.initialBackoffMs;
   }
 
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.backoffMs = this.options.initialBackoffMs;
+    this.backoffMs = this.initialBackoffMs;
     this.connect();
   }
 
@@ -116,11 +119,10 @@ export class SseClient {
     this.source = null;
   }
 
-  /** Milliseconds of the next scheduled reconnect wait. */
+  /** Milliseconds of the currently scheduled reconnect wait, if any. */
   currentBackoffMs(): number {
-    return this.reconnectTimer !== null
-      ? this.scheduledDelayMs
-      : this.backoffMs;
+    if (this.reconnectTimer === null) return this.backoffMs;
+    return this.scheduledDelayMs;
   }
 
   isReconnectScheduled(): boolean {
@@ -128,22 +130,23 @@ export class SseClient {
   }
 
   private connect(): void {
-    const source = this.options.sourceFactory(EVENTS_URL);
+    const source = this.sourceFactory(EVENTS_URL);
     this.source = source;
-    source.onopen = () => {
-      this.backoffMs = this.options.initialBackoffMs;
-    };
-    source.onmessage = (event) => {
+    source.addEventListener("open", () => {
+      this.backoffMs = this.initialBackoffMs;
+    });
+    source.addEventListener("message", (event) => {
       const parsed = parseWorldEvent(event.data);
-      if (parsed !== null) this.options.onEvent(parsed);
-    };
-    source.onerror = () => {
-      if (source.readyState !== READY_STATE_CLOSED) return; // browser retries
+      if (parsed !== null) this.onEvent(parsed);
+    });
+    source.addEventListener("error", () => {
+      // Non-CLOSED means the browser is retrying on its own.
+      if (source.readyState !== READY_STATE_CLOSED) return;
       source.close();
       this.source = null;
       if (!this.running) return;
       this.scheduleReconnect();
-    };
+    });
   }
 
   private scheduleReconnect(): void {
@@ -155,10 +158,6 @@ export class SseClient {
       this.scheduledDelayMs = 0;
       if (this.running) this.connect();
     }, delay);
-    this.backoffMs = Math.min(delay * 2, this.options.maxBackoffMs);
+    this.backoffMs = Math.min(delay * 2, this.maxBackoffMs);
   }
-}
-
-function defaultSourceFactory(url: string): EventSourceLike {
-  return new EventSource(url);
 }

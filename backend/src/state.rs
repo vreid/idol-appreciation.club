@@ -52,6 +52,8 @@ pub struct AppState {
     pub events_tx: broadcast::Sender<String>,
     /// Tile render serialization per "z/x/y".
     pub tile_locks: KeyLocks,
+    /// Encoded tile bytes keyed by (z, x, y, seq).
+    pub tile_cache: crate::tiles::TileCache,
 }
 
 pub type App = Arc<AppState>;

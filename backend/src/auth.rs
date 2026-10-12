@@ -1,6 +1,7 @@
 //! Stateless HMAC-signed session cookies. No server-side session store.
 
 use crate::error::{AppError, AppResult};
+use crate::state::App;
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -100,7 +101,7 @@ where
         parts: &mut axum::http::request::Parts,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
-        let app = App::from_ref(state);
+        let app = <App as axum::extract::FromRef<S>>::from_ref(state);
         let now = chrono::Utc::now().timestamp();
         match claims_from_headers(&app.cfg.session_secret, &parts.headers, now) {
             Some(c) => Ok(Authed(c.sub)),

@@ -71,16 +71,16 @@ export interface PlaceRequest {
 }
 
 export interface ApiClient {
-  register(username: string, password: string): Promise<void>;
-  login(username: string, password: string): Promise<void>;
-  logout(): Promise<void>;
+  register: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
   /** null when not signed in (401/403). */
-  me(): Promise<Me | null>;
-  place(req: PlaceRequest): Promise<PlacedPlacement>;
-  near(x: number, y: number, r: number): Promise<Placement[]>;
-  center(): Promise<CenterInfo>;
-  report(placementId: number): Promise<void>;
-  removePlacement(placementId: number): Promise<void>;
+  me: () => Promise<Me | null>;
+  place: (req: PlaceRequest) => Promise<PlacedPlacement>;
+  near: (x: number, y: number, r: number) => Promise<Placement[]>;
+  center: () => Promise<CenterInfo>;
+  report: (placementId: number) => Promise<void>;
+  removePlacement: (placementId: number) => Promise<void>;
 }
 
 export interface ApiClientDeps {
@@ -116,22 +116,67 @@ function messageOf(body: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
-function createApiClient(deps: ApiClientDeps = {}): ApiClient {
+function expectObject(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null) {
+    throw new ApiError(0, "unexpected response body");
+  }
+  return body;
+}
+
+function num(obj: Record<string, unknown>, key: string): number {
+  const value = obj[key];
+  if (typeof value !== "number") {
+    throw new ApiError(0, `missing number field "${key}"`);
+  }
+  return value;
+}
+
+function str(obj: Record<string, unknown>, key: string): string {
+  const value = obj[key];
+  if (typeof value !== "string") {
+    throw new ApiError(0, `missing string field "${key}"`);
+  }
+  return value;
+}
+
+function bool(obj: Record<string, unknown>, key: string): boolean {
+  const value = obj[key];
+  if (typeof value !== "boolean") {
+    throw new ApiError(0, `missing boolean field "${key}"`);
+  }
+  return value;
+}
+
+function nullableStr(obj: Record<string, unknown>, key: string): string | null {
+  const value = obj[key];
+  if (value !== null && typeof value !== "string") {
+    throw new ApiError(0, `missing nullable string field "${key}"`);
+  }
+  return value;
+}
+
+interface RequestOptions {
+  method?: string;
+  body?: BodyInit;
+  json?: boolean;
+}
+
+export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
   const doFetch = deps.fetch ?? fetch;
 
   async function request(
-    method: string,
     url: string,
-    body?: BodyInit,
-    headers?: Record<string, string>,
-  ): Promise<{ status: number; body: unknown; response: Response }> {
+    options: RequestOptions = {},
+  ): Promise<unknown> {
     let response: Response;
     try {
       response = await doFetch(url, {
-        method,
+        method: options.method ?? "GET",
         credentials: "same-origin",
-        headers,
-        body,
+        headers: options.json
+          ? { "Content-Type": "application/json" }
+          : undefined,
+        body: options.body,
       });
     } catch (cause) {
       throw new ApiError(0, `network error: ${String(cause)}`);
@@ -144,36 +189,27 @@ function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         retryAfterOf(response),
       );
     }
-    return { status: response.status, body: parsed, response };
+    return parsed;
   }
 
-  function postJson(url: string, payload: unknown): Promise<void> {
-    return request("POST", url, JSON.stringify(payload), {
-      "Content-Type": "application/json",
-    }).then(() => undefined);
+  async function postJson(url: string, payload: unknown): Promise<void> {
+    await request(url, {
+      method: "POST",
+      json: true,
+      body: JSON.stringify(payload),
+    });
   }
 
-  function expectObject(body: unknown): Record<string, unknown> {
-    if (typeof body !== "object" || body === null) {
-      throw new ApiError(0, "unexpected response body");
-    }
-    return body;
-  }
-
-  function num(obj: Record<string, unknown>, key: string): number {
-    const value = obj[key];
-    if (typeof value !== "number") {
-      throw new ApiError(0, `missing number field "${key}"`);
-    }
-    return value;
-  }
-
-  function str(obj: Record<string, unknown>, key: string): string {
-    const value = obj[key];
-    if (typeof value !== "string") {
-      throw new ApiError(0, `missing string field "${key}"`);
-    }
-    return value;
+  function placementOf(body: unknown): PlacedPlacement {
+    const obj = expectObject(body);
+    return {
+      id: num(obj, "id"),
+      x: num(obj, "x"),
+      y: num(obj, "y"),
+      w: num(obj, "w"),
+      h: num(obj, "h"),
+      seq: num(obj, "seq"),
+    };
   }
 
   return {
@@ -181,37 +217,30 @@ function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       postJson("/api/auth/register", { username, password }),
     login: (username, password) =>
       postJson("/api/auth/login", { username, password }),
-    logout: () => postJson("/api/auth/logout", {}),
+    logout: async () => postJson("/api/auth/logout", {}),
     me: async () => {
       try {
-        const { body } = await request("GET", "/api/auth/me");
-        return body as Me;
+        const obj = expectObject(await request("/api/auth/me"));
+        return {
+          id: num(obj, "id"),
+          username: str(obj, "username"),
+          is_admin: bool(obj, "is_admin"),
+          cooldown_until: nullableStr(obj, "cooldown_until"),
+        };
       } catch (cause) {
-        if (
-          cause instanceof ApiError &&
-          (cause.status === 401 || cause.status === 403)
-        ) {
+        if (cause instanceof ApiError && [401, 403].includes(cause.status)) {
           return null;
         }
         throw cause;
       }
     },
-    place: async ({ image, fileName, x, y, size }: PlaceRequest) => {
+    place: async (req) => {
       const form = new FormData();
-      form.append("image", image, fileName);
-      form.append("x", String(x));
-      form.append("y", String(y));
-      form.append("size", String(size));
-      const { body } = await request("POST", "/api/place", form);
-      const obj = expectObject(body);
-      return {
-        id: num(obj, "id"),
-        x: num(obj, "x"),
-        y: num(obj, "y"),
-        w: num(obj, "w"),
-        h: num(obj, "h"),
-        seq: num(obj, "seq"),
-      };
+      form.append("image", req.image, req.fileName);
+      form.append("x", String(req.x));
+      form.append("y", String(req.y));
+      form.append("size", String(req.size));
+      return placementOf(await request("/api/place", form));
     },
     near: async (x, y, r) => {
       const query = new URLSearchParams({
@@ -219,10 +248,7 @@ function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         y: String(y),
         r: String(r),
       });
-      const { body } = await request(
-        "GET",
-        `/api/placements/near?${query.toString()}`,
-      );
+      const body = await request(`/api/placements/near?${query}`);
       if (!Array.isArray(body)) {
         throw new ApiError(0, "expected an array of placements");
       }
@@ -240,8 +266,7 @@ function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       });
     },
     center: async () => {
-      const { body } = await request("GET", "/api/center");
-      const obj = expectObject(body);
+      const obj = expectObject(await request("/api/center"));
       const rawCurrent = obj["current"];
       let current: CenterHolder | null = null;
       if (rawCurrent !== null && rawCurrent !== undefined) {
@@ -263,29 +288,21 @@ function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       if (!Array.isArray(rawAllTime)) {
         throw new ApiError(0, 'missing "all_time" array');
       }
-      const all_time = rawAllTime.map((raw) => {
-        const entry = expectObject(raw);
-        return {
-          username: str(entry, "username"),
-          seconds: num(entry, "seconds"),
-        };
-      });
-      return { current, all_time };
+      return {
+        current,
+        all_time: rawAllTime.map((raw) => {
+          const entry = expectObject(raw);
+          return {
+            username: str(entry, "username"),
+            seconds: num(entry, "seconds"),
+          };
+        }),
+      };
     },
-    report: (placementId) =>
-      request(
-        "POST",
-        "/api/reports",
-        JSON.stringify({ placement_id: placementId }),
-        {
-          "Content-Type": "application/json",
-        },
-      ).then(() => undefined),
-    removePlacement: (placementId) =>
-      request("DELETE", `/api/admin/placements/${placementId}`).then(
-        () => undefined,
-      ),
+    report: async (placementId) =>
+      postJson("/api/reports", { placement_id: placementId }),
+    removePlacement: async (placementId) => {
+      await request(`/api/admin/placements/${placementId}`);
+    },
   };
 }
-
-export { createApiClient };

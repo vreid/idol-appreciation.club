@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { ApiError, createApiClient, type Placement } from "./api";
 
 interface RecordedRequest {
@@ -18,19 +18,29 @@ function jsonResponse(
   return response;
 }
 
+function urlOf(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
 function fetchMock(responder: (url: string, init: RequestInit) => Response): {
   calls: RecordedRequest[];
   fetch: typeof fetch;
 } {
   const calls: RecordedRequest[] = [];
-  const impl = (
-    input: RequestInfo | URL,
-    init?: RequestInit,
-  ): Promise<Response> => {
-    calls.push({ url: String(input), init: init ?? {} });
-    return Promise.resolve(responder(String(input), init ?? {}));
+  const impl: typeof fetch = (input, init) => {
+    const url = urlOf(input);
+    calls.push({ url, init: init ?? {} });
+    return Promise.resolve(responder(url, init ?? {}));
   };
-  return { calls, fetch: impl as typeof fetch };
+  return { calls, fetch: impl };
+}
+
+function jsonBody(request: RecordedRequest | undefined): unknown {
+  const body = request?.init.body;
+  if (typeof body !== "string") throw new Error("expected a string body");
+  return JSON.parse(body);
 }
 
 const samplePlacement: Placement = {
@@ -54,7 +64,7 @@ describe("auth flows", () => {
     expect(mock.calls[0]?.init.headers).toMatchObject({
       "Content-Type": "application/json",
     });
-    expect(JSON.parse(String(mock.calls[0]?.init.body))).toEqual({
+    expect(jsonBody(mock.calls[0])).toEqual({
       username: "liz",
       password: "pw123456",
     });
@@ -111,14 +121,14 @@ describe("place", () => {
     expect(mock.calls[0]?.url).toBe("/api/place");
     expect(init?.method).toBe("POST");
     expect(init?.headers).toBeUndefined();
-    const form = init?.body as FormData;
-    expect(form).toBeInstanceOf(FormData);
+    const form = init?.body;
+    if (!(form instanceof FormData)) throw new Error("expected FormData");
     expect(form.get("x")).toBe("134217664");
     expect(form.get("y")).toBe("134217600");
     expect(form.get("size")).toBe("32");
     const file = form.get("image");
-    expect(file).toBeInstanceOf(File);
-    expect((file as File).name).toBe("wiz.webp");
+    if (!(file instanceof File)) throw new Error("expected File");
+    expect(file.name).toBe("wiz.webp");
     expect(placed).toEqual({ id: 9, x: 1, y: 2, w: 32, h: 16, seq: 77 });
   });
 
@@ -190,7 +200,7 @@ describe("report / admin remove", () => {
     const api = createApiClient({ fetch: mock.fetch });
     await api.report(33);
     expect(mock.calls[0]?.url).toBe("/api/reports");
-    expect(JSON.parse(String(mock.calls[0]?.init.body))).toEqual({
+    expect(jsonBody(mock.calls[0])).toEqual({
       placement_id: 33,
     });
   });
@@ -206,18 +216,14 @@ describe("report / admin remove", () => {
 
 describe("transport errors", () => {
   it("maps rejected fetch to status 0 ApiError", async () => {
-    const boom = (() =>
-      Promise.reject(new TypeError("offline"))) as typeof fetch;
+    const boom: typeof fetch = () => Promise.reject(new TypeError("offline"));
     const api = createApiClient({ fetch: boom });
     await expect(api.center()).rejects.toMatchObject({ status: 0 });
   });
 
   it("network failure during place also surfaces as status 0", async () => {
-    const api = createApiClient({
-      fetch: vi.fn(() =>
-        Promise.reject(new Error("x")),
-      ) as unknown as typeof fetch,
-    });
+    const boom: typeof fetch = () => Promise.reject(new Error("x"));
+    const api = createApiClient({ fetch: boom });
     await expect(
       api.place({ image: new Blob(), fileName: "a", x: 0, y: 0, size: 16 }),
     ).rejects.toMatchObject({ status: 0 });

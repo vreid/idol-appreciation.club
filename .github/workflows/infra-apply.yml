@@ -30,7 +30,13 @@ jobs:
         run: tofu validate
         working-directory: tofu
       - name: tofu apply
-        run: tofu apply -auto-approve -input=false
+        # First apply can abort on provider read races (e.g. managed DB
+        # "waiting for service name to propagate") after resources were
+        # created; a second pass converges. Honest retry, not masking:
+        # a second failure still fails the job.
+        run: |
+          tofu apply -auto-approve -input=false || \
+            tofu apply -auto-approve -input=false
         working-directory: tofu
       - name: Report non-sensitive outputs
         run: |

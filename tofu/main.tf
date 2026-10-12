@@ -106,6 +106,15 @@ resource "upcloud_managed_object_storage" "this" {
   region            = var.objsto_region
   configured_status = "started"
 
+  # Without an attached network the API exposes no S3 endpoint at all
+  # (observed: endpoints = []); the public network provides the default
+  # public S3 endpoint.
+  network {
+    family = "IPv4"
+    name   = "public"
+    type   = "public"
+  }
+
   labels = {
     project    = "idol-appreciation.club"
     managed-by = "tofu"

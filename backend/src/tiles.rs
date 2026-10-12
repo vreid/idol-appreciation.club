@@ -1,0 +1,203 @@
+//! Tile pyramid: lazy rendering from chunks, maxSeq staleness, caching.
+
+use crate::error::{AppError, AppResult};
+use crate::img;
+use crate::state::App;
+use crate::world::{
+    is_valid_tile, tile_bounds, tile_chunk, tile_key, tile_native_size, tile_offset_in_chunk,
+    Rect, BASE_Z, CHUNK_PX, TILE_PX,
+};
+use axum::extract::State;
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
+use lru::LruCache;
+use sqlx::Row;
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::sync::Mutex as StdMutex;
+
+/// (z, x, y, seq) → encoded webp bytes.
+type CacheKey = (i64, i64, i64, i64);
+
+pub struct TileCache {
+    /// z ≤ 4 tiles never evict (at most 341 exist).
+    low_zoom: StdMutex<HashMap<CacheKey, Bytes>>,
+    lru: StdMutex<LruCache<CacheKey, Bytes>>,
+}
+
+impl TileCache {
+    pub fn new(entries: usize) -> Self {
+        Self {
+            low_zoom: StdMutex::new(HashMap::new()),
+            lru: StdMutex::new(LruCache::new(
+                NonZeroUsize::new(entries.max(1)).unwrap_or(NonZeroUsize::MIN),
+            )),
+        }
+    }
+
+    fn get(&self, z: i64, key: CacheKey) -> Option<Bytes> {
+        if z <= 4 {
+            self.low_zoom
+                .lock()
+                .expect("low zoom cache")
+                .get(&key)
+                .cloned()
+        } else {
+            self.lru.lock().expect("tile lru").get(&key).cloned()
+        }
+    }
+
+    fn put(&self, z: i64, key: CacheKey, bytes: Bytes) {
+        if z <= 4 {
+            self.low_zoom
+                .lock()
+                .expect("low zoom cache")
+                .insert(key, bytes);
+        } else {
+            self.lru.lock().expect("tile lru").put(key, bytes);
+        }
+    }
+}
+
+/// Max non-removed placement seq whose bbox intersects the rect (0 = none).
+pub async fn max_seq_covering(app: &App, rect: Rect) -> AppResult<i64> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(max(seq), 0) FROM placements
+         WHERE removed_at IS NULL
+           AND bbox && box(point($1::float8, $2::float8),
+                           point($3::float8, $4::float8))",
+    )
+    .bind(rect.x)
+    .bind(rect.y)
+    .bind(rect.x + rect.w - 1)
+    .bind(rect.y + rect.h - 1)
+    .fetch_one(&app.pool)
+    .await?;
+    Ok(row.0)
+}
+
+/// GET /api/tiles/{z}/{x}/{y}.webp
+pub async fn get_tile(
+    State(app): State<App>,
+    axum::extract::Path((z, x, y)): axum::extract::Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let parse = |s: &str| s.strip_suffix(".webp").unwrap_or(s).parse::<i64>().ok();
+    let (Some(z), Some(x), Some(y)) = (parse(&z), parse(&x), parse(&y)) else {
+        return Err(AppError::NotFound);
+    };
+    if !is_valid_tile(z, x, y) {
+        return Err(AppError::NotFound);
+    }
+    let (bytes, seq) = tile_bytes(&app, z, x, y).await?;
+    let etag = format!("\"{seq}\"");
+    if let Some(inm) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
+        if inm.split(',').any(|t| t.trim() == etag) {
+            let mut resp = StatusCode::NOT_MODIFIED.into_response();
+            resp.headers_mut()
+                .insert(header::ETAG, etag.parse().expect("etag header"));
+            return Ok(resp);
+        }
+    }
+    let mut resp = (StatusCode::OK, bytes).into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, "image/webp".parse().expect("mime"));
+    h.insert(header::CACHE_CONTROL, "no-cache".parse().expect("cc"));
+    h.insert(header::ETAG, etag.parse().expect("etag header"));
+    Ok(resp)
+}
+
+/// Resolve tile bytes through: memory cache → object storage (if fresh) →
+/// render. Returns the bytes and the seq they were rendered at. Boxed to
+/// permit recursion (children of z < BASE_Z render through this same fn).
+fn tile_bytes<'a>(
+    app: &'a App,
+    z: i64,
+    x: i64,
+    y: i64,
+) -> futures::future::BoxFuture<'a, AppResult<(Bytes, i64)>> {
+    Box::pin(tile_bytes_inner(app, z, x, y))
+}
+
+async fn tile_bytes_inner(app: &App, z: i64, x: i64, y: i64) -> AppResult<(Bytes, i64)> {
+    let seq = max_seq_covering(app, tile_bounds(z, x, y)).await?;
+    let key: CacheKey = (z, x, y, seq);
+    if let Some(bytes) = app.tile_cache.get(z, key) {
+        return Ok((bytes, seq));
+    }
+    // Serialize renders per tile so concurrent misses don't duplicate work.
+    let lock_key = format!("{z}/{x}/{y}");
+    let _guard = app.tile_locks.lock_sorted(&[lock_key]).await;
+    // Another request may have rendered this exact seq while we waited.
+    if let Some(bytes) = app.tile_cache.get(z, key) {
+        return Ok((bytes, seq));
+    }
+    let object_key = tile_key(z, x, y);
+    let stored: Option<(i64,)> =
+        sqlx::query_as("SELECT seq FROM tiles WHERE z = $1 AND x = $2 AND y = $3")
+            .bind(z as i16)
+            .bind(x as i32)
+            .bind(y as i32)
+            .fetch_optional(&app.pool)
+            .await?;
+    if stored.map(|(s,)| s) == Some(seq) {
+        if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
+            let bytes = Bytes::from(bytes);
+            app.tile_cache.put(z, key, bytes.clone());
+            return Ok((bytes, seq));
+        }
+    }
+    let encoded = render_tile(app, z, x, y).await?;
+    // Write-through: object storage + staleness row + memory cache.
+    crate::store::put(&app.store, &object_key, encoded.to_vec()).await?;
+    sqlx::query(
+        "INSERT INTO tiles (z, x, y, seq) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (z, x, y) DO UPDATE
+         SET seq = EXCLUDED.seq, rendered_at = now()",
+    )
+    .bind(z as i16)
+    .bind(x as i32)
+    .bind(y as i32)
+    .bind(seq)
+    .execute(&app.pool)
+    .await?;
+    app.tile_cache.put(z, key, encoded.clone());
+    Ok((encoded, seq))
+}
+
+/// Render + encode the tile from its sources (chunk for z ≥ BASE_Z, the
+/// four child tiles below).
+async fn render_tile(app: &App, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
+    let img = if z >= BASE_Z {
+        let (cx, cy) = tile_chunk(z, x, y);
+        let key = crate::world::chunk_key(cx, cy);
+        let chunk = match crate::store::get_bytes(&app.store, &key).await? {
+            Some(bytes) => {
+                libvips::VipsImage::new_from_buffer(&bytes, "").map_err(AppError::from)?
+            }
+            None => img::blank_chunk(CHUNK_PX as i32)?,
+        };
+        let (ox, oy) = tile_offset_in_chunk(z, x, y);
+        img::tile_from_chunk(&chunk, ox, oy, tile_native_size(z))?
+    } else {
+        let mut children: [libvips::VipsImage; 4] = core::array::from_fn(|_| {
+            // Placeholder; replaced in the loop below before any use.
+            libvips::ops::black(1, 1).expect("placeholder image")
+        });
+        for (i, (dx, dy)) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)]
+            .into_iter()
+            .enumerate()
+        {
+            let (child_bytes, _) = tile_bytes(app, z + 1, 2 * x + dx, 2 * y + dy).await?;
+            children[i] = libvips::VipsImage::new_from_buffer(&child_bytes, "")
+                .map_err(AppError::from)?;
+        }
+        img::tile_from_children(&children)?
+    };
+    Ok(Bytes::from(img::webp_bytes(&img, 80)?))
+}
+
+/// TILE_PX must divide a chunk exactly at BASE_Z for the recursion to line
+/// up (compile-time sanity of the world constants).
+const _: () = assert!(TILE_PX * (1 << (20 - BASE_Z)) == CHUNK_PX);

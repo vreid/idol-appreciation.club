@@ -25,7 +25,9 @@ jobs:
         run: tofu destroy -auto-approve -input=false || true
         working-directory: tofu
       - name: tofu apply
-        run: tofu apply -auto-approve -input=false
+        run: |
+          tofu apply -auto-approve -input=false || \
+            tofu apply -auto-approve -input=false
         working-directory: tofu
       - name: Summary
         run: |

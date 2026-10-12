@@ -22,6 +22,8 @@ pub enum AppError {
     #[error("payload too large")]
     TooLarge,
     #[error(transparent)]
+    Vips(#[from] libvips::error::Error),
+    #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
 
@@ -37,6 +39,10 @@ impl IntoResponse for AppError {
             AppError::Conflict => (StatusCode::CONFLICT, None, "conflict"),
             AppError::Cooldown(secs) => (StatusCode::TOO_MANY_REQUESTS, Some(*secs), "cooldown"),
             AppError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, None, "payload too large"),
+            AppError::Vips(e) => {
+                tracing::error!(error = %e, "vips error");
+                (StatusCode::INTERNAL_SERVER_ERROR, None, "internal error")
+            }
             AppError::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, None, "internal error")
@@ -80,12 +86,6 @@ impl From<object_store::Error> for AppError {
 impl From<object_store::path::Error> for AppError {
     fn from(e: object_store::path::Error) -> Self {
         AppError::Internal(anyhow::anyhow!(e).context("object storage path"))
-    }
-}
-
-impl From<libvips::Error> for AppError {
-    fn from(e: libvips::Error) -> Self {
-        AppError::Internal(anyhow::anyhow!(e).context("image processing"))
     }
 }
 

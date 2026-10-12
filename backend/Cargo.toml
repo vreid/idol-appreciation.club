@@ -19,6 +19,7 @@ sqlx = { version = "0.8", default-features = false, features = [
     "uuid",
     "chrono",
     "migrate",
+    "macros",
 ] }
 object_store = { version = "0.12", features = ["aws"] }
 argon2 = { version = "0.5", features = ["std"] }
@@ -36,6 +37,8 @@ thiserror = "2"
 lru = "0.12"
 futures = "0.3"
 bytes = "1"
+anyhow = "1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 libvips = "2.3"
 
 [dev-dependencies]

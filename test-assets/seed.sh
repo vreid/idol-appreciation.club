@@ -81,15 +81,18 @@ echo "    login OK"
 
 # --- placements ---------------------------------------------------------------
 CX=$WORLD_CENTER; CY=$WORLD_CENTER
-HALF=$((SLOT / 2))            # 256
-STEP=$((HALF + GUTTER + SLOT)) # 256+128+512 = 896: row above/below keep a 128px gap to the center image
+HALF=$((SLOT / 2))             # 256
+STEP=$((HALF + GUTTER + SLOT)) # 256+128+512 = 896: top-left y of the nearest ring row above the center image
 
 # category order (02..16) mapped to ring slots, row-major starting top-left.
-# ring rows (y offsets of slot top-left, relative to center): -1536, -896, +384, +1024
-# ring cols (x offsets of slot top-left, relative to center): -1216, -576, +64, +704
+# Ring pitch is 640px (512px slot + 128px gutter), centered on the world
+# center. Row top-lefts (y offsets relative to center): -1536, -896, +384,
+# +1024; the nearest rows sit 128px clear of the center image rect (the
+# size-512 center image is 384x512, i.e. y -256..+256). Column top-lefts
+# (x offsets relative to center): -1216, -576, +64, +704 (also 640px pitch).
 # 16 slots, 15 used: bottom-right slot stays empty.
 FILES=()
-for f in "$IDOLS_DIR"/0[2-9]-*.png "$IDOLS_DIR"/1[0-6]-*.png; do
+for f in "$IDOLS_DIR"/0[2-9]-*.* "$IDOLS_DIR"/1[0-6]-*.*; do
   [ -e "$f" ] || continue
   FILES+=("$f")
 done
@@ -99,8 +102,8 @@ if [ "${#FILES[@]}" -ne 15 ]; then
 fi
 
 # 1) category 01 centered exactly on the world center
-F01=$(ls "$IDOLS_DIR"/01-*.png 2>/dev/null | head -1 || true)
-[ -n "$F01" ] || { echo "ERROR: missing $IDOLS_DIR/01-*.png" >&2; exit 1; }
+F01=$(ls "$IDOLS_DIR"/01-*.* 2>/dev/null | head -1 || true)
+[ -n "$F01" ] || { echo "ERROR: missing $IDOLS_DIR/01-*.*" >&2; exit 1; }
 DIMS=$(img_dims "$F01"); W=${DIMS%x*}; H=${DIMS#*x}
 # server scales the long edge to $SLOT
 if [ "$W" -ge "$H" ]; then PW=$SLOT; PH=$(( SLOT * H / W )); else PH=$SLOT; PW=$(( SLOT * W / H )); fi
@@ -119,9 +122,11 @@ place() { # place FILE X Y
 place "$F01" "$X01" "$Y01"
 
 # 2) ring slots for 02..16 (last slot unused)
+ROWS=( -$((STEP + PITCH)) -$STEP $((HALF + GUTTER)) $((HALF + GUTTER + PITCH)) )
+COLS=( -1216 -576 64 704 )
 i=0
-for ROW in -$((STEP + SLOT)) -$STEP $STEP $((STEP + SLOT)); do
-  for COL in -1216 -576 64 704; do
+for ROW in "${ROWS[@]}"; do
+  for COL in "${COLS[@]}"; do
     [ "$i" -lt "${#FILES[@]}" ] || break
     place "${FILES[$i]}" $(( CX + COL )) $(( CY + ROW ))
     i=$((i + 1))

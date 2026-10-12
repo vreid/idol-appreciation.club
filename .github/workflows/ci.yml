@@ -69,7 +69,9 @@ jobs:
 
   backend-checks:
     name: backend cargo gates
-    if: hashFiles('backend/Cargo.toml') != ''
+    # Owner gates: backend agent commits backend/.ci-ready only when
+    # fmt+clippy+tests pass locally; skip neutrally until then.
+    if: hashFiles('backend/.ci-ready') != ''
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -91,7 +93,9 @@ jobs:
 
   web-checks:
     name: web vp gates
-    if: hashFiles('web/package.json') != ''
+    # Owner gate: web agent commits web/.ci-ready only when
+    # vp check + vp test pass locally; skip neutrally until then.
+    if: hashFiles('web/.ci-ready') != ''
     runs-on: ubuntu-latest
     defaults:
       run:

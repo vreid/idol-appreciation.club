@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 import { ApiError, type ApiClient } from "./api";
 import { DEFAULT_LONG_EDGE } from "./sizing";
 import { createAppStore } from "./state.svelte";
@@ -144,9 +151,9 @@ describe("toasts", () => {
   it("dismissToast removes a specific toast immediately", () => {
     const { store } = makeStore();
     store.startPlace(oversizedBlob(), "big.png", 10, 10);
-    const id = store.toasts[0]?.id;
-    expect(typeof id).toBe("number");
-    store.dismissToast(id as number);
+    const toast = store.toasts[0];
+    if (toast === undefined) throw new Error("expected an error toast");
+    store.dismissToast(toast.id);
     expect(store.toasts.length).toBe(0);
   });
 });

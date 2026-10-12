@@ -26,6 +26,8 @@ CREATE TABLE placements
     seq         bigint      NOT NULL DEFAULT nextval('placement_seq'),
     created_at  timestamptz NOT NULL DEFAULT now(),
     removed_at  timestamptz,
+    original_sha   char(64) NOT NULL,
+    derivative_sha char(64) NOT NULL,
     -- Closed integer bbox [x, x+w-1] x [y, y+h-1]; box && box on closed
     -- integer boxes is exactly half-open rect intersection.
     bbox        box GENERATED ALWAYS AS
@@ -43,6 +45,8 @@ ALTER SEQUENCE placement_seq OWNED BY placements.seq;
 CREATE UNIQUE INDEX placements_seq_key ON placements (seq);
 CREATE INDEX placements_bbox_gist ON placements USING gist (bbox);
 CREATE INDEX placements_account_idx ON placements (account_id);
+CREATE INDEX placements_original_sha_idx ON placements (original_sha)
+    WHERE removed_at IS NULL;
 
 CREATE TABLE reports
 (

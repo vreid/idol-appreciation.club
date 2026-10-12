@@ -26,6 +26,30 @@ pub fn init() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Apply EXIF orientation manually (the crate has no autorotate binding).
+/// Mirrors libvips autorotate: 6 = rotate 90° CW, 5 = transpose (rot90 +
+/// flip horizontal), 7 = transverse (rot90 + flip vertical), etc.
+fn orient_upright(img: VipsImage) -> Result<VipsImage, AppError> {
+    let o = img.get_orientation();
+    let img = match o {
+        2 => ops::flip(&img, ops::Direction::Horizontal)?,
+        3 => ops::rot(&img, ops::Angle::D180)?,
+        4 => ops::flip(&img, ops::Direction::Vertical)?,
+        5 | 7 => {
+            let r = ops::rot(&img, ops::Angle::D90)?;
+            if o == 5 {
+                ops::flip(&r, ops::Direction::Horizontal)?
+            } else {
+                ops::flip(&r, ops::Direction::Vertical)?
+            }
+        }
+        6 => ops::rot(&img, ops::Angle::D90)?,
+        8 => ops::rot(&img, ops::Angle::D270)?,
+        _ => img,
+    };
+    Ok(img)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceFormat {
     Jpeg,
@@ -69,11 +93,8 @@ pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
     } else {
         return Err(AppError::BadRequest("unsupported image format"));
     };
-    let mut img = if img.get_orientation() > 1 {
-        ops::autorotate(&img).map_err(AppError::from)?
-    } else {
-        img
-    };
+    let mut img = orient_upright(img)?;
+
     // Animated inputs (GIF/WEBP): keep only the first frame.
     let pages = img.get_n_pages();
     if pages > 1 {
@@ -88,7 +109,7 @@ pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
     } else {
         img
     };
-    let img = if img.guess_interpretation()? != libvips::ops::Interpretation::Srgb {
+        let img = if img.guess_interpretation()? as i32 != ops::Interpretation::Srgb as i32 {
         ops::colourspace(&img, libvips::ops::Interpretation::Srgb)?
     } else {
         img

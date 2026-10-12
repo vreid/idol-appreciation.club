@@ -17,6 +17,7 @@ import { timeAgo } from "./format";
 
 /** Bounds of the native world expressed in CRS.Simple lat/lng space. */
 const WORLD_LAT_LNG_BOUNDS = L.latLngBounds([-1, 0], [0, 1]);
+const PULSE_MS = 1400;
 
 export interface PlacementForPopup {
   id: number;
@@ -58,22 +59,148 @@ export interface WorldMapController {
 }
 
 interface LeafletTileRecord {
-  el?: HTMLImageElement;
+  el?: unknown;
 }
 
-type LeafletTileIndex = Record<string, LeafletTileRecord | undefined>;
-
-/**
- * Leaflet keeps rendered tiles in the undocumented `_tiles` index keyed
- * "z:x:y". Inference cannot express this library internal, so the shape is
- * asserted once here; `undefined` means the layout changed.
- */
-function leafletTileIndex(layer: L.TileLayer): LeafletTileIndex | undefined {
-  const internal = layer as unknown as { _tiles?: LeafletTileIndex };
-  return internal._tiles;
+function isTileIndex(
+  value: unknown,
+): value is Record<string, LeafletTileRecord> {
+  return typeof value === "object" && value !== null;
 }
 
-const PULSE_MS = 1400;
+function tileImageOf(
+  tiles: Record<string, LeafletTileRecord>,
+  key: string,
+): HTMLImageElement | null {
+  const record = tiles[key];
+  if (record === undefined) return null;
+  const el = record["el"];
+  return el instanceof HTMLImageElement ? el : null;
+}
+
+/** Refetch every rendered tile intersecting the bbox (ETag/no-cache tiles). */
+function invalidateTiles(tileLayer: L.TileLayer, bbox: BBox): void {
+  // Leaflet keeps rendered tiles in the undocumented `_tiles` index keyed
+  // "z:x:y"; narrowed with `in` because the shape is a library internal.
+  if (!("_tiles" in tileLayer)) return;
+  const tiles: unknown = tileLayer._tiles;
+  if (!isTileIndex(tiles)) return;
+  for (const key of tilesIntersecting(Object.keys(tiles), bbox)) {
+    const el = tileImageOf(tiles, key);
+    const tile = parseTileKey(key);
+    if (el !== null && tile !== null) {
+      el.src = tileUrl(tile.z, tile.x, tile.y);
+    }
+  }
+}
+
+function addPulseRect(map: L.Map, bbox: BBox): void {
+  const rect = L.rectangle(
+    L.latLngBounds(
+      worldToLatLng(bbox.x, bbox.y),
+      worldToLatLng(bbox.x + bbox.w, bbox.y + bbox.h),
+    ),
+    { className: "pulse-rect", interactive: false, keyboard: false },
+  ).addTo(map);
+  setTimeout(() => {
+    map.removeLayer(rect);
+  }, PULSE_MS);
+}
+
+function bboxRectangle(map: L.Map, bbox: BBox, className: string): L.Rectangle {
+  return L.rectangle(
+    L.latLngBounds(
+      worldToLatLng(bbox.x, bbox.y),
+      worldToLatLng(bbox.x + bbox.w, bbox.y + bbox.h),
+    ),
+    { className, interactive: false, keyboard: false },
+  ).addTo(map);
+}
+
+function popupContent(
+  p: PlacementForPopup,
+  callbacks: MapCallbacks,
+  map: L.Map,
+): HTMLDivElement {
+  const content = document.createElement("div");
+  content.className = "placement-popup";
+
+  const head = document.createElement("div");
+  head.className = "pp-head";
+  head.textContent = `@${p.username}`;
+  content.append(head);
+
+  const meta = document.createElement("div");
+  meta.className = "pp-meta";
+  meta.textContent = `${p.w}×${p.h} px · ${timeAgo(p.created_at)}`;
+  content.append(meta);
+
+  const actions = document.createElement("div");
+  actions.className = "pp-actions";
+
+  const reportBtn = document.createElement("button");
+  reportBtn.type = "button";
+  reportBtn.className = "pp-btn";
+  reportBtn.textContent = "Report";
+  reportBtn.addEventListener("click", () => {
+    if (callbacks.isLoggedIn()) {
+      callbacks.onReport(p.id);
+      map.closePopup();
+    } else {
+      callbacks.onAuthPrompt();
+    }
+  });
+  actions.append(reportBtn);
+
+  if (callbacks.isAdmin()) {
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "pp-btn pp-danger";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => {
+      callbacks.onRemove(p.id, { x: p.x, y: p.y, w: p.w, h: p.h });
+    });
+    actions.append(removeBtn);
+  }
+
+  content.append(actions);
+  return content;
+}
+
+interface GhostState {
+  el: HTMLImageElement | null;
+  native: { w: number; h: number };
+  pointer: L.Point | null;
+  moving: boolean;
+}
+
+function positionGhost(map: L.Map, ghost: GhostState): void {
+  if (ghost.el === null || ghost.pointer === null) return;
+  ghost.el.style.transform = `translate(${ghost.pointer.x}px, ${ghost.pointer.y}px)`;
+  ghost.el.classList.toggle("hidden", ghost.moving);
+}
+
+function setGhostImage(
+  map: L.Map,
+  container: HTMLElement,
+  ghost: GhostState,
+  next: GhostImage | null,
+): void {
+  ghost.el?.remove();
+  ghost.el = null;
+  if (next === null) return;
+  const el = document.createElement("img");
+  el.className = "map-ghost";
+  el.alt = "";
+  el.src = next.url;
+  ghost.native = { w: next.w, h: next.h };
+  container.append(el);
+  ghost.el = el;
+  const scale = worldScale(map.getZoom());
+  el.style.width = `${ghost.native.w * scale}px`;
+  el.style.height = `${ghost.native.h * scale}px`;
+  positionGhost(map, ghost);
+}
 
 export function createWorldMap(
   container: HTMLElement,
@@ -110,9 +237,12 @@ export function createWorldMap(
 
   map.setView(worldToLatLng(WORLD_CENTER, WORLD_CENTER), 16);
 
-  let ghostEl: HTMLImageElement | null = null;
-  let ghostNative = { w: 0, h: 0 };
-  let lastPointer: L.Point | null = null;
+  const ghost: GhostState = {
+    el: null,
+    native: { w: 0, h: 0 },
+    pointer: null,
+    moving: false,
+  };
   let highlight: L.Rectangle | null = null;
 
   map.on("click", (event: L.LeafletMouseEvent) => {
@@ -120,11 +250,19 @@ export function createWorldMap(
     callbacks.onMapClick(world.x, world.y);
   });
   map.on("mousemove", (event: L.LeafletMouseEvent) => {
-    lastPointer = event.containerPoint;
-    positionGhost();
+    ghost.pointer = event.containerPoint;
+    positionGhost(map, ghost);
   });
-  map.on("move", () => positionGhost());
-  map.on("zoomend", () => resizeGhost());
+  map.on("move", () => {
+    positionGhost(map, ghost);
+  });
+  map.on("movestart", () => {
+    ghost.moving = true;
+  });
+  map.on("moveend", () => {
+    ghost.moving = false;
+    positionGhost(map, ghost);
+  });
   map.on("popupclose", () => {
     if (highlight !== null) {
       map.removeLayer(highlight);
@@ -132,112 +270,26 @@ export function createWorldMap(
     }
   });
 
-  function positionGhost(): void {
-    if (ghostEl === null || lastPointer === null) return;
-    ghostEl.style.transform = `translate(${lastPointer.x}px, ${lastPointer.y}px)`;
-    ghostEl.classList.toggle("hidden", map.isMoving());
-  }
-
-  function resizeGhost(): void {
-    if (ghostEl === null) return;
-    const scale = worldScale(map.getZoom());
-    ghostEl.style.width = `${ghostNative.w * scale}px`;
-    ghostEl.style.height = `${ghostNative.h * scale}px`;
-    positionGhost();
-  }
-
-  function buildPopup(p: PlacementForPopup): HTMLDivElement {
-    const content = document.createElement("div");
-    content.className = "placement-popup";
-
-    const head = document.createElement("div");
-    head.className = "pp-head";
-    head.textContent = `@${p.username}`;
-    content.append(head);
-
-    const meta = document.createElement("div");
-    meta.className = "pp-meta";
-    meta.textContent = `${p.w}×${p.h} px · ${timeAgo(p.created_at)}`;
-    content.append(meta);
-
-    const actions = document.createElement("div");
-    actions.className = "pp-actions";
-
-    const reportBtn = document.createElement("button");
-    reportBtn.type = "button";
-    reportBtn.className = "pp-btn";
-    reportBtn.textContent = "Report";
-    reportBtn.addEventListener("click", () => {
-      if (callbacks.isLoggedIn()) {
-        callbacks.onReport(p.id);
-        map.closePopup();
-      } else {
-        callbacks.onAuthPrompt();
-      }
-    });
-    actions.append(reportBtn);
-
-    if (callbacks.isAdmin()) {
-      const removeBtn = document.createElement("button");
-      removeBtn.type = "button";
-      removeBtn.className = "pp-btn pp-danger";
-      removeBtn.textContent = "Remove";
-      removeBtn.addEventListener("click", () => {
-        callbacks.onRemove(p.id, { x: p.x, y: p.y, w: p.w, h: p.h });
-      });
-      actions.append(removeBtn);
-    }
-
-    content.append(actions);
-    return content;
-  }
-
   return {
     invalidateBBox(bbox: BBox): void {
-      const tiles = leafletTileIndex(tileLayer);
-      if (tiles === undefined) return;
-      for (const key of tilesIntersecting(Object.keys(tiles), bbox)) {
-        const record = tiles[key];
-        const el = record?.el;
-        const tile = parseTileKey(key);
-        if (el !== undefined && tile !== null) {
-          el.src = tileUrl(tile.z, tile.x, tile.y);
-        }
-      }
+      invalidateTiles(tileLayer, bbox);
     },
 
     pulse(bbox: BBox): void {
-      const rect = L.rectangle(
-        L.latLngBounds(
-          worldToLatLng(bbox.x, bbox.y),
-          worldToLatLng(bbox.x + bbox.w, bbox.y + bbox.h),
-        ),
-        { className: "pulse-rect", interactive: false, keyboard: false },
-      ).addTo(map);
-      setTimeout(() => map.removeLayer(rect), PULSE_MS);
+      addPulseRect(map, bbox);
     },
 
-    setGhost(ghost: GhostImage | null): void {
-      if (ghost === null) {
-        ghostEl?.remove();
-        ghostEl = null;
-        return;
-      }
-      ghostNative = { w: ghost.w, h: ghost.h };
-      if (ghostEl === null) {
-        ghostEl = document.createElement("img");
-        ghostEl.className = "map-ghost";
-        ghostEl.alt = "";
-        container.append(ghostEl);
-      }
-      ghostEl.src = ghost.url;
-      resizeGhost();
+    setGhost(next: GhostImage | null): void {
+      setGhostImage(map, container, ghost, next);
     },
 
     setPlacing(placing: boolean): void {
       container.classList.toggle("placing", placing);
-      if (placing) map.scrollWheelZoom.disable();
-      else map.scrollWheelZoom.enable();
+      if (placing) {
+        map.scrollWheelZoom.disable();
+      } else {
+        map.scrollWheelZoom.enable();
+      }
     },
 
     jumpToCenter(): void {
@@ -254,18 +306,13 @@ export function createWorldMap(
     },
 
     showPlacement(p: PlacementForPopup): void {
-      if (highlight !== null) map.removeLayer(highlight);
-      highlight = L.rectangle(
-        L.latLngBounds(
-          worldToLatLng(p.x, p.y),
-          worldToLatLng(p.x + p.w, p.y + p.h),
-        ),
-        { className: "highlight-rect", interactive: false, keyboard: false },
-      ).addTo(map);
-
+      if (highlight !== null) {
+        map.removeLayer(highlight);
+      }
+      highlight = bboxRectangle(map, p, "highlight-rect");
       L.popup({ className: "world-popup", closeButton: true })
         .setLatLng(worldToLatLng(p.x + p.w / 2, p.y + p.h / 2))
-        .setContent(buildPopup(p))
+        .setContent(popupContent(p, callbacks, map))
         .openOn(map);
     },
 
@@ -274,8 +321,8 @@ export function createWorldMap(
     },
 
     destroy(): void {
-      ghostEl?.remove();
-      ghostEl = null;
+      ghost.el?.remove();
+      ghost.el = null;
       map.remove();
     },
   };

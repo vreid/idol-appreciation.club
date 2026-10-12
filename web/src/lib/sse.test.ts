@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 import {
   eventTouchesCenter,
   parseWorldEvent,
@@ -10,31 +17,61 @@ class FakeEventSource implements EventSourceLike {
   static instances: FakeEventSource[] = [];
 
   readyState = 0;
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
-  onerror: (() => void) | null = null;
   closed = false;
+
+  private openListeners: (() => void)[] = [];
+  private messageListeners: ((event: { data: string }) => void)[] = [];
+  private errorListeners: (() => void)[] = [];
 
   constructor(public readonly url: string) {
     FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: "open", listener: () => void): void;
+  addEventListener(
+    type: "message",
+    listener: (event: { data: string }) => void,
+  ): void;
+  addEventListener(type: "error", listener: () => void): void;
+  addEventListener(
+    type: "open" | "message" | "error",
+    listener: (event?: { data: string }) => void,
+  ): void {
+    if (type === "open") {
+      this.openListeners.push(listener);
+    } else if (type === "message") {
+      this.messageListeners.push(listener);
+    } else {
+      this.errorListeners.push(listener);
+    }
   }
 
   close(): void {
     this.closed = true;
   }
 
+  emitOpen(): void {
+    for (const listener of this.openListeners) listener();
+  }
+
   emitMessage(data: string): void {
-    this.onmessage?.({ data });
+    for (const listener of this.messageListeners) listener({ data });
   }
 
   fail(closed: boolean): void {
     this.readyState = closed ? 2 : 1;
-    this.onerror?.();
+    for (const listener of this.errorListeners) listener();
   }
 }
 
 function factory(): (url: string) => EventSourceLike {
   return (url: string) => new FakeEventSource(url);
+}
+
+function lastSource(): FakeEventSource {
+  const last = FakeEventSource.instances.at(-1);
+  if (last === undefined) throw new Error("no EventSource created");
+  return last;
 }
 
 beforeEach(() => {
@@ -85,12 +122,6 @@ describe("eventTouchesCenter", () => {
 });
 
 describe("SseClient", () => {
-  function lastSource(): FakeEventSource {
-    const last = FakeEventSource.instances.at(-1);
-    if (!last) throw new Error("no EventSource created");
-    return last;
-  }
-
   it("connects to the events URL on start", () => {
     const client = new SseClient({
       onEvent: () => {},
@@ -160,7 +191,7 @@ describe("SseClient", () => {
     lastSource().fail(true);
     vi.advanceTimersByTime(1000);
     expect(client.currentBackoffMs()).toBe(2000);
-    lastSource().onopen?.();
+    lastSource().emitOpen();
     expect(client.currentBackoffMs()).toBe(1000);
     client.stop();
   });

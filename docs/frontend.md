@@ -1,0 +1,168 @@
+# Frontend Runbook — idol-appreciation.club/web
+
+Svelte 5 (runes) + Leaflet SPA on the Vite+ (`vp`) toolchain. Static SPA, no
+SSR: `vp build` emits `web/dist` (index.html + hashed assets).
+
+## Commands
+
+Run inside `web/` (pnpm is the enforced package manager via `devEngines`; use
+`vp` wrappers, not bare `npm run`):
+
+| Command              | Purpose                                         |
+| -------------------- | ----------------------------------------------- |
+| `vp dev`             | Dev server, proxies `/api` to localhost:8080    |
+| `vp build`           | Production build into `web/dist`                |
+| `vp preview`         | Serve `dist`, also proxies `/api`               |
+| `vp check`           | oxfmt + oxlint + tsgo type check (gate, exit 0) |
+| `vpr check`          | npm script: svelte-check + tsc (second net)     |
+| `vp test`            | Vitest unit tests                               |
+| `vp test --coverage` | Tests + v8 coverage, fails below 80% lines      |
+| `vp fmt`             | Format (oxfmt); `.md` is excluded (prettier)    |
+
+CI runs `vp check` and `vp test --coverage`; the `web/.ci-ready` marker enables
+those jobs once the local tree is green.
+
+## Toolchain notes (vp)
+
+- Installed via `curl -fsSL https://vite.plus | bash`; `vp` v1.1.0. Project
+  scaffolded with `vp create vite -- web --template svelte-ts` (plain Vite
+  Svelte SPA; the `svelte`/`sv create` template yields SvelteKit + adapter-auto,
+  which does not match the "static SPA in web/dist" requirement, so the closest
+  supported path was used — `vp install` / `vp build` remain the canonical
+  commands).
+- Bundled toolchain (see `vp toolchain`): vite 8.3.3 (rolldown/oxc), vitest
+  5.0.3, oxlint 1.87.0, oxfmt 0.72.0, **oxlint-tsgolint 7.0.2003**.
+- **Type checking uses tsgo (TypeScript 7 native preview)**: `vp check` with
+  `lint.options.typeAware + typeCheck` routes type checks through tsgolint, the
+  oxc-project's TypeScript-Go power checker. There is no
+  `@typescript/native-preview` devDep because vite-plus bundles the binary.
+  tsgolint version: **7.0.2003**.
+- A second, independent type net runs svelte-check + tsc (`vpr check`); both are
+  clean.
+- tsconfig.app.json: `strict`, `noUncheckedIndexedAccess`,
+  `exactOptionalPropertyTypes` (on top of `@tsconfig/svelte`). No `any`, no
+  non-null `!` bypasses; library-internal access goes through runtime-validated
+  narrowing (see `src/lib/worldMap.ts`).
+
+## Lint policy (aggressive)
+
+Configured in `web/vite.config.ts` under `lint`:
+
+- Categories: `correctness: error`, `suspicious: error`, `pedantic: warn`,
+  `perf: warn`; `options.denyWarnings: true` — any warning fails `vp check`.
+- Documented deviations, each with an inline comment in vite.config.ts:
+  - `typescript/prefer-readonly-parameter-types: off` — DOM, Leaflet and Svelte
+    event/props params have no readonly types; everything else stays strict.
+  - `max-lines-per-function: 120` (50 is unworkable for DI-heavy factories),
+    `max-lines: 400` per file.
+  - `no-underscore-dangle` allows `_tiles` — Leaflet's internal tile index,
+    accessed through validated widening (`worldMap.ts`).
+  - One inline `eslint-disable-next-line unicorn/no-array-callback-reference` on
+    `L.map(...)` — Leaflet's map factory trips the Array#map heuristic.
+- oxlint has no `unsafe` category (that is Clippy vocabulary); the strictest
+  supported groups are enabled as described above.
+- Formatting: oxfmt `printWidth 80`, `semi`, double quotes, proseWrap for
+  non-md; Markdown is owned by the repo-wide prettier gate (`.prettierrc`:
+  printWidth 80, proseWrap always) — oxfmt ignores `**/*.md` so the two
+  formatters never fight. `web/README.md` and `docs/frontend.md` are
+  prettier-clean.
+
+## Tests & coverage
+
+`vp test` (Vitest, node env). Test files: `src/lib/*.test.ts`.
+
+- Coordinate helpers (`world.ts`): world↔latLng round-trips, CRS.Simple y-flip,
+  scale at z=0/16/20, tile bboxes at z=0/16/20, tile URL building,
+  `parseTileKey`, bbox→tile selection for SSE invalidation, query-radius clamps,
+  world clamps.
+- API client (`api.ts`): mock-fetch tests for register/login/logout, me (200 +
+  401→null), place() multipart construction (x/y/size FormData), 429 with
+  Retry-After, 400 message, near/center parsing (incl. null current),
+  report/DELETE admin removal, network-failure → status 0.
+- SSE (`sse.ts`): fake EventSource — event parsing, garbage dropping,
+  bbox→center check, reconnect scheduling with doubling backoff capped at 30 s,
+  backoff reset on open, browser-retry passthrough (non-CLOSED errors), stop()
+  semantics.
+- Cooldown (`cooldown.ts`): remaining-ms math, countdown formatting, live
+  Countdown ticking/expiry with fake timers.
+- Sizing (`sizing.ts`): long-edge clamp 16..2048, aspect math (ghost rect), 10
+  MB upload check.
+- Format (`format.ts`): time-ago buckets, duration formatting.
+- Store (`state.svelte.ts`): auth flows, toasts lifecycle, full place flow incl.
+  429 cooldown toast, auth prompts, report/remove rules.
+
+Coverage gate: `vp test --coverage` fails below **80% lines** on `src/lib/**`
+(config in `vitest.config.ts`). Excluded as DOM-only glue: `worldMap.ts`,
+`confetti.ts`, `images.ts`. Latest run: **93.26% lines**.
+
+## Coordinate system (read before touching the map)
+
+- Native world: `2^28 x 2^28` px (268,435,456), 256 px slippy tiles, zooms
+  0..20, tiles at `/api/tiles/{z}/{x}/{y}.webp`. y grows DOWN (image convention,
+  y=0 is the top row). Center "0/0" is `(134217728, 134217728)`.
+- **The CRS.Simple y-flip pitfall**: Leaflet's `L.CRS.Simple` maps screen px as
+  `x = lng * 256 * 2^z`, `y = -lat * 256 * 2^z` (lat grows UP). We keep all app
+  math in native world px and convert only at the Leaflet boundary
+  (`src/lib/world.ts`):
+
+  ```
+  worldToLatLng(x, y) => { lat: -y / 2^28, lng: x / 2^28 }
+  latLngToWorld(lat, lng) => { x: lng * 2^28, y: -lat * 2^28 }
+  ```
+
+  which renders native px one-to-one at zoom 20 (scale `2^(z-20)`). Map bounds:
+  latLng `[-1, 0]..[0, 1]` with viscosity 1.0; tile layer bounds match, so no
+  wrap and no out-of-world tiles.
+
+- SSE invalidation: `place`/`remove` events carry `bbox: [x, y, w, h]`; the
+  client intersects the bbox against visible tile keys (Leaflet's internal
+  `_tiles`, format `z:x:y`) and reassigns each matching `<img>.src` — tiles are
+  ETag/no-cache, so the refetch is a cheap conditional GET.
+- Popup query radius: `256 * 2^(16 - z)` clamped to `[256, 65536]`.
+
+## API usage map
+
+Cookie auth, same-origin. `src/lib/api.ts` is the only fetch site (fetch
+injectable for tests). Endpoints per contract: auth register/login/logout/me,
+place (multipart x/y/size), placements/near, center, events (SSE), reports,
+admin placements delete. The store (`state.svelte.ts`) owns UX rules: 429 →
+cooldown toast with Retry-After; 401/403 → login popover; center chip polls
+`/api/center` every 30 s and refreshes early when an SSE bbox covers the center.
+
+Dev/demo mocking: none — `vp dev` proxies `/api` to `http://localhost:8080`
+(`server.proxy` + `preview.proxy` in vite.config.ts). Point the backend there.
+
+## Docker
+
+`docker build -t idol-web . && docker run -p 8080:8080 idol-web` (from `web/`;
+context is `web/`).
+
+- Multi-stage: `node:24-alpine` installs vp, `vp install --frozen-lockfile`,
+  `vp build`; `caddy:2-alpine` serves `/app/dist` from `/usr/share/caddy` as uid
+  1000 (writable `/data`, `/config`).
+- `Caddyfile`: `encode zstd gzip`; `try_files {path} /index.html` SPA fallback;
+  `/assets/*` → `Cache-Control: public, max-age=31536000, immutable` (hashed
+  filenames); `/index.html` → `no-cache`. Port 8080.
+
+## Bundle size (vp build, this tree)
+
+| Asset             | Raw      | Gzip    |
+| ----------------- | -------- | ------- |
+| JS (index-*.js)   | 215.2 kB | 68.2 kB |
+| CSS (index-*.css) | 25.5 kB  | 9.0 kB  |
+| index.html        | 0.7 kB   | 0.4 kB  |
+
+JS gzipped is 68 kB against the 150 kB target; the only runtime deps are Svelte
+5 and Leaflet 1.9.4.
+
+## Verified
+
+- `vp check` exit 0 (fmt + oxlint + tsgo type check); `vpr check`: svelte-check
+  0 errors/0 warnings + tsc clean.
+- `vp test`: 83 passing; `vp test --coverage`: 93.26% lines.
+- `vp build` produces `web/dist` with hashed assets (sizes above).
+- `vp dev` smoke: page compiles and boots with zero console errors; browser
+  check confirmed topbar, 0/0 chip, center reticle, modals, auth popover,
+  Escape-to-close. `/api` 502s with no backend running, surfaced as toasts —
+  expected without the backend.
+- Docker image built and smoke-tested over HTTP (see Verification).

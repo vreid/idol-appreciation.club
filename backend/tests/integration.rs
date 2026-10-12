@@ -10,7 +10,7 @@ use std::time::Duration;
 use idol_appreciation_club_backend::config::Config;
 use idol_appreciation_club_backend::img;
 use idol_appreciation_club_backend::state::App;
-use idol_appreciation_club_backend::{build_app, router};
+use idol_appreciation_club_backend::build_app;
 use testcontainers_modules::postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -499,7 +499,7 @@ async fn admin_removal_updates_everything() {
     let user = register(&server, "pleb").await;
     let cx = CENTER - 8;
 
-    let p1 = place(&server, &admin, &png(32, 32), cx, cx, 32).await;
+    place(&server, &admin, &png(32, 32), cx, cx, 32).await;
     let p2 = place(&server, &user, &png(48, 48), cx + 4, cx + 4, 48).await;
     assert_eq!(p2.status, 201);
     let pid = p2.json()["id"].clone();

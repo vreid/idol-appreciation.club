@@ -9,7 +9,7 @@ CREATE TABLE accounts
     last_placement_at timestamptz
 );
 
--- Exactly one admin may exist; guards the "first account is admin" race.
+-- Exactly one admin may exist (guards the first-account-is-admin race)
 CREATE UNIQUE INDEX accounts_single_admin ON accounts (is_admin) WHERE is_admin;
 
 CREATE SEQUENCE placement_seq;
@@ -28,8 +28,8 @@ CREATE TABLE placements
     removed_at  timestamptz,
     original_sha   char(64) NOT NULL,
     derivative_sha char(64) NOT NULL,
-    -- Closed integer bbox [x, x+w-1] x [y, y+h-1]; box && box on closed
-    -- integer boxes is exactly half-open rect intersection.
+    -- Closed integer bbox [x, x+w-1] x [y, y+h-1] (box && box on closed
+    -- integer boxes is exactly half-open rect intersection)
     bbox        box GENERATED ALWAYS AS
         (box(point(x::double precision, y::double precision),
              point((x + w)::double precision - 1,
@@ -58,9 +58,9 @@ CREATE TABLE reports
 
 CREATE INDEX reports_placement_idx ON reports (placement_id);
 
--- Staleness index for the tile pyramid: `seq` is the max placement seq that
--- was baked into the rendered tile (0 = rendered empty). A tile object is
--- current iff tiles.seq equals the live maxSeq over the tile bbox.
+-- Staleness index for the tile pyramid (seq = the max placement seq baked
+-- into the rendered tile, 0 = rendered empty) - a tile object is current
+-- iff tiles.seq equals the live maxSeq over the tile bbox
 CREATE TABLE tiles
 (
     z           smallint   NOT NULL,

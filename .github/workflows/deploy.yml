@@ -26,9 +26,25 @@ env:
   CERT_MANAGER_MANIFEST: https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml
 
 jobs:
+  ready:
+    name: owner readiness markers
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.r.outputs.backend }}
+      web: ${{ steps.r.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: r
+        run: |
+          echo "backend=$([ -f backend/.ci-ready ] && echo true || echo false)" \
+            >> "$GITHUB_OUTPUT"
+          echo "web=$([ -f web/.ci-ready ] && echo true || echo false)" \
+            >> "$GITHUB_OUTPUT"
+
   backend-checks:
     name: backend cargo gates
-    if: hashFiles('backend/.ci-ready') != ''
+    needs: ready
+    if: needs.ready.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -47,7 +63,8 @@ jobs:
 
   web-checks:
     name: web vp gates
-    if: hashFiles('web/.ci-ready') != ''
+    needs: ready
+    if: needs.ready.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -61,12 +78,12 @@ jobs:
 
   backend-build:
     name: build backend image
-    needs: [backend-checks]
+    needs: [ready, backend-checks]
     # Owner gate: backend/.ci-ready implies a working Dockerfile.
-    if: |
-      always() &&
-      hashFiles('backend/.ci-ready') != '' &&
-      !failure() && !cancelled()
+    if: >-
+      always() && !failure() && !cancelled() &&
+      needs.ready.outputs.backend == 'true' &&
+      needs.backend-checks.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,12 +105,12 @@ jobs:
 
   web-build:
     name: build web image
-    needs: [web-checks]
+    needs: [ready, web-checks]
     # Owner gate: web/.ci-ready implies a working web/Dockerfile.
-    if: |
-      always() &&
-      hashFiles('web/.ci-ready') != '' &&
-      !failure() && !cancelled()
+    if: >-
+      always() && !failure() && !cancelled() &&
+      needs.ready.outputs.web == 'true' &&
+      needs.web-checks.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,7 +132,7 @@ jobs:
 
   deploy:
     name: deploy to k8s
-    needs: [backend-build, web-build]
+    needs: [ready, backend-build, web-build]
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     environment: production
@@ -169,10 +186,10 @@ jobs:
         run: |
           kubectl apply -f deploy/00-namespace.yaml
           kubectl apply -f deploy/30-issuer.yaml
-          if [ -f backend/.ci-ready ]; then
+          if [ "${{ needs.ready.outputs.backend }}" = "true" ]; then
             kubectl apply -f deploy/10-backend.yaml
           fi
-          if [ -f web/.ci-ready ]; then
+          if [ "${{ needs.ready.outputs.web }}" = "true" ]; then
             kubectl apply -f deploy/15-web.yaml
             kubectl apply -f deploy/20-ingress.yaml
           else
@@ -242,5 +259,5 @@ jobs:
           kubectl -n idol rollout status deployment/web --timeout=300s
 
       - name: Remove bootstrap placeholder
-        if: hashFiles('web/.ci-ready') != ''
+        if: needs.ready.outputs.web == 'true'
         run: kubectl delete -f deploy/placeholder.yaml --ignore-not-found=true

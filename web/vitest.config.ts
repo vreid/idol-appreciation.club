@@ -9,7 +9,8 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],
-      include: ["src/lib/**"],
+      // Logic modules only; .svelte components are render-only glue.
+      include: ["src/lib/*.ts"],
       exclude: [
         "src/lib/**/*.test.ts",
         "src/lib/worldMap.ts",

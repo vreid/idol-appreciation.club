@@ -292,7 +292,6 @@ pub fn flatten_paper(img: &VipsImage) -> Result<VipsImage, AppError> {
 
 /// Encoded opaque red PNG for tests and fixtures (integration tests use
 /// this to build uploads without shipping binary fixtures).
-#[cfg(test)]
 pub fn test_png(width: u32, height: u32) -> Vec<u8> {
     init().expect("vips");
     let black = ops::black(width as i32, height as i32).unwrap();

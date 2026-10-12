@@ -13,6 +13,33 @@ permissions:
   contents: read
 
 jobs:
+  actionlint:
+    name: workflow lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint over all workflows
+        run: |
+          curl -sSLf \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
+          | tar xz -C /tmp actionlint
+          /tmp/actionlint -color .github/workflows/*.yml
+
+  ready:
+    name: owner readiness markers
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.r.outputs.backend }}
+      web: ${{ steps.r.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: r
+        run: |
+          echo "backend=$([ -f backend/.ci-ready ] && echo true || echo false)" \
+            >> "$GITHUB_OUTPUT"
+          echo "web=$([ -f web/.ci-ready ] && echo true || echo false)" \
+            >> "$GITHUB_OUTPUT"
+
   tofu-fmt-validate:
     name: tofu fmt + validate
     runs-on: ubuntu-latest
@@ -34,8 +61,8 @@ jobs:
   tofu-plan:
     name: tofu plan (PRs only)
     if: github.event_name == 'pull_request'
-    environment: production
     runs-on: ubuntu-latest
+    environment: production
     env:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
     steps:
@@ -47,8 +74,8 @@ jobs:
         run: tofu init -backend=false -input=false
         working-directory: tofu
       # Plan without backend state: PRs get a full "would create" preview,
-      # which is enough to catch config errors before merge. Real diffing
-      # happens in infra-apply.
+      # enough to catch config errors pre-merge. Real diffing happens in
+      # infra-apply.
       - name: tofu plan
         run: tofu plan -input=false -no-color
         working-directory: tofu
@@ -64,14 +91,12 @@ jobs:
       # Gate covers every *.md in the repo (README, docs/, agents' notes);
       # ignores come from .prettierignore.
       - name: prettier --check
-        if: hashFiles('**/*.md') != ''
         run: npx --yes prettier --check "**/*.md"
 
-  backend-checks:
+  backend-ci:
     name: backend cargo gates
-    # Owner gates: backend agent commits backend/.ci-ready only when
-    # fmt+clippy+tests pass locally; skip neutrally until then.
-    if: hashFiles('backend/.ci-ready') != ''
+    needs: ready
+    if: needs.ready.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -84,18 +109,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-      - name: cargo fmt --check
-        run: cargo fmt --check
-      - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: cargo test
-        run: cargo test
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
 
-  web-checks:
+  web-ci:
     name: web vp gates
-    # Owner gate: web agent commits web/.ci-ready only when
-    # vp check + vp test pass locally; skip neutrally until then.
-    if: hashFiles('web/.ci-ready') != ''
+    needs: ready
+    if: needs.ready.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -103,11 +124,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: voidzero-dev/setup-vp@v1.21.2
-      - name: vp install
-        run: vp install
+      - run: vp install
       # vp check = tsgo typecheck + oxlint + oxfmt; vp test = vitest with
       # coverage threshold (>=80% on src/lib, enforced by web/ config).
-      - name: vp check
-        run: vp check
-      - name: vp test
-        run: vp test
+      - run: vp check
+      - run: vp test

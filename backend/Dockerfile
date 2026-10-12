@@ -22,6 +22,7 @@ WORKDIR /app
 # Registry + git caches keep dependency builds warm across image builds.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY migrations ./migrations
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build --release --bin backend

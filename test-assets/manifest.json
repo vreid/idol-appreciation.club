@@ -310,6 +310,46 @@
     "cost_if_known": 0.042749999999999996
   },
   {
+    "file": "idols/17-solo-pastel-photocard.jpg",
+    "category": "solo-pastel-photocard",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 286652,
+    "prompt": "Photocard-style studio portrait of a young Korean woman fictional idol with sleek black hair and a pastel pink outfit, holding both hands near her cheeks in a cute pose, mint and lavender gradient backdrop, soft even beauty lighting, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/18-solo-spring-blossom.jpg",
+    "category": "solo-spring-blossom",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 330749,
+    "prompt": "Spring portrait of a young Korean woman fictional idol under blooming cherry blossom trees, petals drifting in the air, beige cardigan and pleated skirt, warm afternoon light, shallow depth of field, editorial seasonal photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/19-solo-summer-beach.jpg",
+    "category": "solo-summer-beach",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 321794,
+    "prompt": "Summer beach portrait of a young Korean woman fictional idol in a white linen shirt and straw hat, ocean waves and bright blue sky behind her, wind in her hair, golden sunlight, vacation photobook aesthetic, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/20-solo-autumn-park.jpg",
+    "category": "solo-autumn-park",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 390144,
+    "prompt": "Autumn portrait of a young Korean woman fictional idol in a camel trench coat and plaid scarf standing in a park full of golden ginkgo trees, fallen leaves swirling, cozy warm tones, editorial fall fashion photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/30-group-seven-girls.jpg",
     "category": "group-seven-girls",
     "aspect_ratio": "16:9",

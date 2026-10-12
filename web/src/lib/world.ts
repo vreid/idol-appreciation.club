@@ -76,7 +76,7 @@ export function bboxesIntersect(a: BBox, b: BBox): boolean {
 }
 
 /** Leaflet tile keys look like "z:x:y". Returns null for other shapes. */
-export function parseTileKey(key: string): WorldPoint & { z: number } | null {
+export function parseTileKey(key: string): (WorldPoint & { z: number }) | null {
   const parts = key.split(":");
   if (parts.length !== 3) return null;
   const z = Number(parts[0]);

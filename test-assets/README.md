@@ -21,12 +21,15 @@ pipeline and seeding the live canvas.
 ## Total spend
 
 Generated with `bytedance/seedream-v5.0-pro` via the NanoGPT Image API at
-`resolution: "1k"` with per-image `aspect_ratio`; the API reported
-`cost: $0.0855` per image in every response.
+`resolution: "1k"` with per-image `aspect_ratio`: non-square images cost
+$0.0855 each (3:4 -> 1773x2364, 16:9 -> 2730x1536) and square images cost
+$0.04275 each (1:1 -> 1024x1024), as reported per request in
+`manifest.json`.
 
-**Total spend: $1.368** (16 images x $0.0855, as recorded per image in
-`manifest.json`; account balance went from $37.68722706 to $36.31922706).
-Well under the $8 target / $10 hard cap.
+**Total spend: $1.2825** — $1.1970 for the 16 recorded generations plus
+$0.0855 for one earlier probe request used to confirm parameter support.
+Account balance went from $37.68722706 to $36.40472706. Well under the
+$8 target / $10 hard cap.
 
 ## How they were made
 
@@ -34,8 +37,8 @@ Well under the $8 target / $10 hard cap.
    `GET /api/v1/images/models/{model}/endpoints`: this model accepts
    `resolution` values `1:1 16:9 9:16 3:2 2:3 4:3 3:4 1k 2k` (no 4k) and up
    to 4 output images. `1k` is the cheapest tier; combining
-   `resolution: "1k"` with `aspect_ratio` yielded ~1.5k JPEGs
-   (e.g. 1773x2364 for 3:4) at $0.0855 per image.
+   `resolution: "1k"` with `aspect_ratio` yielded ~1.5k-2.7k JPEGs
+   (1024x1024 for 1:1, 1773x2364 for 3:4, 2730x1536 for 16:9).
    `POST /api/v1/images` with JSON `{model, prompt, n:1, resolution,
    aspect_ratio}` and the `x-api-key` header. Responses return
    `created`, `data` (`b64_json`), `cost`, `paymentSource`,

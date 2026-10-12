@@ -1,20 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  ApiError,
-  createApiClient,
-  type Placement,
-} from "./api";
+import { ApiError, createApiClient, type Placement } from "./api";
 
 interface RecordedRequest {
   url: string;
   init: RequestInit;
 }
 
-function jsonResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
-  const response = new Response(
-    body === null ? null : JSON.stringify(body),
-    { status, headers },
-  );
+function jsonResponse(
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+): Response {
+  const response = new Response(body === null ? null : JSON.stringify(body), {
+    status,
+    headers,
+  });
   return response;
 }
 
@@ -23,7 +23,10 @@ function fetchMock(responder: (url: string, init: RequestInit) => Response): {
   fetch: typeof fetch;
 } {
   const calls: RecordedRequest[] = [];
-  const impl = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const impl = (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response> => {
     calls.push({ url: String(input), init: init ?? {} });
     return Promise.resolve(responder(String(input), init ?? {}));
   };
@@ -170,9 +173,14 @@ describe("near / center", () => {
   });
 
   it("parses center with null current", async () => {
-    const mock = fetchMock(() => jsonResponse(200, { current: null, all_time: [] }));
+    const mock = fetchMock(() =>
+      jsonResponse(200, { current: null, all_time: [] }),
+    );
     const api = createApiClient({ fetch: mock.fetch });
-    await expect(api.center()).resolves.toEqual({ current: null, all_time: [] });
+    await expect(api.center()).resolves.toEqual({
+      current: null,
+      all_time: [],
+    });
   });
 });
 
@@ -198,14 +206,17 @@ describe("report / admin remove", () => {
 
 describe("transport errors", () => {
   it("maps rejected fetch to status 0 ApiError", async () => {
-    const boom = (() => Promise.reject(new TypeError("offline"))) as typeof fetch;
+    const boom = (() =>
+      Promise.reject(new TypeError("offline"))) as typeof fetch;
     const api = createApiClient({ fetch: boom });
     await expect(api.center()).rejects.toMatchObject({ status: 0 });
   });
 
   it("network failure during place also surfaces as status 0", async () => {
     const api = createApiClient({
-      fetch: vi.fn(() => Promise.reject(new Error("x"))) as unknown as typeof fetch,
+      fetch: vi.fn(() =>
+        Promise.reject(new Error("x")),
+      ) as unknown as typeof fetch,
     });
     await expect(
       api.place({ image: new Blob(), fileName: "a", x: 0, y: 0, size: 16 }),

@@ -18,8 +18,7 @@ export function burstConfetti(
     const dy = Math.sin(angle) * distance - 30;
     piece.style.left = `${x}px`;
     piece.style.top = `${y}px`;
-    piece.style.background =
-      COLORS[i % COLORS.length] ?? "#ff5fa2";
+    piece.style.background = COLORS[i % COLORS.length] ?? "#ff5fa2";
     piece.style.width = `${6 + Math.random() * 5}px`;
     piece.style.height = `${8 + Math.random() * 6}px`;
     container.append(piece);

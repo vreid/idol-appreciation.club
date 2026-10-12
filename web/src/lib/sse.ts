@@ -118,7 +118,9 @@ export class SseClient {
 
   /** Milliseconds of the next scheduled reconnect wait. */
   currentBackoffMs(): number {
-    return this.reconnectTimer !== null ? this.scheduledDelayMs : this.backoffMs;
+    return this.reconnectTimer !== null
+      ? this.scheduledDelayMs
+      : this.backoffMs;
   }
 
   isReconnectScheduled(): boolean {

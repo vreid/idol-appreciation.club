@@ -23,12 +23,11 @@
       />
       <label class="place-slider">
         <span>
+          {@const size = store.ghostSize()}
           Long edge
           <b>{store.longEdge}px</b>
           →
-          {#each [store.ghostSize()] as size (size.w)}
-            {size.w}×{size.h}px
-          {/each}
+          {size.w}×{size.h}px
         </span>
         <input
           type="range"
@@ -39,7 +38,11 @@
           oninput={(e) => store.setLongEdge(e.currentTarget.valueAsNumber)}
         />
       </label>
-      <button class="btn primary wide" type="button" onclick={() => store.enterChoose()}>
+      <button
+        class="btn primary wide"
+        type="button"
+        onclick={() => store.enterChoose()}
+      >
         🎯 Choose spot
       </button>
     {:else if store.prepared}
@@ -52,7 +55,11 @@
         Tap or click the map — the ghost is centered where you point.
       </p>
       <div class="panel-row">
-        <button class="btn ghost wide" type="button" onclick={() => store.backToPanel()}>
+        <button
+          class="btn ghost wide"
+          type="button"
+          onclick={() => store.backToPanel()}
+        >
           ← Adjust size
         </button>
         {#if store.submittingPlace}

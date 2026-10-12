@@ -56,10 +56,7 @@ export class Countdown {
   }
 
   private tick(): void {
-    const remaining = cooldownRemainingMs(
-      this.cooldownUntil,
-      Date.now(),
-    );
+    const remaining = cooldownRemainingMs(this.cooldownUntil, Date.now());
     this.callbacks.onTick(remaining);
     if (remaining === 0 && !this.expiredNotified) {
       this.expiredNotified = true;

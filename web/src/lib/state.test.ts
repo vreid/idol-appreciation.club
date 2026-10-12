@@ -7,7 +7,9 @@ interface ClientProbe {
   placeCalls: { x: number; y: number; size: number }[];
 }
 
-function makeClient(overrides: Partial<ApiClient> = {}): ApiClient & ClientProbe {
+function makeClient(
+  overrides: Partial<ApiClient> = {},
+): ApiClient & ClientProbe {
   const placeCalls: { x: number; y: number; size: number }[] = [];
   return {
     register: vi.fn(() => Promise.resolve()),
@@ -26,9 +28,7 @@ function makeClient(overrides: Partial<ApiClient> = {}): ApiClient & ClientProbe
       });
     }),
     near: vi.fn(() => Promise.resolve([])),
-    center: vi.fn(() =>
-      Promise.resolve({ current: null, all_time: [] }),
-    ),
+    center: vi.fn(() => Promise.resolve({ current: null, all_time: [] })),
     report: vi.fn(() => Promise.resolve()),
     removePlacement: vi.fn(() => Promise.resolve()),
     ...overrides,
@@ -107,8 +107,7 @@ describe("session", () => {
 
   it("login failure keeps the prompt and reports the error", async () => {
     const client = makeClient({
-      login: () =>
-        Promise.reject(new ApiError(401, "wrong password", null)),
+      login: () => Promise.reject(new ApiError(401, "wrong password", null)),
     });
     const { store } = makeStore(client);
     const ok = await store.login("liz", "bad");

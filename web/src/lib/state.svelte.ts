@@ -119,7 +119,10 @@ export function createAppStore(
   function pushToast(kind: ToastKind, message: string): void {
     const id = nextToastId++;
     toasts.push({ id, kind, message });
-    setTimeout(() => dismissToast(id), kind === "error" ? errorToastMs : toastMs);
+    setTimeout(
+      () => dismissToast(id),
+      kind === "error" ? errorToastMs : toastMs,
+    );
   }
 
   function dismissToast(id: number): void {
@@ -127,7 +130,9 @@ export function createAppStore(
   }
 
   function isAuthStatus(err: unknown): boolean {
-    return err instanceof ApiError && (err.status === 401 || err.status === 403);
+    return (
+      err instanceof ApiError && (err.status === 401 || err.status === 403)
+    );
   }
 
   function describeApiError(err: unknown): string {
@@ -197,7 +202,8 @@ export function createAppStore(
     await doRefreshMe();
     authPrompt = false;
     const who = me?.username ?? username;
-    const verb = action === "login" ? "Welcome back" : "Account created, welcome";
+    const verb =
+      action === "login" ? "Welcome back" : "Account created, welcome";
     pushToast("success", `${verb}, ${who}!`);
     return true;
   }

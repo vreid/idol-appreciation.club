@@ -41,8 +41,8 @@
                 (Date.now() - Date.parse(store.center.current.since)) / 1000,
               ),
             )}
-            · current placement {store.center.current.placement.w}×{store
-              .center.current.placement.h}
+            · current placement {store.center.current.placement.w}×{store.center
+              .current.placement.h}
             px
           </div>
         </div>

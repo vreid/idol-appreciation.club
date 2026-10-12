@@ -138,5 +138,25 @@
     "bytes": 111726,
     "prompt": "K-pop album unboxing flat lay photographed from directly above, generic pastel album sleeve with abstract star artwork, shiny photocard, CD with iridescent reflection, photocard sleeves and stickers on a clean desk, no readable text or logos, product photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/15-finale-fireworks.jpg",
+    "category": "finale-fireworks",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 567501,
+    "prompt": "Wide shot of an outdoor festival stage finale at night, fictional idol group silhouetted on the main stage while huge colorful fireworks explode over a massive crowd holding lightsticks, epic cinematic concert photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/16-beauty-rainbow.jpg",
+    "category": "beauty-rainbow",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 101037,
+    "prompt": "Extreme close-up beauty shot of a fictional idol's face, rainbow prism light refracting across flawless dewy skin, glitter freckles, glossy lips, iridescent highlighter, high-end beauty editorial photography, macro 100mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
   }
 ]

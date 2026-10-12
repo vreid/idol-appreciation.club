@@ -92,7 +92,10 @@ describe("SseClient", () => {
   }
 
   it("connects to the events URL on start", () => {
-    const client = new SseClient({ onEvent: () => {}, sourceFactory: factory() });
+    const client = new SseClient({
+      onEvent: () => {},
+      sourceFactory: factory(),
+    });
     client.start();
     expect(lastSource().url).toBe("/api/events");
     client.stop();
@@ -163,7 +166,10 @@ describe("SseClient", () => {
   });
 
   it("lets the browser retry when readyState is not CLOSED", () => {
-    const client = new SseClient({ onEvent: () => {}, sourceFactory: factory() });
+    const client = new SseClient({
+      onEvent: () => {},
+      sourceFactory: factory(),
+    });
     client.start();
     lastSource().fail(false);
     expect(client.isReconnectScheduled()).toBe(false);
@@ -172,7 +178,10 @@ describe("SseClient", () => {
   });
 
   it("stop() closes the socket and cancels pending reconnects", () => {
-    const client = new SseClient({ onEvent: () => {}, sourceFactory: factory() });
+    const client = new SseClient({
+      onEvent: () => {},
+      sourceFactory: factory(),
+    });
     client.start();
     lastSource().fail(true);
     client.stop();
@@ -183,7 +192,10 @@ describe("SseClient", () => {
   });
 
   it("start() is idempotent", () => {
-    const client = new SseClient({ onEvent: () => {}, sourceFactory: factory() });
+    const client = new SseClient({
+      onEvent: () => {},
+      sourceFactory: factory(),
+    });
     client.start();
     client.start();
     expect(FakeEventSource.instances.length).toBe(1);

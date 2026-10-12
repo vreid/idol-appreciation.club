@@ -187,7 +187,10 @@ function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         const { body } = await request("GET", "/api/auth/me");
         return body as Me;
       } catch (cause) {
-        if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403)) {
+        if (
+          cause instanceof ApiError &&
+          (cause.status === 401 || cause.status === 403)
+        ) {
           return null;
         }
         throw cause;
@@ -262,20 +265,27 @@ function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       }
       const all_time = rawAllTime.map((raw) => {
         const entry = expectObject(raw);
-        return { username: str(entry, "username"), seconds: num(entry, "seconds") };
+        return {
+          username: str(entry, "username"),
+          seconds: num(entry, "seconds"),
+        };
       });
       return { current, all_time };
     },
     report: (placementId) =>
-      request("POST", "/api/reports", JSON.stringify({ placement_id: placementId }), {
-        "Content-Type": "application/json",
-      }).then(() => undefined),
+      request(
+        "POST",
+        "/api/reports",
+        JSON.stringify({ placement_id: placementId }),
+        {
+          "Content-Type": "application/json",
+        },
+      ).then(() => undefined),
     removePlacement: (placementId) =>
       request("DELETE", `/api/admin/placements/${placementId}`).then(
         () => undefined,
       ),
   };
 }
-
 
 export { createApiClient };

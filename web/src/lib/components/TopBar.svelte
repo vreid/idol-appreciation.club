@@ -1,10 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import type { AppStore } from "../state.svelte";
-  import {
-    cooldownRemainingMs,
-    formatCountdown,
-  } from "../cooldown";
+  import { cooldownRemainingMs, formatCountdown } from "../cooldown";
   import { formatDuration } from "../format";
 
   let {
@@ -114,7 +111,11 @@
         {#if store.me.is_admin}
           <span class="admin-tag">admin</span>
         {/if}
-        <button class="btn ghost small" type="button" onclick={() => store.logout()}>
+        <button
+          class="btn ghost small"
+          type="button"
+          onclick={() => store.logout()}
+        >
           Log out
         </button>
       </span>

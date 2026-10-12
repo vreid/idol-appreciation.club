@@ -295,6 +295,15 @@ admin URI.
 
 Hourly billing everywhere; a destroy/recreate cycle costs pennies.
 
+## Debugging the backend gate environment locally
+
+Podman can reproduce the CI gate environment exactly: the backend gates run
+inside the pinned `rust:trixie` + libvips 8.16.1 builder image, so
+`podman build --target builder -t backend-builder backend` +
+`podman run --rm backend-builder bash -c 'cargo test'` reproduces CI test
+behavior locally (the backend agent used this to chase the webp
+determinism failure).
+
 ## UpCloud S3 quirk
 
 Streamed SigV4 PUTs (boto3 default signed payload) fail with

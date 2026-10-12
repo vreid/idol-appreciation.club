@@ -7,10 +7,11 @@ import type {
   ApiClient,
   CenterInfo,
   Me,
+  PendingAccount,
   Placement,
-  PlacedPlacement,
 } from "./api";
 import { ApiError, MAX_UPLOAD_BYTES } from "./api";
+import { describeApiError, isAuthStatus } from "./apiErrors";
 import {
   clampLongEdge,
   DEFAULT_LONG_EDGE,
@@ -18,92 +19,23 @@ import {
   longEdgeToSize,
 } from "./sizing";
 import { clampToWorldPoint } from "./world";
+import { createToastHub } from "./toasts.svelte";
+import type {
+  AppStore,
+  AppStoreDeps,
+  PlaceAttempt,
+  PlaceMode,
+  PreparedImage,
+} from "./stateTypes";
 
-export type ToastKind = "info" | "error" | "success";
-
-export interface Toast {
-  id: number;
-  kind: ToastKind;
-  message: string;
-}
-
-/** idle: nothing happening; panel: preview ready; choose: picking a spot. */
-export type PlaceMode = "idle" | "panel" | "choose";
-
-export interface PreparedImage {
-  file: Blob;
-  fileName: string;
-  previewUrl: string;
-  naturalW: number;
-  naturalH: number;
-}
-
-export type PlaceAttempt =
-  | { ok: true; placement: PlacedPlacement }
-  | { ok: false };
-
-export interface AppStore {
-  readonly me: Me | null;
-  readonly authChecked: boolean;
-  readonly center: CenterInfo | null;
-  readonly toasts: Toast[];
-  readonly placeMode: PlaceMode;
-  readonly prepared: PreparedImage | null;
-  readonly longEdge: number;
-  readonly submittingPlace: boolean;
-  readonly authPrompt: boolean;
-
-  dismissToast(id: number): void;
-  /** App-level informational toast (empty placements, bad file, ...). */
-  notify(message: string): void;
-  refreshMe(): Promise<void>;
-  refreshCenter(): Promise<void>;
-  login(username: string, password: string): Promise<boolean>;
-  register(username: string, password: string): Promise<boolean>;
-  logout(): Promise<void>;
-  promptAuth(): void;
-  dismissAuth(): void;
-  /** Returns false (with an error toast) when the file is rejected. */
-  startPlace(
-    file: Blob,
-    fileName: string,
-    naturalW: number,
-    naturalH: number,
-  ): boolean;
-  setLongEdge(value: number): void;
-  ghostSize(): { w: number; h: number };
-  enterChoose(): void;
-  backToPanel(): void;
-  cancelPlace(): void;
-  confirmSpot(x: number, y: number): Promise<PlaceAttempt>;
-  refreshNear(x: number, y: number, r: number): Promise<Placement[]>;
-  reportPlacement(placementId: string): Promise<void>;
-  removePlacement(placementId: string): Promise<boolean>;
-}
-
-export interface AppStoreDeps {
-  /** Injectable so tests can run without a DOM/object-URL implementation. */
-  createObjectUrl?: (blob: Blob) => string;
-  revokeObjectUrl?: (url: string) => void;
-  toastMs?: number;
-  errorToastMs?: number;
-}
-
-const TOAST_MS = 4000;
-const ERROR_TOAST_MS = 6000;
-const MAX_UPLOAD_MB = Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024);
-
-function isAuthStatus(err: unknown): boolean {
-  return err instanceof ApiError && (err.status === 401 || err.status === 403);
-}
-
-function describeApiError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (isAuthStatus(err)) return "You need to be logged in for that";
-    return err.message;
-  }
-  return "Something went wrong, please retry";
-}
+export type { Toast, ToastKind } from "./toasts.svelte";
+export type {
+  AppStore,
+  AppStoreDeps,
+  PlaceAttempt,
+  PlaceMode,
+  PreparedImage,
+} from "./stateTypes";
 
 export function createAppStore(
   client: ApiClient,
@@ -116,35 +48,18 @@ export function createAppStore(
     ((url: string) => {
       URL.revokeObjectURL(url);
     });
-  const toastMs = deps.toastMs ?? TOAST_MS;
-  const errorToastMs = deps.errorToastMs ?? ERROR_TOAST_MS;
 
   let me = $state<Me | null>(null);
   let authChecked = $state(false);
   let center = $state<CenterInfo | null>(null);
-  let toasts = $state<Toast[]>([]);
   let placeMode = $state<PlaceMode>("idle");
   let prepared = $state<PreparedImage | null>(null);
   let longEdge = $state(DEFAULT_LONG_EDGE);
   let submittingPlace = $state(false);
   let authPrompt = $state(false);
 
-  let nextToastId = 1;
-
-  function pushToast(kind: ToastKind, message: string): void {
-    const id = nextToastId++;
-    toasts.push({ id, kind, message });
-    setTimeout(
-      () => {
-        dismissToast(id);
-      },
-      kind === "error" ? errorToastMs : toastMs,
-    );
-  }
-
-  function dismissToast(id: number): void {
-    toasts = toasts.filter((toast) => toast.id !== id);
-  }
+  const toastHub = createToastHub(deps);
+  const { push: pushToast, dismiss: dismissToast } = toastHub;
 
   function requireAuth(): boolean {
     if (me !== null) return true;
@@ -183,23 +98,34 @@ export function createAppStore(
     }
   }
 
+  let registrationPending = $state(false);
+  let authError = $state("");
+  let adminPending = $state<PendingAccount[]>([]);
+
   async function authenticate(
     action: "login" | "register",
     username: string,
     password: string,
   ): Promise<boolean> {
+    registrationPending = false;
+    authError = "";
     try {
       if (action === "login") {
         await client.login(username, password);
       } else {
-        await client.register(username, password);
+        const created = await client.register(username, password);
+        if (created.pending) {
+          // External approval gate: no session yet, account awaits an admin.
+          registrationPending = true;
+          pushToast("info", "Account created — awaiting admin approval");
+          return false;
+        }
       }
     } catch (err) {
-      // While authenticating, a 401 IS the answer: show the server's words.
-      pushToast(
-        "error",
-        err instanceof ApiError ? err.message : describeApiError(err),
-      );
+      // While authenticating, an error status IS the answer: surface the
+      // server's words inline (e.g. 403 "account pending approval").
+      authError = err instanceof ApiError ? err.message : describeApiError(err);
+      pushToast("error", authError);
       return false;
     }
     await doRefreshMe();
@@ -209,6 +135,24 @@ export function createAppStore(
       action === "login" ? "Welcome back" : "Account created, welcome";
     pushToast("success", `${verb}, ${who}!`);
     return true;
+  }
+
+  async function loadAdminPending(): Promise<void> {
+    try {
+      adminPending = await client.pendingAccounts();
+    } catch (err) {
+      pushToast("error", describeApiError(err));
+    }
+  }
+
+  async function approveAccount(username: string): Promise<void> {
+    try {
+      await client.approveAccount(username);
+      adminPending = adminPending.filter((a) => a.username !== username);
+      pushToast("success", `Approved ${username}`);
+    } catch (err) {
+      pushToast("error", describeApiError(err));
+    }
   }
 
   return {
@@ -222,7 +166,7 @@ export function createAppStore(
       return center;
     },
     get toasts() {
-      return toasts;
+      return toastHub.list;
     },
     get placeMode() {
       return placeMode;
@@ -252,6 +196,20 @@ export function createAppStore(
     login: (username, password) => authenticate("login", username, password),
     register: (username, password) =>
       authenticate("register", username, password),
+    get registrationPending() {
+      return registrationPending;
+    },
+    get authError() {
+      return authError;
+    },
+    clearAuthError() {
+      authError = "";
+    },
+    get adminPending() {
+      return adminPending;
+    },
+    loadAdminPending,
+    approveAccount,
 
     async logout(): Promise<void> {
       try {
@@ -274,7 +232,10 @@ export function createAppStore(
 
     startPlace(file, fileName, naturalW, naturalH): boolean {
       if (!isUploadSizeOk(file.size)) {
-        pushToast("error", `Image too large: max ${MAX_UPLOAD_MB}MB`);
+        pushToast(
+          "error",
+          `Image too large: max ${Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024)}MB`,
+        );
         return false;
       }
       releasePrepared();

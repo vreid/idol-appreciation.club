@@ -212,6 +212,10 @@ Tests:
   postgres 11, so the tests pin 16-alpine for generated columns).
 - `backend/scripts/smoke.sh [IMAGE]` — boots postgres + minio + the built image
   and proves register → place → 429 → tiles → center → SSE end to end.
+- `S3_LIVE_CHECK=1 cargo test --test s3_live -- --ignored` — roundtrip against
+  the REAL bucket (plus normal `S3_*` env); exercises the production buffered
+  known-length PUT path (UpCloud rejects streamed/chunked SigV4 PUTs). Skipped
+  everywhere else, so default runs never need cloud credentials.
 
 CI note: fmt/clippy/test all need `libvips-dev` installed on the runner.
 

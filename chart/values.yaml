@@ -1,0 +1,47 @@
+# Digests are injected by deploy.yml (helm --set-string) from the image
+# build jobs; plain tags are the local-dev fallback only.
+images:
+  backend:
+    repository: ghcr.io/vreid/idol-appreciation.club-backend
+    tag: main
+    digest: ""
+  web:
+    repository: ghcr.io/vreid/idol-appreciation.club-web
+    tag: main
+    digest: ""
+
+domain: idol-appreciation.club
+
+backend:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1500m
+      memory: 1536Mi
+
+web:
+  # false = bootstrap: placeholder Deployment+Service become a plain-HTTP
+  # edge until the web image exists.
+  enabled: true
+  # Caddy edge: resources are tiny (static files + proxy).
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# UpCloud CCM load balancer config for the edge Service. TCP frontends with
+# TCP health checks: the LB must NOT terminate TLS (Caddy owns ACME) and
+# must not use the CCM's broken-by-default HTTP checks.
+edgeLoadBalancer:
+  plan: essentials
+  healthCheck:
+    type: tcp
+    interval: 10
+    fall: 3
+    rise: 3

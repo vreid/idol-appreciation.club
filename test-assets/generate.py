@@ -617,7 +617,8 @@ def main():
     if os.path.exists(manifest_path):
         with open(manifest_path, encoding="utf-8") as fh:
             entries = json.load(fh)
-    done = {e["category"] for e in entries}
+    manifest_cats = {e["category"] for e in entries}
+    done = {num for num, slug, _a, _p in CATEGORIES if slug in manifest_cats}
     spend = sum(e.get("cost_if_known") or 0 for e in entries)
     print(f"BALANCE BEFORE: ${check_balance(key):.8f} "
           f"(lifetime spend on this set: ${spend:.4f})", flush=True)

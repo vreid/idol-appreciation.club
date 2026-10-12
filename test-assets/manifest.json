@@ -430,6 +430,16 @@
     "cost_if_known": 0.08549999999999999
   },
   {
+    "file": "idols/29-group-six-girls.jpg",
+    "category": "group-six-girls",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 466545,
+    "prompt": "Six-member girl group of fictional idols in a V formation on a dark arena stage, crimson and gold stage lighting, dramatic synchronized choreography with flowing ribbons, epic concert photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/30-group-seven-girls.jpg",
     "category": "group-seven-girls",
     "aspect_ratio": "16:9",
@@ -437,6 +447,26 @@
     "height": 1536,
     "bytes": 589974,
     "prompt": "Epic wide shot of a seven-member girl group of fictional idols filling a massive award-show stage, elaborate silver-and-white stage costumes, towering LED columns and laser beams, powerful synchronized choreography, cinematic wide concert photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/30-group-seven-girls.jpg",
+    "category": "group-seven-girls",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 555502,
+    "prompt": "Epic wide shot of a seven-member girl group of fictional idols filling a massive award-show stage, elaborate silver-and-white stage costumes, towering LED columns and laser beams, powerful synchronized choreography, cinematic wide concert photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/31-girlgroup-dance-break.jpg",
+    "category": "girlgroup-dance-break",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 393903,
+    "prompt": "Girl group of fictional idols frozen mid dance-break on a music-show stage, five dancers in sharp synchronized poses, dust and haze kicking up under strobe lights, high-speed concert photography, 70mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
   }
 ]

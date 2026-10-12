@@ -81,20 +81,19 @@ are `!Send`, so no image ever crosses an `.await`):
    gif/avif-heif accepted; unknown → 400). Animated input collapses to frame 0;
    EXIF orientation is applied manually (the crate has no autorotate binding);
    result normalized to RGBA sRGB.
-2. **Strip + re-save in the source codec**: jpeg → `.jpg[Q=90,strip=TRUE]`,
-   png → `.png[strip=TRUE]`, webp → `.webp[Q=90,strip=TRUE]`, gif →
+2. **Strip + re-save in the source codec**: jpeg → `.jpg[Q=90,strip=TRUE]`, png
+   → `.png[strip=TRUE]`, webp → `.webp[Q=90,strip=TRUE]`, gif →
    `.gif[strip=TRUE]`, avif → `.avif[Q=90,compression=av1,strip=TRUE]`. sha256
    of **those bytes** is the content address: `originals/{sha256}.{ext}`. Raw
    uploads never touch storage; no EXIF (GPS) survives.
-3. Derivative: re-decode the stripped bytes, `resize_exact` to the derived
-   `w×h` (long edge = requested `size`, short edge rounds to nearest, min 1),
-   encode webp q85. Those bytes are deterministic for identical inputs and are
-   hashed to `derivatives/{sha256}.webp`. Manifest
+3. Derivative: re-decode the stripped bytes, `resize_exact` to the derived `w×h`
+   (long edge = requested `size`, short edge rounds to nearest, min 1), encode
+   webp q85. Those bytes are deterministic for identical inputs and are hashed
+   to `derivatives/{sha256}.webp`. Manifest
    `image_key`/`original_sha`/`derivative_sha` point at content keys; uploads
    use put-if-absent so repeats cost nothing.
-4. `duplicate_count` (prior non-removed placements with the same
-   `original_sha`) is returned additively; `GET /api/images/{sha256}/count`
-   exposes it publicly.
+4. `duplicate_count` (prior non-removed placements with the same `original_sha`)
+   is returned additively; `GET /api/images/{sha256}/count` exposes it publicly.
 
 Exact-byte dedupe only. Perceptual near-dup (pHash) is a possible future knob,
 out of scope v1. Content hashes (originals and derivatives) are
@@ -102,10 +101,9 @@ out of scope v1. Content hashes (originals and derivatives) are
 identical uploads inside one running backend dedupe to one object); byte
 stability across libvips/libwebp builds is explicitly not required. A server
 upgrade may therefore produce new hash keys for new uploads — old keys keep
-resolving. The deployment pins libvips to Debian trixie's `8.16.1-1+deb13u2`
-in both Dockerfile stages so prod behavior matches one known build (CI gates
-run Ubuntu 24.04's libvips 8.15.1 and never assert cross-version byte
-determinism).
+resolving. The deployment pins libvips to Debian trixie's `8.16.1-1+deb13u2` in
+both Dockerfile stages so prod behavior matches one known build (CI gates run
+Ubuntu 24.04's libvips 8.15.1 and never assert cross-version byte determinism).
 
 ## Placement, cooldown, ordering
 
@@ -124,8 +122,8 @@ order always matches `seq` order):
 
 3. `seq = nextval('placement_seq')` inside the tx (burned seqs on rollback are
    fine — monotonic, not gapless).
-4. Composite the derivative onto every intersecting chunk (fetch, vips
-   composite with pixel offset, put back).
+4. Composite the derivative onto every intersecting chunk (fetch, vips composite
+   with pixel offset, put back).
 5. Insert the manifest row, `pg_notify('events', …)`, commit.
 
 Both cooldown knobs (`COOLDOWN_PAINT_SECS`, `COOLDOWN_EMPTY_SECS`) are env-

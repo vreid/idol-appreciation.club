@@ -130,7 +130,7 @@ jobs:
           docker buildx build --target builder -t backend-builder \
             --cache-from type=gha --cache-to type=gha,mode=max \
             --load .
-          docker run --rm backend-builder bash -lc '
+          docker run --rm backend-builder bash -c '
             rustup component add rustfmt clippy
             cargo fmt --check
             cargo clippy --all-targets -- -D warnings

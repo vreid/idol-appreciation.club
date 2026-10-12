@@ -668,5 +668,35 @@
     "bytes": 194344,
     "prompt": "Album unboxing flat lay photographed from directly above, generic pastel mint album sleeve with abstract cloud artwork, glossy photocard fanned beside a shimmering CD, sticker sheets and washi tape on a linen desk mat, no readable text or logos, product photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/52-album-flatlay-y2k.jpg",
+    "category": "album-flatlay-y2k",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 183633,
+    "prompt": "Y2K-style album flat lay from directly above, generic chrome-finish album sleeve with a holographic star sticker, clear photocard, mini poster tube and beaded phone charm on a silver foil background, no readable text or logos, retro product photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/53-album-unboxing-hands.jpg",
+    "category": "album-unboxing-hands",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 78597,
+    "prompt": "Close-up of hands carefully sliding a photocard out of a generic pastel album sleeve on a cozy desk, warm lamp light, soft-focus album components and sleeves scattered around, no readable text or logos, cozy product photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/54-beauty-prism-rainbow.jpg",
+    "category": "beauty-prism-rainbow",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 111202,
+    "prompt": "Extreme beauty close-up of a female fictional idol, rainbow prism light bands sweeping across dewy skin and a glossy eyelid, tiny crystal freckles on the cheekbone, wet-look glossy lips, high-end beauty editorial photography, macro 100mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
   }
 ]

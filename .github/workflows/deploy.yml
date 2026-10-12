@@ -194,6 +194,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
+    permissions:
+      contents: read
+      actions: write
     env:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

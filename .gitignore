@@ -1,0 +1,39 @@
+# Secrets — never commit
+.env
+.env.*
+
+# Rust backend
+backend/target/
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# OpenTofu / Terraform
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.tf/
+tofu/.terraform/
+*.plan
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Kubernetes temp
+kubeconfig
+*.kubeconfig
+kubeconfig-*
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

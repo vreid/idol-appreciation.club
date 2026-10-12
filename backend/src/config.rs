@@ -27,6 +27,18 @@ pub struct Config {
     /// Entries in the hot-tile LRU (zooms > 4; zooms <= 4 are unbounded —
     /// at most 341 tiles exist).
     pub tile_cache_entries: usize,
+    /// Gate new signups behind admin approval. Defaults to false so local
+    /// development never touches the gate; production sets
+    /// REGISTRATION_APPROVAL_REQUIRED=true to keep external signups closed.
+    pub registration_approval_required: bool,
+}
+
+/// Lenient boolean env parsing: true/1/yes (any case) are true.
+fn parse_bool(input: &str) -> bool {
+    matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes"
+    )
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -72,11 +84,35 @@ impl Config {
             tile_cache_entries: env_or("TILE_CACHE_ENTRIES", "2048")
                 .parse()
                 .expect("invalid TILE_CACHE_ENTRIES"),
+            registration_approval_required: parse_bool(&env_or(
+                "REGISTRATION_APPROVAL_REQUIRED",
+                "false",
+            )),
         }
     }
 
     /// True when PUBLIC_BASE_URL is https → cookie gets `Secure`.
     pub fn secure_cookies(&self) -> bool {
         self.public_base_url.starts_with("https://")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bool;
+
+    #[test]
+    fn registration_flag_parsing() {
+        assert!(parse_bool("true"));
+        assert!(parse_bool("TRUE"));
+        assert!(parse_bool("1"));
+        assert!(parse_bool(" yes "));
+        assert!(!parse_bool("false"));
+        assert!(!parse_bool("0"));
+        assert!(!parse_bool("no"));
+        assert!(!parse_bool(""));
+        // Anything unparseable defaults to closed: production sets the env
+        // explicitly; local dev relies on the documented default of false.
+        assert!(!parse_bool("open sesame"));
     }
 }

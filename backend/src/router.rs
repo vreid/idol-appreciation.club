@@ -21,6 +21,11 @@ pub fn router(state: App) -> Router {
         .route("/api/reports", post(api::report))
         .route("/api/images/{sha}/count", get(api::image_count))
         .route("/api/admin/placements/{id}", delete(place::admin_delete))
+        .route("/api/admin/accounts", get(api::admin_list_accounts))
+        .route(
+            "/api/admin/accounts/{username}/approve",
+            post(api::admin_approve),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(max_body))
         .with_state(state.clone());
     api.fallback(|req: axum::http::Request<axum::body::Body>| async move {

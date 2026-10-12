@@ -1,7 +1,7 @@
 //! Router assembly.
 
-use crate::{api, events, handlers, place, statics, tiles};
 use crate::state::App;
+use crate::{api, events, handlers, place, statics, tiles};
 use axum::routing::{delete, get, post};
 use axum::Router;
 

@@ -48,7 +48,7 @@ const offlineFetch: typeof fetch = () =>
 const failingFetch: typeof fetch = () => Promise.reject(new Error("x"));
 
 const samplePlacement: Placement = {
-  id: 11,
+  id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a101",
   username: "wonyoung",
   x: 134217728,
   y: 134217728,
@@ -110,7 +110,14 @@ describe("auth flows", () => {
 describe("place", () => {
   it("sends multipart fields x, y, size plus the image file", async () => {
     const mock = fetchMock(() =>
-      jsonResponse(201, { id: 9, x: 1, y: 2, w: 32, h: 16, seq: 77 }),
+      jsonResponse(201, {
+        id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a102",
+        x: 1,
+        y: 2,
+        w: 32,
+        h: 16,
+        seq: 77,
+      }),
     );
     const api = createApiClient({ fetch: mock.fetch });
     const image = new Blob(["abc"], { type: "image/webp" });
@@ -133,7 +140,14 @@ describe("place", () => {
     const file = form.get("image");
     if (!(file instanceof File)) throw new Error("expected File");
     expect(file.name).toBe("wiz.webp");
-    expect(placed).toEqual({ id: 9, x: 1, y: 2, w: 32, h: 16, seq: 77 });
+    expect(placed).toEqual({
+      id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a102",
+      x: 1,
+      y: 2,
+      w: 32,
+      h: 16,
+      seq: 77,
+    });
   });
 
   it("turns 429 into ApiError carrying Retry-After", async () => {
@@ -176,7 +190,13 @@ describe("near / center", () => {
       current: {
         username: "yujin",
         since: "2026-10-12T09:00:00Z",
-        placement: { id: 5, x: 1, y: 2, w: 3, h: 4 },
+        placement: {
+          id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a105",
+          x: 1,
+          y: 2,
+          w: 3,
+          h: 4,
+        },
       },
       all_time: [{ username: "yujin", seconds: 800 }],
     };
@@ -202,18 +222,20 @@ describe("report / admin remove", () => {
   it("posts a report with placement_id", async () => {
     const mock = fetchMock(() => new Response(null, { status: 204 }));
     const api = createApiClient({ fetch: mock.fetch });
-    await api.report(33);
+    await api.report("0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10b");
     expect(mock.calls[0]?.url).toBe("/api/reports");
     expect(jsonBody(mock.calls[0])).toEqual({
-      placement_id: 33,
+      placement_id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10b",
     });
   });
 
   it("sends DELETE for admin removal", async () => {
     const mock = fetchMock(() => new Response(null, { status: 204 }));
     const api = createApiClient({ fetch: mock.fetch });
-    await api.removePlacement(77);
-    expect(mock.calls[0]?.url).toBe("/api/admin/placements/77");
+    await api.removePlacement("0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10d");
+    expect(mock.calls[0]?.url).toBe(
+      "/api/admin/placements/0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10d",
+    );
     expect(mock.calls[0]?.init.method).toBe("DELETE");
   });
 });

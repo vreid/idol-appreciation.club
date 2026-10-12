@@ -23,10 +23,7 @@ pub fn cooldown_check(elapsed_secs: f64, threshold_secs: i64) -> Result<(), i64>
     Err(retry.max(1))
 }
 
-async fn read_multipart(
-    app: &App,
-    mut mp: Multipart,
-) -> AppResult<(Vec<u8>, i64, i64, i64)> {
+async fn read_multipart(app: &App, mut mp: Multipart) -> AppResult<(Vec<u8>, i64, i64, i64)> {
     let mut image: Option<Vec<u8>> = None;
     let mut x: Option<i64> = None;
     let mut y: Option<i64> = None;
@@ -136,7 +133,10 @@ pub async fn place(
 
     let id = Uuid::now_v7();
     let chunk_keys = rect.chunk_keys();
-    let lock_keys: Vec<String> = chunk_keys.iter().map(|(cx, cy)| crate::world::chunk_key(*cx, *cy)).collect();
+    let lock_keys: Vec<String> = chunk_keys
+        .iter()
+        .map(|(cx, cy)| crate::world::chunk_key(*cx, *cy))
+        .collect();
     let _guards = app.chunk_locks.lock_sorted(&lock_keys).await;
 
     let mut tx = app.pool.begin().await?;
@@ -259,16 +259,15 @@ pub async fn admin_delete(
     crate::auth::require_admin(&app, admin_id).await?;
     // Peek the rect first so chunk locks can be acquired before any row
     // locks, matching the placement pipeline's lock order.
-    let peeked: Option<(i64, i64, i64, i64)> = sqlx::query_as(
-        "SELECT x, y, w, h FROM placements WHERE id = $1 AND removed_at IS NULL",
-    )
-    .bind(id)
-    .fetch_optional(&app.pool)
-    .await?;
+    let peeked: Option<(i64, i64, i64, i64)> =
+        sqlx::query_as("SELECT x, y, w, h FROM placements WHERE id = $1 AND removed_at IS NULL")
+            .bind(id)
+            .fetch_optional(&app.pool)
+            .await?;
     let Some((x, y, w, h)) = peeked else {
         return Err(AppError::NotFound);
     };
-    let rect = Rect::new(x, y, i64::from(w), i64::from(h));
+    let rect = Rect::new(x, y, w, h);
     let chunk_keys = rect.chunk_keys();
     let lock_keys: Vec<String> = chunk_keys
         .iter()
@@ -277,12 +276,11 @@ pub async fn admin_delete(
     let _guards = app.chunk_locks.lock_sorted(&lock_keys).await;
 
     let mut tx = app.pool.begin().await?;
-    let still_there: Option<(i64,)> = sqlx::query_as(
-        "SELECT 1 FROM placements WHERE id = $1 AND removed_at IS NULL FOR UPDATE",
-    )
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let still_there: Option<(i64,)> =
+        sqlx::query_as("SELECT 1 FROM placements WHERE id = $1 AND removed_at IS NULL FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
     if still_there.is_none() {
         tx.rollback().await.map_err(internal)?;
         return Err(AppError::NotFound);

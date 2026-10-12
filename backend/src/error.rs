@@ -61,9 +61,7 @@ impl From<sqlx::Error> for AppError {
     fn from(e: sqlx::Error) -> Self {
         match &e {
             sqlx::Error::RowNotFound => AppError::NotFound,
-            sqlx::Error::Database(db)
-                if db.kind() == sqlx::error::ErrorKind::UniqueViolation =>
-            {
+            sqlx::Error::Database(db) if db.kind() == sqlx::error::ErrorKind::UniqueViolation => {
                 AppError::Conflict
             }
             sqlx::Error::Database(db)

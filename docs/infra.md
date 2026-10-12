@@ -59,6 +59,24 @@ Secrets live in the GitHub **environment `production`** (not repo-level):
 touching them declares `environment: production`. `GITHUB_TOKEN` gets
 `packages: write` for GHCR; no static kubeconfig exists anywhere.
 
+### Workflow lint discipline
+
+`jactionlint` (jdx fork, v2.1.0 release binary) is the first CI job and MUST
+pass locally before every push:
+
+```
+curl -sSLf -o /tmp/jl.tar.gz https://github.com/jdx/jactionlint/releases/download/v2.1.0/jactionlint_2.1.0_linux_amd64.tar.gz
+tar xzf /tmp/jl.tar.gz -C /tmp jactionlint
+/tmp/jactionlint .github/workflows/*.yml
+```
+
+Its shellcheck rules only run when a `shellcheck` binary exists locally (CI
+runners have one) — without it the local run is silently weaker than CI. Actions
+are pinned by full-length SHA; jobs carry timeout-minutes.
+
+Known trap: `hashFiles()` is illegal in job-level `if:` — owner gating uses the
+`ready` job's `test -f` outputs instead.
+
 ## Destroy / recreate runbook
 
 1. Actions → **infra-destroy** → Run workflow → `confirm: destroy`. Everything
@@ -71,6 +89,18 @@ touching them declares `environment: production`. `GITHUB_TOKEN` gets
    `dig +short idol-appreciation.club`, https load with a fresh LE cert.
 
 One full cycle costs pennies; leave the stack up otherwise.
+
+### Known destroy blocker: orphan LoadBalancer
+
+The UpCloud CCM creates the LoadBalancer outside tofu state. Deleting the
+cluster does not delete it, and its network interface keeps the tofu network
+alive (`NETWORK_NOT_EMPTY` 409). If destroy fails with that error, delete the LB
+by hand, wait ~2 minutes for the interface to clear, then retry:
+
+```
+curl -X DELETE -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+  https://api.upcloud.com/1.3/load-balancer/<uuid>
+```
 
 ### State handling
 
@@ -110,6 +140,24 @@ To restore state locally from a CI run: `actions/cache` keys are
 
 `gh secret set SESSION_SECRET --env production` (64 hex chars). The deploy
 workflow pushes it into the `app-env` secret on the next run.
+
+## Ship loop (post-protection)
+
+Once branch protection is on, every change ships via short-lived branch + PR;
+`gh pr create --fill --auto-merge=squash` queues the merge and deploy fires on
+merge. main stays green by construction. Agents stop pushing to main directly.
+
+## Marker removal checklist (do not forget)
+
+The `backend/.ci-ready` / `web/.ci-ready` markers are a trust-based bootstrap
+gate. Once (a) protection + auto-merge are on and (b) the first green deploy has
+landed via a merged PR:
+
+- [ ] delete both marker files and their `ready`-job references
+- [ ] switch ci.yml/deploy.yml jobs to standard path filters (`backend/**`,
+      `web/**`)
+- [ ] confirm skipped-vs-pending behavior under protection
+- [ ] tell all agents: PRs only; broken code fails its own PR
 
 ## Environment protection (later)
 
@@ -152,4 +200,15 @@ costs cents.
 - The CCM's default LoadBalancer plan is `development` (€10/mo); the Service
   annotation `service.beta.kubernetes.io/upcloud-load-balancer-config` pins
   `{"plan":"essentials"}` (€0/mo).
+- The CCM's default LoadBalancer config is broken for this stack: the generated
+  `health_check_url` points at a nodePort that does not exist (all backends
+  report down, LB answers nothing), and its 443 frontend TLS-terminates with the
+  controller's self-signed cert (invalid in browsers). deploy.yml therefore pins
+  the Service nodePorts (30859 / 30875) and overrides the annotation:
+  `frontends: 443 mode=tcp (passthrough, nginx serves the LE cert)`,
+  `backends: http -> http://:30859/healthz`, `https -> tcp health check`.
+- The CCM assigns the LB a DNS hostname (not an IP) in
+  `.status.loadBalancer.ingress[].hostname`; scripts/sync-dns.sh callers must
+  resolve it (getent) before upserting records.
+- The LB list endpoint is `GET /1.3/load-balancer` (dash), not `/load_balancer`.
 - Plan listing lives at `GET /1.3/plan` (singular).

@@ -126,7 +126,10 @@ pub const fn tile_chunk(z: i64, x: i64, y: i64) -> (i64, i64) {
 /// native px. Only meaningful for `z >= BASE_Z`.
 pub const fn tile_offset_in_chunk(z: i64, x: i64, y: i64) -> (i64, i64) {
     let mask = (1i64 << (z - BASE_Z)) - 1;
-    ((x & mask) * tile_native_size(z), (y & mask) * tile_native_size(z))
+    (
+        (x & mask) * tile_native_size(z),
+        (y & mask) * tile_native_size(z),
+    )
 }
 
 /// Placement rectangle derived from a requested long-edge size `L` and the
@@ -163,10 +166,7 @@ mod tests {
         assert_eq!(tile_bounds(0, 0, 0), Rect::new(0, 0, WORLD_PX, WORLD_PX));
         // z=20 native tiles.
         assert_eq!(tile_bounds(20, 0, 0), Rect::new(0, 0, 256, 256));
-        assert_eq!(
-            tile_bounds(20, 1, 2),
-            Rect::new(256, 512, 256, 256)
-        );
+        assert_eq!(tile_bounds(20, 1, 2), Rect::new(256, 512, 256, 256));
         // Last tiles at each zoom touch the world edge exactly.
         for z in 0..=20 {
             let n = 1i64 << z;
@@ -197,9 +197,15 @@ mod tests {
         assert_eq!(
             Rect::new(500, 500, 2048, 2048).chunk_keys(),
             vec![
-                (0, 0), (1, 0), (2, 0),
-                (0, 1), (1, 1), (2, 1),
-                (0, 2), (1, 2), (2, 2),
+                (0, 0),
+                (1, 0),
+                (2, 0),
+                (0, 1),
+                (1, 1),
+                (2, 1),
+                (0, 2),
+                (1, 2),
+                (2, 2),
             ]
         );
         // Aligned 2048-px placement spans exactly 2x2.
@@ -313,7 +319,8 @@ mod proptests {
 
         #[test]
         fn invalid_tile_rejection(z in -2i64..=22, x in -2i64..=(1i64 << 21), y in -2i64..=(1i64 << 21)) {
-            let expected = z >= 0 && z <= 20 && x >= 0 && x < (1i64 << z) && y >= 0 && y < (1i64 << z);
+            let n = if (0..=20).contains(&z) { 1i64 << z } else { 0 };
+            let expected = (0..n).contains(&x) && (0..n).contains(&y);
             prop_assert_eq!(is_valid_tile(z, x, y), expected);
         }
 
@@ -385,6 +392,10 @@ mod proptests {
     }
 
     fn max_component(w: i64, h: i64) -> i64 {
-        if w > h { w } else { h }
+        if w > h {
+            w
+        } else {
+            h
+        }
     }
 }

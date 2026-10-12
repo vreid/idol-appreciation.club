@@ -26,7 +26,7 @@ function makeClient(
     place: vi.fn((req: PlaceRequest) => {
       placeCalls.push({ x: req.x, y: req.y, size: req.size });
       return Promise.resolve({
-        id: 1,
+        id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001",
         x: req.x,
         y: req.y,
         w: req.size,
@@ -197,7 +197,14 @@ describe("place flow", () => {
     const attempt = await store.confirmSpot(134217000, 134217700);
     expect(attempt).toEqual({
       ok: true,
-      placement: { id: 1, x: 134217000, y: 134217700, w: 512, h: 512, seq: 5 },
+      placement: {
+        id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001",
+        x: 134217000,
+        y: 134217700,
+        w: 512,
+        h: 512,
+        seq: 5,
+      },
     });
     expect(client.placeCalls[0]).toEqual({
       x: 134217000,
@@ -252,7 +259,7 @@ describe("reports and admin removal", () => {
   it("requires login before reporting", async () => {
     const client = makeClient();
     const { store } = makeStore(client);
-    await store.reportPlacement(9);
+    await store.reportPlacement("0197d3a4-8f2b-7c11-b3a1-5d2e9f60a009");
     expect(client.report).not.toHaveBeenCalled();
     expect(store.authPrompt).toBe(true);
   });
@@ -270,8 +277,10 @@ describe("reports and admin removal", () => {
     });
     const { store } = makeStore(client);
     await store.refreshMe();
-    await store.reportPlacement(9);
-    expect(client.report).toHaveBeenCalledWith(9);
+    await store.reportPlacement("0197d3a4-8f2b-7c11-b3a1-5d2e9f60a009");
+    expect(client.report).toHaveBeenCalledWith(
+      "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a009",
+    );
   });
 
   it("surfaces admin removal success and failure", async () => {
@@ -279,10 +288,16 @@ describe("reports and admin removal", () => {
       removePlacement: () => Promise.reject(new ApiError(403, "no", null)),
     });
     const storeA = makeStore(failing).store;
-    expect(await storeA.removePlacement(1)).toBe(false);
+    expect(
+      await storeA.removePlacement("0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001"),
+    ).toBe(false);
     const ok = makeClient();
     const storeB = makeStore(ok).store;
-    expect(await storeB.removePlacement(1)).toBe(true);
-    expect(ok.removePlacement).toHaveBeenCalledWith(1);
+    expect(
+      await storeB.removePlacement("0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001"),
+    ).toBe(true);
+    expect(ok.removePlacement).toHaveBeenCalledWith(
+      "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001",
+    );
   });
 });

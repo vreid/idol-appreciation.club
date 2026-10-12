@@ -75,7 +75,17 @@ pub async fn near(
 /// consecutive covering placements define segments; the newest covering
 /// placement holds until now.
 pub async fn center(State(app): State<App>) -> AppResult<Json<serde_json::Value>> {
-    let current: Option<(String, DateTime<Utc>, Uuid, i64, i64, i32, i32)> = sqlx::query_as(
+    #[derive(sqlx::FromRow)]
+    struct Current {
+        username: String,
+        created_at: DateTime<Utc>,
+        id: Uuid,
+        x: i64,
+        y: i64,
+        w: i32,
+        h: i32,
+    }
+    let current: Option<Current> = sqlx::query_as(
         "SELECT a.username, p.created_at, p.id, p.x, p.y, p.w, p.h
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
@@ -124,15 +134,13 @@ pub async fn center(State(app): State<App>) -> AppResult<Json<serde_json::Value>
     .fetch_all(&app.pool)
     .await?;
 
-    let current_json = current.map(
-        |(username, since, id, x, y, w, h)| {
-            json!({
-                "username": username,
-                "since": since,
-                "placement": { "id": id, "x": x, "y": y, "w": w, "h": h }
-            })
-        },
-    );
+    let current_json = current.map(|c| {
+        json!({
+            "username": c.username,
+            "since": c.created_at,
+            "placement": { "id": c.id, "x": c.x, "y": c.y, "w": c.w, "h": c.h }
+        })
+    });
     Ok(Json(json!({
         "current": current_json,
         "all_time": all_time.iter().map(|hld| json!({
@@ -171,7 +179,9 @@ pub async fn report(
 }
 
 fn valid_sha(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// GET /api/images/{sha256}/count → non-removed placements using that

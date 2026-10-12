@@ -1,6 +1,6 @@
 //! POST /api/auth/* handlers.
 
-use crate::auth::{cookie_value, claims_from_headers, issue, set_cookie, Authed};
+use crate::auth::{claims_from_headers, cookie_value, issue, set_cookie, Authed};
 use crate::error::{AppError, AppResult};
 use crate::state::App;
 use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, SaltString};
@@ -31,7 +31,7 @@ fn hash_password(p: &str) -> AppResult<String> {
     Argon2::default()
         .hash_password(p.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| crate::error::internal(e))
+        .map_err(crate::error::internal)
 }
 
 fn verify_password(hash: &str, p: &str) -> bool {
@@ -52,10 +52,7 @@ pub struct RegisterReq {
 
 /// POST /api/auth/register → 200, sets session cookie. First account ever
 /// becomes admin (single-admission enforced by a partial unique index).
-pub async fn register(
-    State(app): State<App>,
-    Json(req): Json<RegisterReq>,
-) -> AppResult<Response> {
+pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> AppResult<Response> {
     if !valid_username(&req.username) {
         return Err(AppError::BadRequest(
             "username must be 3-32 chars of a-z, 0-9, _ or -",
@@ -71,14 +68,15 @@ pub async fn register(
         Err(e) => {
             // Lost the single-admin race → retry as a normal account.
             if constraint_of(&e) == Some("accounts_single_admin") {
-                try_insert(&app, id, &req.username, &hash, false).await.map_err(|e| {
-                    if constraint_of(&e) == Some("accounts_username_key")
-                    {
-                        AppError::Conflict
-                    } else {
-                        AppError::from(e)
-                    }
-                })?
+                try_insert(&app, id, &req.username, &hash, false)
+                    .await
+                    .map_err(|e| {
+                        if constraint_of(&e) == Some("accounts_username_key") {
+                            AppError::Conflict
+                        } else {
+                            AppError::from(e)
+                        }
+                    })?
             } else if constraint_of(&e) == Some("accounts_username_key") {
                 return Err(AppError::Conflict);
             } else {
@@ -86,11 +84,7 @@ pub async fn register(
             }
         }
     };
-    let token = issue(
-        &app.cfg.session_secret,
-        id,
-        chrono::Utc::now().timestamp(),
-    );
+    let token = issue(&app.cfg.session_secret, id, chrono::Utc::now().timestamp());
     set_cookie(&mut resp, cookie_value(&token, app.cfg.secure_cookies()));
     Ok(resp)
 }
@@ -155,21 +149,26 @@ pub async fn login(State(app): State<App>, Json(req): Json<LoginReq>) -> AppResu
 
 /// POST /api/auth/logout → 204, clears cookie.
 pub async fn logout(State(app): State<App>, headers: HeaderMap) -> AppResult<Response> {
-    let _ = claims_from_headers(&app.cfg.session_secret, &headers, chrono::Utc::now().timestamp());
+    let _ = claims_from_headers(
+        &app.cfg.session_secret,
+        &headers,
+        chrono::Utc::now().timestamp(),
+    );
     let mut resp = crate::auth::status_no_content();
-    set_cookie(&mut resp, crate::auth::clear_cookie(app.cfg.secure_cookies()));
+    set_cookie(
+        &mut resp,
+        crate::auth::clear_cookie(app.cfg.secure_cookies()),
+    );
     Ok(resp)
 }
 
 /// GET /api/auth/me → current account + active cooldown end.
 pub async fn me(State(app): State<App>, Authed(id): Authed) -> AppResult<Json<serde_json::Value>> {
-    let row: Option<(String, bool, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT username, is_admin, last_placement_at FROM accounts WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&app.pool)
-    .await?
-    ;
+    let row: Option<(String, bool, Option<DateTime<Utc>>)> =
+        sqlx::query_as("SELECT username, is_admin, last_placement_at FROM accounts WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&app.pool)
+            .await?;
     let Some((username, is_admin, last)) = row else {
         return Err(AppError::Unauthorized);
     };

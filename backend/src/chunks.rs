@@ -23,12 +23,11 @@ pub async fn composite_placement(app: &App, rect: Rect, overlay: Vec<u8>) -> App
         bases.push(crate::store::get_bytes(&app.store, &key).await?);
         targets.push((rect.x - cx * CHUNK_PX, rect.y - cy * CHUNK_PX));
     }
-    let encoded = tokio::task::spawn_blocking(move || {
-        img::composite_chunks(bases, &overlay, &targets)
-    })
-    .await
-    .map_err(internal)?
-    .map_err(internal)?;
+    let encoded =
+        tokio::task::spawn_blocking(move || img::composite_chunks(bases, &overlay, &targets))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
     for ((cx, cy), bytes) in keys.iter().zip(encoded) {
         crate::store::put(&app.store, &chunk_key(*cx, *cy), bytes).await?;
     }
@@ -72,12 +71,11 @@ pub async fn replay_chunks(
             overlays.push((bytes, px - qx0, py - qy0));
         }
         let canvas_owned = canvas.clone();
-        let encoded = tokio::task::spawn_blocking(move || {
-            img::replay_canvas(canvas_owned, &overlays)
-        })
-        .await
-        .map_err(internal)?
-        .map_err(internal)?;
+        let encoded =
+            tokio::task::spawn_blocking(move || img::replay_canvas(canvas_owned, &overlays))
+                .await
+                .map_err(internal)?
+                .map_err(internal)?;
         crate::store::put(&app.store, &key, encoded).await?;
     }
     Ok(())

@@ -8,7 +8,7 @@ import { bboxContainsPoint, WORLD_CENTER } from "./world";
 
 export type WorldEvent =
   | { type: "place"; seq: number; bbox: [number, number, number, number] }
-  | { type: "remove"; id: number; bbox: [number, number, number, number] };
+  | { type: "remove"; id: string; bbox: [number, number, number, number] };
 
 export interface EventSourceLike {
   readyState: number;
@@ -52,7 +52,9 @@ export function parseWorldEvent(raw: string): WorldEvent | null {
   }
   if ("type" in data && data.type === "remove" && "id" in data) {
     const id = data.id;
-    if (typeof id === "number") return { type: "remove", id, bbox };
+    if (typeof id === "string" && id.length > 0) {
+      return { type: "remove", id, bbox };
+    }
     return null;
   }
   return null;

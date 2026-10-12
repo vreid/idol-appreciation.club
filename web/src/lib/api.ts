@@ -14,7 +14,7 @@ export interface Me {
 }
 
 export interface Placement {
-  id: number;
+  id: string;
   username: string;
   x: number;
   y: number;
@@ -24,7 +24,7 @@ export interface Placement {
 }
 
 export interface PlacedPlacement {
-  id: number;
+  id: string;
   x: number;
   y: number;
   w: number;
@@ -35,7 +35,7 @@ export interface PlacedPlacement {
 export interface CenterHolder {
   username: string;
   since: string;
-  placement: { id: number; x: number; y: number; w: number; h: number };
+  placement: { id: string; x: number; y: number; w: number; h: number };
 }
 
 export interface CenterInfo {
@@ -81,8 +81,8 @@ export interface ApiClient {
   place: (req: PlaceRequest) => Promise<PlacedPlacement>;
   near: (x: number, y: number, r: number) => Promise<Placement[]>;
   center: () => Promise<CenterInfo>;
-  report: (placementId: number) => Promise<void>;
-  removePlacement: (placementId: number) => Promise<void>;
+  report: (placementId: string) => Promise<void>;
+  removePlacement: (placementId: string) => Promise<void>;
 }
 
 export interface ApiClientDeps {
@@ -166,7 +166,7 @@ interface RequestOptions {
 function placementOf(body: unknown): PlacedPlacement {
   const obj = expectObject(body);
   return {
-    id: num(obj, "id"),
+    id: str(obj, "id"),
     x: num(obj, "x"),
     y: num(obj, "y"),
     w: num(obj, "w"),
@@ -177,7 +177,7 @@ function placementOf(body: unknown): PlacedPlacement {
 
 function placementFields(obj: Record<string, unknown>): Placement {
   return {
-    id: num(obj, "id"),
+    id: str(obj, "id"),
     username: str(obj, "username"),
     x: num(obj, "x"),
     y: num(obj, "y"),
@@ -215,7 +215,7 @@ function centerOf(body: unknown): CenterInfo {
       username: str(cur, "username"),
       since: str(cur, "since"),
       placement: {
-        id: num(placement, "id"),
+        id: str(placement, "id"),
         x: num(placement, "x"),
         y: num(placement, "y"),
         w: num(placement, "w"),

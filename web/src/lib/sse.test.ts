@@ -87,8 +87,8 @@ describe("parseWorldEvent", () => {
 
   it("parses remove events", () => {
     expect(
-      parseWorldEvent('{"type":"remove","id":9,"bbox":[5,6,7,8]}'),
-    ).toEqual({ type: "remove", id: 9, bbox: [5, 6, 7, 8] });
+      parseWorldEvent('{"type":"remove","id":"0197d3a4-82","bbox":[5,6,7,8]}'),
+    ).toEqual({ type: "remove", id: "0197d3a4-82", bbox: [5, 6, 7, 8] });
   });
 
   it("returns null for malformed payloads", () => {
@@ -100,7 +100,10 @@ describe("parseWorldEvent", () => {
     ).toBeNull();
     expect(parseWorldEvent('{"type":"place","seq":1,"bbox":[1,2]}')).toBeNull();
     expect(
-      parseWorldEvent('{"type":"remove","id":1,"bbox":[1,2,3,"4"]}'),
+      parseWorldEvent('{"type":"remove","id":"","bbox":[1,2,3,4]}'),
+    ).toBeNull();
+    expect(
+      parseWorldEvent('{"type":"remove","id":7,"bbox":[1,2,3,4]}'),
     ).toBeNull();
     expect(parseWorldEvent('{"type":"unknown","bbox":[1,2,3,4]}')).toBeNull();
   });

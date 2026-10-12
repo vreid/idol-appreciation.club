@@ -95,7 +95,7 @@
     controller.showPlacement(top);
   }
 
-  async function handleRemove(id: number, bbox: BBox): Promise<void> {
+  async function handleRemove(id: string, bbox: BBox): Promise<void> {
     if (controller === null) return;
     const removed = await store.removePlacement(id);
     if (removed) {

@@ -15,17 +15,16 @@ pub fn from_config(cfg: &Config) -> anyhow::Result<Store> {
             let base = ep.strip_prefix("file://").unwrap_or(ep);
             let dir = std::path::Path::new(base).join(&cfg.s3_bucket);
             std::fs::create_dir_all(&dir)?;
-            Ok(Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir)?))
+            Ok(Arc::new(
+                object_store::local::LocalFileSystem::new_with_prefix(dir)?,
+            ))
         }
         Some(ep) => {
-            let mut builder =
-                object_store::aws::AmazonS3Builder::from_env().with_endpoint(ep);
+            let mut builder = object_store::aws::AmazonS3Builder::from_env().with_endpoint(ep);
             builder = builder
                 .with_bucket_name(&cfg.s3_bucket)
                 .with_allow_http(true);
-            if let (Some(key), Some(secret)) =
-                (&cfg.s3_access_key_id, &cfg.s3_secret_access_key)
-            {
+            if let (Some(key), Some(secret)) = (&cfg.s3_access_key_id, &cfg.s3_secret_access_key) {
                 builder = builder
                     .with_access_key_id(key)
                     .with_secret_access_key(secret);
@@ -49,7 +48,11 @@ pub async fn put_if_absent(
 ) -> Result<bool, crate::error::AppError> {
     use object_store::PutOptions;
     match store
-        .put_opts(&key(raw_key), PutPayload::from(bytes), PutOptions::from(PutMode::Create))
+        .put_opts(
+            &key(raw_key),
+            PutPayload::from(bytes),
+            PutOptions::from(PutMode::Create),
+        )
         .await
     {
         Ok(_) => Ok(true),
@@ -58,13 +61,13 @@ pub async fn put_if_absent(
     }
 }
 
-pub async fn get_bytes(store: &Store, raw_key: &str) -> Result<Option<Vec<u8>>, crate::error::AppError> {
+pub async fn get_bytes(
+    store: &Store,
+    raw_key: &str,
+) -> Result<Option<Vec<u8>>, crate::error::AppError> {
     match store.get(&key(raw_key)).await {
         Ok(resp) => {
-            let bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| crate::error::internal(e))?;
+            let bytes = resp.bytes().await.map_err(crate::error::internal)?;
             Ok(Some(bytes.to_vec()))
         }
         Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -72,7 +75,11 @@ pub async fn get_bytes(store: &Store, raw_key: &str) -> Result<Option<Vec<u8>>, 
     }
 }
 
-pub async fn put(store: &Store, raw_key: &str, bytes: Vec<u8>) -> Result<(), crate::error::AppError> {
+pub async fn put(
+    store: &Store,
+    raw_key: &str,
+    bytes: Vec<u8>,
+) -> Result<(), crate::error::AppError> {
     store
         .put(&key(raw_key), PutPayload::from(bytes))
         .await

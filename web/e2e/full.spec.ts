@@ -54,8 +54,11 @@ test("@full place flow: place, near, cooldown 429, center shape", async ({
   expect(placed).toMatchObject({ x: FAR_X, y: FAR_Y, seq: expect.any(Number) });
   if (!isRecord(placed)) throw new Error("place response was not an object");
   const placedId = placed["id"];
-  if (typeof placedId !== "number") {
-    throw new TypeError("place response missing numeric id");
+  // Placement ids are UUIDv7 strings per the API contract.
+  if (typeof placedId !== "string" || !/^[0-9a-f-]{10,}$/iu.test(placedId)) {
+    throw new TypeError(
+      `place response returned a non-uuid id: ${String(placedId)}`,
+    );
   }
 
   const near = await request.get(

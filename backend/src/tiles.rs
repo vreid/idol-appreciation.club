@@ -4,8 +4,8 @@ use crate::error::{internal, AppError, AppResult};
 use crate::img;
 use crate::state::App;
 use crate::world::{
-    is_valid_tile, tile_bounds, tile_chunk, tile_key, tile_native_size, tile_offset_in_chunk,
-    Rect, BASE_Z, CHUNK_PX, TILE_PX,
+    is_valid_tile, tile_bounds, tile_chunk, tile_key, tile_native_size, tile_offset_in_chunk, Rect,
+    BASE_Z, CHUNK_PX, TILE_PX,
 };
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -98,7 +98,10 @@ pub async fn get_tile(
     }
     let (bytes, seq) = tile_bytes(&app, z, x, y).await?;
     let etag = format!("\"{seq}\"");
-    if let Some(inm) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
+    if let Some(inm) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    {
         if inm.split(',').any(|t| t.trim() == etag) {
             let mut resp = StatusCode::NOT_MODIFIED.into_response();
             resp.headers_mut()
@@ -112,6 +115,16 @@ pub async fn get_tile(
     h.insert(header::CACHE_CONTROL, "no-cache".parse().expect("cc"));
     h.insert(header::ETAG, etag.parse().expect("etag header"));
     Ok(resp)
+}
+
+/// The constant empty (pure paper) tile, encoded once per process. Tiles
+/// with maxSeq 0 are exactly this — which is what keeps cold pyramid
+/// renders O(spine) instead of 4^z.
+static EMPTY_TILE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+fn empty_tile_bytes() -> AppResult<Vec<u8>> {
+    let bytes = EMPTY_TILE.get_or_init(|| img::empty_tile_256().expect("empty tile encode"));
+    Ok(bytes.clone())
 }
 
 /// Resolve tile bytes through: memory cache → object storage (if fresh) →
@@ -128,6 +141,13 @@ fn tile_bytes<'a>(
 
 async fn tile_bytes_inner(app: &App, z: i64, x: i64, y: i64) -> AppResult<(Bytes, i64)> {
     let seq = max_seq_covering(app, tile_bounds(z, x, y)).await?;
+    // Empty region: constant paper tile, no recursion, no storage writes.
+    if seq == 0 {
+        let bytes = tokio::task::spawn_blocking(empty_tile_bytes)
+            .await
+            .map_err(internal)??;
+        return Ok((Bytes::from(bytes), 0));
+    }
     let key: CacheKey = (z, x, y, seq);
     if let Some(bytes) = app.tile_cache.get(z, key) {
         return Ok((bytes, seq));
@@ -191,8 +211,9 @@ async fn render_tile(app: &App, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
             let (child_bytes, _) = tile_bytes(app, z + 1, 2 * x + dx, 2 * y + dy).await?;
             children.push(child_bytes.to_vec());
         }
-        let kids: [Vec<u8>; 4] =
-            children.try_into().map_err(|_| internal("children count"))?;
+        let kids: [Vec<u8>; 4] = children
+            .try_into()
+            .map_err(|_| internal("children count"))?;
         tokio::task::spawn_blocking(move || img::render_parent_tile(&kids))
             .await
             .map_err(internal)?

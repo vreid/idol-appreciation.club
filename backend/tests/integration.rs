@@ -7,10 +7,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use idol_appreciation_club_backend::build_app;
 use idol_appreciation_club_backend::config::Config;
 use idol_appreciation_club_backend::img;
 use idol_appreciation_club_backend::state::App;
-use idol_appreciation_club_backend::build_app;
 use testcontainers_modules::postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
@@ -38,9 +38,9 @@ impl Resp {
         serde_json::from_slice(&self.body).unwrap_or_default()
     }
     fn cookie(&self) -> Option<String> {
-        self.headers.get("set-cookie").map(|v| {
-            v.split(';').next().unwrap_or_default().to_string()
-        })
+        self.headers
+            .get("set-cookie")
+            .map(|v| v.split(';').next().unwrap_or_default().to_string())
     }
 }
 
@@ -56,10 +56,8 @@ async fn start_server(paint_secs: i64, empty_secs: i64, max_upload: usize) -> Se
         .get_host_port_ipv4(5432)
         .await
         .expect("container port");
-    let store_dir = std::env::temp_dir().join(format!(
-        "idol-test-store-{}",
-        uuid::Uuid::now_v7().simple()
-    ));
+    let store_dir =
+        std::env::temp_dir().join(format!("idol-test-store-{}", uuid::Uuid::now_v7().simple()));
     let cfg = Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         database_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
@@ -77,14 +75,16 @@ async fn start_server(paint_secs: i64, empty_secs: i64, max_upload: usize) -> Se
         max_size: 2048,
         tile_cache_entries: 256,
     };
-    let (state, app): (App, _) = build_app(cfg)
-        .await
-        .expect("build app (pool + migrations)");
+    let (state, app): (App, _) = build_app(cfg).await.expect("build app (pool + migrations)");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await });
     let _ = state; // kept alive by the spawned server
-    Server { addr, _store_dir: store_dir, container }
+    Server {
+        addr,
+        _store_dir: store_dir,
+        container,
+    }
 }
 
 /// Minimal HTTP/1.1 client over a raw socket (Connection: close).
@@ -133,7 +133,11 @@ fn parse_response(raw: &[u8]) -> Resp {
             headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
         }
     }
-    Resp { status, headers, body }
+    Resp {
+        status,
+        headers,
+        body,
+    }
 }
 
 fn multipart(boundary: &str, fields: &[(&str, &str)], file: &[u8]) -> Vec<u8> {
@@ -153,20 +157,17 @@ fn place_body(image: &[u8], x: i64, y: i64, size: i64) -> (String, Vec<u8>) {
     let boundary = format!("b{}", uuid::Uuid::now_v7().simple());
     let body = multipart(
         &boundary,
-        &[("x", &x.to_string()), ("y", &y.to_string()), ("size", &size.to_string())],
+        &[
+            ("x", &x.to_string()),
+            ("y", &y.to_string()),
+            ("size", &size.to_string()),
+        ],
         image,
     );
     (boundary, body)
 }
 
-async fn place(
-    server: &Server,
-    cookie: &str,
-    image: &[u8],
-    x: i64,
-    y: i64,
-    size: i64,
-) -> Resp {
+async fn place(server: &Server, cookie: &str, image: &[u8], x: i64, y: i64, size: i64) -> Resp {
     let (boundary, body) = place_body(image, x, y, size);
     let resp = request(
         server,
@@ -174,7 +175,10 @@ async fn place(
         "/api/place",
         &[
             ("Cookie", cookie),
-            ("Content-Type", &format!("multipart/form-data; boundary={boundary}")),
+            (
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            ),
         ],
         body,
     )
@@ -253,7 +257,14 @@ async fn auth_flows() {
 
     // Logout clears the cookie (stateless sessions: the server cannot
     // revoke a presented token, so we assert the clear directive).
-    let out = request(&server, "POST", "/api/auth/logout", &[("Cookie", &c2)], vec![]).await;
+    let out = request(
+        &server,
+        "POST",
+        "/api/auth/logout",
+        &[("Cookie", &c2)],
+        vec![],
+    )
+    .await;
     assert_eq!(out.status, 204);
     let cleared = out.headers.get("set-cookie").expect("clearing cookie");
     assert!(cleared.contains("Max-Age=0"));
@@ -276,7 +287,10 @@ async fn place_validation() {
         &server,
         "POST",
         "/api/place",
-        &[("Content-Type", &format!("multipart/form-data; boundary={b}"))],
+        &[(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={b}"),
+        )],
         body,
     )
     .await;
@@ -302,16 +316,22 @@ async fn place_validation() {
     assert_eq!(resp.status, 400);
     // Invalid tiles → 404.
     assert_eq!(
-        request(&server2, "GET", "/api/tiles/21/0/0.webp", &[], vec![]).await.status,
+        request(&server2, "GET", "/api/tiles/21/0/0.webp", &[], vec![])
+            .await
+            .status,
         404
     );
     assert_eq!(
-        request(&server2, "GET", "/api/tiles/2/4/0.webp", &[], vec![]).await.status,
+        request(&server2, "GET", "/api/tiles/2/4/0.webp", &[], vec![])
+            .await
+            .status,
         404
     );
     // Health OK.
     assert_eq!(
-        request(&server2, "GET", "/api/health", &[], vec![]).await.status,
+        request(&server2, "GET", "/api/health", &[], vec![])
+            .await
+            .status,
         200
     );
 }
@@ -324,7 +344,12 @@ async fn place_and_cooldowns() {
     let x = 1 << 20; // 1048576, 256- and 1024-aligned
 
     let first = place(&server, &cookie, &img, x, x, 32).await;
-    assert_eq!(first.status, 201, "{}", String::from_utf8_lossy(&first.body));
+    assert_eq!(
+        first.status,
+        201,
+        "{}",
+        String::from_utf8_lossy(&first.body)
+    );
     let first_json = first.json();
     assert_eq!(first_json["w"], 32);
     assert_eq!(first_json["h"], 32);
@@ -347,17 +372,31 @@ async fn place_and_cooldowns() {
     // Paint cooldown expires → overlap accepted.
     tokio::time::sleep(Duration::from_millis(2100)).await;
     let overlap = place(&server, &cookie, &img, x + 8, x + 8, 32).await;
-    assert_eq!(overlap.status, 201, "{}", String::from_utf8_lossy(&overlap.body));
+    assert_eq!(
+        overlap.status,
+        201,
+        "{}",
+        String::from_utf8_lossy(&overlap.body)
+    );
 
     // Same image again (empty area → 1s rule) → duplicate_count increments,
     // single original stored.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let again = place(&server, &cookie, &img, x + 64, x, 32).await;
-    assert_eq!(again.status, 201, "{}", String::from_utf8_lossy(&again.body));
+    assert_eq!(
+        again.status,
+        201,
+        "{}",
+        String::from_utf8_lossy(&again.body)
+    );
     assert_eq!(again.json()["duplicate_count"], 3);
 
     let sha = {
-        let stripped = img::strip_resave(&img::decode(&png(32, 32)).unwrap().0, img::SourceFormat::Png).unwrap();
+        let stripped = img::strip_resave(
+            &img::decode(&png(32, 32)).unwrap().0,
+            img::SourceFormat::Png,
+        )
+        .unwrap();
         img::sha256_hex(&stripped)
     };
     let count = request(
@@ -420,7 +459,14 @@ async fn tiles_etag_staleness() {
     // Unrelated tile keeps ETag "0".
     let untouched = request(&server, "GET", &other, &[], vec![]).await;
     assert_eq!(untouched.headers["etag"], "\"0\"");
-    let still = request(&server, "GET", &other, &[("If-None-Match", "\"0\"")], vec![]).await;
+    let still = request(
+        &server,
+        "GET",
+        &other,
+        &[("If-None-Match", "\"0\"")],
+        vec![],
+    )
+    .await;
     assert_eq!(still.status, 304);
 
     // Overlapping placement → ETag bumps to 2, bytes differ.
@@ -431,7 +477,15 @@ async fn tiles_etag_staleness() {
     assert_ne!(t2.body, t1.body);
     // Old ETag no longer 304s.
     assert_eq!(
-        request(&server, "GET", &tile20, &[("If-None-Match", "\"1\"")], vec![]).await.status,
+        request(
+            &server,
+            "GET",
+            &tile20,
+            &[("If-None-Match", "\"1\"")],
+            vec![]
+        )
+        .await
+        .status,
         200
     );
 }
@@ -466,7 +520,15 @@ async fn near_center_reports() {
     assert_eq!(arr[1]["username"], "holder1");
     // r capped at 65536; garbage → 400.
     assert_eq!(
-        request(&server, "GET", "/api/placements/near?x=0&y=0&r=bogus", &[], vec![]).await.status,
+        request(
+            &server,
+            "GET",
+            "/api/placements/near?x=0&y=0&r=bogus",
+            &[],
+            vec![]
+        )
+        .await
+        .status,
         400
     );
 
@@ -563,7 +625,9 @@ async fn admin_removal_updates_everything() {
     let arr = near.json().as_array().unwrap().clone();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["username"], "root");
-    let center = request(&server, "GET", "/api/center", &[], vec![]).await.json();
+    let center = request(&server, "GET", "/api/center", &[], vec![])
+        .await
+        .json();
     assert_eq!(center["current"]["username"], "root");
 
     // Tile freshness: the removed placement's chunk-region tile drops back.
@@ -580,7 +644,7 @@ async fn admin_removal_updates_everything() {
         .unwrap();
     let text = String::from_utf8_lossy(&buf[..n]).to_string();
     assert!(text.contains("\"type\":\"remove\""), "got: {text}");
-    assert!(text.contains(&pid.to_string().as_str()));
+    assert!(text.contains(pid.to_string().as_str()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -602,7 +666,10 @@ async fn sse_place_event() {
     let mut buf = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        assert!(tokio::time::Instant::now() < deadline, "no SSE event in time");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no SSE event in time"
+        );
         let mut chunk = [0u8; 4096];
         let n = tokio::time::timeout(Duration::from_secs(9), sse.read(&mut chunk))
             .await

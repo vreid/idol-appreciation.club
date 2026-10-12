@@ -17,9 +17,19 @@ pub struct KeyLocks {
 
 impl KeyLocks {
     pub fn new() -> Self {
-        Self { map: StdMutex::new(HashMap::new()) }
+        Self::default()
     }
+}
 
+impl Default for KeyLocks {
+    fn default() -> Self {
+        Self {
+            map: StdMutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl KeyLocks {
     /// Acquire all keys in sorted order; the returned guards release them.
     pub async fn lock_sorted(&self, keys: &[String]) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
         let mut raw: Vec<(String, Arc<TokioMutex<()>>)> = {

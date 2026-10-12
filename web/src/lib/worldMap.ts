@@ -21,7 +21,7 @@ const WORLD_LAT_LNG_BOUNDS = L.latLngBounds([-1, 0], [0, 1]);
 const PULSE_MS = 1400;
 
 export interface PlacementForPopup {
-  id: number;
+  id: string;
   username: string;
   x: number;
   y: number;
@@ -34,8 +34,8 @@ export interface MapCallbacks {
   onMapClick(x: number, y: number): void;
   isLoggedIn(): boolean;
   isAdmin(): boolean;
-  onReport(id: number): void;
-  onRemove(id: number, bbox: BBox): void;
+  onReport(id: string): void;
+  onRemove(id: string, bbox: BBox): void;
   onAuthPrompt(): void;
 }
 

@@ -40,9 +40,7 @@ async fn run_listener(
 }
 
 /// GET /api/events — SSE stream of place/remove events.
-pub async fn sse(
-    State(app): State<App>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+pub async fn sse(State(app): State<App>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = app.events_tx.subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|item| match item {
         Ok(payload) => Some(Ok(Event::default().data(payload))),

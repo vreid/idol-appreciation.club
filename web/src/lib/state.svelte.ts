@@ -77,8 +77,8 @@ export interface AppStore {
   cancelPlace(): void;
   confirmSpot(x: number, y: number): Promise<PlaceAttempt>;
   refreshNear(x: number, y: number, r: number): Promise<Placement[]>;
-  reportPlacement(placementId: number): Promise<void>;
-  removePlacement(placementId: number): Promise<boolean>;
+  reportPlacement(placementId: string): Promise<void>;
+  removePlacement(placementId: string): Promise<boolean>;
 }
 
 export interface AppStoreDeps {

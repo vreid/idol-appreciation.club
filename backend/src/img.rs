@@ -25,8 +25,8 @@ pub const PAPER: [f64; 3] = [244.0, 240.0, 232.0];
 pub fn init() -> anyhow::Result<()> {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        let app = libvips::VipsApp::new("idol-appreciation.club-backend", false)
-            .expect("libvips init");
+        let app =
+            libvips::VipsApp::new("idol-appreciation.club-backend", false).expect("libvips init");
         std::mem::forget(app);
     });
     Ok(())
@@ -82,10 +82,9 @@ impl SourceFormat {
 /// Rejects unknown loaders; collapses animation to the first frame; applies
 /// EXIF orientation before any metadata stripping, so pixels are upright.
 pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
-    let img = VipsImage::new_from_buffer(bytes, "").map_err(|_| AppError::BadRequest("undecodable image"))?;
-    let loader = img
-        .get_as_string("vips-loader")
-        .unwrap_or_default();
+    let img = VipsImage::new_from_buffer(bytes, "")
+        .map_err(|_| AppError::BadRequest("undecodable image"))?;
+    let loader = img.get_as_string("vips-loader").unwrap_or_default();
     let format = if loader.starts_with("jpegload") {
         SourceFormat::Jpeg
     } else if loader.starts_with("pngload") {
@@ -115,7 +114,7 @@ pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
     } else {
         img
     };
-        let img = if img.guess_interpretation()? as i32 != ops::Interpretation::Srgb as i32 {
+    let img = if img.guess_interpretation()? as i32 != ops::Interpretation::Srgb as i32 {
         ops::colourspace(&img, libvips::ops::Interpretation::Srgb)?
     } else {
         img
@@ -143,7 +142,6 @@ pub fn resize_exact(img: &VipsImage, w: i32, h: i32) -> Result<VipsImage, AppErr
                 &ops::EmbedOptions {
                     extend: ops::Extend::Background,
                     background: vec![0.0, 0.0, 0.0, 0.0],
-                    ..Default::default()
                 },
             )?
         }
@@ -229,7 +227,6 @@ pub fn blank_chunk(size: i32) -> Result<VipsImage, AppError> {
         &ops::EmbedOptions {
             extend: ops::Extend::Background,
             background: vec![0.0, 0.0, 0.0, 0.0],
-            ..Default::default()
         },
     )?;
     Ok(VipsImage::image_copy_memory(embedded)?)
@@ -267,7 +264,6 @@ pub fn tile_from_chunk(
 /// composite the rest on top. (libvips `arrayjoin` rejects hspacing=0 on
 /// 8.15 and its failed-build path is segfault-prone, so we join by hand.)
 pub fn tile_from_children(children: &[VipsImage; 4]) -> Result<VipsImage, AppError> {
-    let half = CHUNK_CANVAS_PX / 2;
     let quarter = TILE_EDGE / 2;
     let mut quads = Vec::with_capacity(4);
     for child in children {
@@ -280,7 +276,10 @@ pub fn tile_from_children(children: &[VipsImage; 4]) -> Result<VipsImage, AppErr
         quads.push(small);
     }
     let mut canvas = embed_canvas(&quads[0], 0, 0, TILE_EDGE)?;
-    for (quad, (x, y)) in quads[1..].iter().zip([(quarter, 0i64), (0, quarter), (quarter, quarter)]) {
+    for (quad, (x, y)) in quads[1..]
+        .iter()
+        .zip([(quarter, 0i64), (0, quarter), (quarter, quarter)])
+    {
         canvas = composite(&canvas, quad, x, y)?;
     }
     flatten_paper(canvas)
@@ -295,7 +294,7 @@ pub fn flatten_paper(img: VipsImage) -> Result<VipsImage, AppError> {
             &img,
             &ops::FlattenOptions {
                 background: PAPER.to_vec(),
-                ..Default::default()
+                max_alpha: 255.0,
             },
         )?)
     } else {
@@ -310,6 +309,127 @@ pub fn test_png(width: u32, height: u32) -> Vec<u8> {
     let black = ops::black(width as i32, height as i32).unwrap();
     let img = ops::bandjoin_const(&black, &mut [220.0, 40.0, 40.0, 255.0]).unwrap();
     ops::pngsave_buffer(&img).unwrap()
+}
+
+/// Composite one overlay (webp bytes) onto every listed chunk in one sync
+/// section. `bases[i]` is the current chunk bytes (None = virgin chunk) for
+/// `targets[i] = (local_x, local_y)`. Returns the new webp bytes per chunk.
+///
+/// Virgin chunks embed the overlay directly: compositing onto a synthetic
+/// (embed-built) blank canvas trips a libvips save quirk ("Cannot write
+/// content to buffer") when the overlay is clipped at the canvas edge,
+/// while embed-of-decoded-overlay encodes reliably.
+pub fn composite_chunks(
+    bases: Vec<Option<Vec<u8>>>,
+    overlay: &[u8],
+    targets: &[(i64, i64)],
+) -> crate::error::AppResult<Vec<Vec<u8>>> {
+    let (ov, _) = decode(overlay)?;
+    let mut out = Vec::with_capacity(bases.len());
+    for (base, (lx, ly)) in bases.into_iter().zip(targets) {
+        let composed = match base {
+            Some(bytes) => {
+                let img = VipsImage::new_from_buffer(&bytes, "")?;
+                composite(&img, &ov, *lx, *ly)?
+            }
+            None => embed_canvas(&ov, *lx, *ly, i64::from(CHUNK_CANVAS_PX))?,
+        };
+        out.push(
+            webp_bytes(&composed, 90)
+                .map_err(|e| anyhow::anyhow!("chunk webp encode: {e}"))
+                .map_err(crate::error::AppError::from)?,
+        );
+    }
+    Ok(out)
+}
+
+/// Transparent `size × size` canvas with `overlay` embedded at (x, y).
+fn embed_canvas(
+    overlay: &VipsImage,
+    x: i64,
+    y: i64,
+    size: i64,
+) -> crate::error::AppResult<VipsImage> {
+    let x = i32::try_from(x).map_err(|_| anyhow::anyhow!("embed x out of range"))?;
+    let y = i32::try_from(y).map_err(|_| anyhow::anyhow!("embed y out of range"))?;
+    let size = i32::try_from(size).map_err(|_| anyhow::anyhow!("embed size out of range"))?;
+    // Background length must match the overlay's band count.
+    let bg = vec![0.0; overlay.get_bands().max(1) as usize];
+    Ok(ops::embed_with_opts(
+        overlay,
+        x,
+        y,
+        size,
+        size,
+        &ops::EmbedOptions {
+            extend: ops::Extend::Background,
+            background: bg,
+        },
+    )?)
+}
+
+/// Chunk canvas side used by the compositing helpers.
+const CHUNK_CANVAS_PX: i32 = 1024;
+/// Tile edge used by the pyramid join.
+const TILE_EDGE: i64 = 256;
+
+/// Sequentially composite overlays onto a canvas (moderation replay step).
+/// `canvas` is the current chunk raster bytes (None = blank), overlays are
+/// `(bytes, x, y)` already in chunk-local coordinates, applied in order.
+pub fn replay_canvas(
+    canvas: Option<Vec<u8>>,
+    overlays: &[(Vec<u8>, i64, i64)],
+) -> crate::error::AppResult<Vec<u8>> {
+    let mut canvas = match &canvas {
+        Some(bytes) => Some(VipsImage::new_from_buffer(bytes, "")?),
+        None => None,
+    };
+    for (bytes, x, y) in overlays {
+        let (ov, _) = decode(bytes)?;
+        canvas = Some(match canvas {
+            Some(c) => composite(&c, &ov, *x, *y)?,
+            // First paint on a virgin chunk embeds directly (see
+            // composite_chunks for why not a synthetic blank).
+            None => embed_canvas(&ov, *x, *y, i64::from(CHUNK_CANVAS_PX))?,
+        });
+    }
+    let canvas = match canvas {
+        Some(c) => c,
+        // No overlays at all → rewrite as transparent.
+        None => blank_chunk(CHUNK_CANVAS_PX)?,
+    };
+    webp_bytes(&canvas, 90).map_err(|e| anyhow::anyhow!("replay encode: {e}").into())
+}
+
+/// Render a z ≥ BASE_Z tile from its covering chunk bytes (None = blank).
+pub fn render_leaf_tile(
+    chunk: Option<Vec<u8>>,
+    offset_x: i64,
+    offset_y: i64,
+    native_size: i64,
+) -> crate::error::AppResult<Vec<u8>> {
+    let chunk = match chunk {
+        Some(bytes) => VipsImage::new_from_buffer(&bytes, "")?,
+        None => blank_chunk(CHUNK_CANVAS_PX)?,
+    };
+    let tile = tile_from_chunk(&chunk, offset_x, offset_y, native_size)?;
+    webp_bytes(&tile, 80)
+}
+
+/// The constant empty tile: pure paper, 256×256 webp.
+pub fn empty_tile_256() -> crate::error::AppResult<Vec<u8>> {
+    let blank = blank_chunk(TILE_EDGE as i32)?;
+    let flat = flatten_paper(blank)?;
+    webp_bytes(&flat, 80)
+}
+
+/// Render a parent tile from its four encoded child tiles (2×2, row-major).
+pub fn render_parent_tile(children: &[Vec<u8>; 4]) -> crate::error::AppResult<Vec<u8>> {
+    let imgs: [VipsImage; 4] = core::array::from_fn(|i| {
+        VipsImage::new_from_buffer(&children[i], "").expect("child tile decodes")
+    });
+    let tile = tile_from_children(&imgs)?;
+    webp_bytes(&tile, 80)
 }
 
 #[cfg(test)]
@@ -445,7 +565,10 @@ mod tests {
         }
         let c = blank_chunk(1024).unwrap();
         assert_eq!(c.get_bands(), 4);
-        assert_eq!(c.guess_interpretation().unwrap() as i32, ops::Interpretation::Srgb as i32);
+        assert_eq!(
+            c.guess_interpretation().unwrap() as i32,
+            ops::Interpretation::Srgb as i32
+        );
         let bytes = webp_bytes(&c, 90).unwrap();
         let (back, _) = decode(&bytes).unwrap();
         // All alpha must be 0.
@@ -500,118 +623,3 @@ mod tests {
 // `VipsImage` wraps a raw pointer and is !Send, so no image may live across
 // an await. Handlers call these sync functions via spawn_blocking; every
 // function decodes its inputs and encodes its output to owned bytes.
-
-/// Composite one overlay (webp bytes) onto every listed chunk in one sync
-/// section. `bases[i]` is the current chunk bytes (None = virgin chunk) for
-/// `targets[i] = (local_x, local_y)`. Returns the new webp bytes per chunk.
-///
-/// Virgin chunks embed the overlay directly: compositing onto a synthetic
-/// (embed-built) blank canvas trips a libvips save quirk ("Cannot write
-/// content to buffer") when the overlay is clipped at the canvas edge,
-/// while embed-of-decoded-overlay encodes reliably.
-pub fn composite_chunks(
-    bases: Vec<Option<Vec<u8>>>,
-    overlay: &[u8],
-    targets: &[(i64, i64)],
-) -> crate::error::AppResult<Vec<Vec<u8>>> {
-    let (ov, _) = decode(overlay)?;
-    let mut out = Vec::with_capacity(bases.len());
-    for (base, (lx, ly)) in bases.into_iter().zip(targets) {
-        let composed = match base {
-            Some(bytes) => {
-                let img = VipsImage::new_from_buffer(&bytes, "")?;
-                composite(&img, &ov, *lx, *ly)?
-            }
-            None => embed_canvas(&ov, *lx, *ly, i64::from(CHUNK_CANVAS_PX))?,
-        };
-        out.push(
-            webp_bytes(&composed, 90)
-                .map_err(|e| anyhow::anyhow!("chunk webp encode: {e}"))
-                .map_err(crate::error::AppError::from)?,
-        );
-    }
-    Ok(out)
-}
-
-/// Transparent `size × size` canvas with `overlay` embedded at (x, y).
-fn embed_canvas(
-    overlay: &VipsImage,
-    x: i64,
-    y: i64,
-    size: i64,
-) -> crate::error::AppResult<VipsImage> {
-    let x = i32::try_from(x).map_err(|_| anyhow::anyhow!("embed x out of range"))?;
-    let y = i32::try_from(y).map_err(|_| anyhow::anyhow!("embed y out of range"))?;
-    let size = i32::try_from(size).map_err(|_| anyhow::anyhow!("embed size out of range"))?;
-    // Background length must match the overlay's band count.
-    let bg = vec![0.0; overlay.get_bands().max(1) as usize];
-    Ok(ops::embed_with_opts(
-        overlay,
-        x,
-        y,
-        size,
-        size,
-        &ops::EmbedOptions {
-            extend: ops::Extend::Background,
-            background: bg,
-            ..Default::default()
-        },
-    )?)
-}
-
-/// Chunk canvas side used by the compositing helpers.
-const CHUNK_CANVAS_PX: i32 = 1024;
-/// Tile edge used by the pyramid join.
-const TILE_EDGE: i64 = 256;
-
-/// Sequentially composite overlays onto a canvas (moderation replay step).
-/// `canvas` is the current chunk raster bytes (None = blank), overlays are
-/// `(bytes, x, y)` already in chunk-local coordinates, applied in order.
-pub fn replay_canvas(
-    canvas: Option<Vec<u8>>,
-    overlays: &[(Vec<u8>, i64, i64)],
-) -> crate::error::AppResult<Vec<u8>> {
-    let mut canvas = match &canvas {
-        Some(bytes) => Some(VipsImage::new_from_buffer(bytes, "")?),
-        None => None,
-    };
-    for (bytes, x, y) in overlays {
-        let (ov, _) = decode(bytes)?;
-        canvas = Some(match canvas {
-            Some(c) => composite(&c, &ov, *x, *y)?,
-            // First paint on a virgin chunk embeds directly (see
-            // composite_chunks for why not a synthetic blank).
-            None => embed_canvas(&ov, *x, *y, i64::from(CHUNK_CANVAS_PX))?,
-        });
-    }
-    let canvas = match canvas {
-        Some(c) => c,
-        // No overlays at all → rewrite as transparent.
-        None => blank_chunk(CHUNK_CANVAS_PX)?,
-    };
-    webp_bytes(&canvas, 90).map_err(|e| anyhow::anyhow!("replay encode: {e}").into())
-}
-
-/// Render a z ≥ BASE_Z tile from its covering chunk bytes (None = blank).
-pub fn render_leaf_tile(
-    chunk: Option<Vec<u8>>,
-    offset_x: i64,
-    offset_y: i64,
-    native_size: i64,
-) -> crate::error::AppResult<Vec<u8>> {
-    let chunk = match chunk {
-        Some(bytes) => VipsImage::new_from_buffer(&bytes, "")?,
-        None => blank_chunk(CHUNK_CANVAS_PX)?,
-    };
-    let tile = tile_from_chunk(&chunk, offset_x, offset_y, native_size)?;
-    webp_bytes(&tile, 80)
-}
-
-/// Render a parent tile from its four encoded child tiles (2×2, row-major).
-pub fn render_parent_tile(children: &[Vec<u8>; 4]) -> crate::error::AppResult<Vec<u8>> {
-    let imgs: [VipsImage; 4] = core::array::from_fn(|i| {
-        VipsImage::new_from_buffer(&children[i], "").expect("child tile decodes")
-    });
-    let tile = tile_from_children(&imgs)?;
-    webp_bytes(&tile, 80)
-}

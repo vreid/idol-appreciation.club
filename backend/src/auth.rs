@@ -30,7 +30,10 @@ fn sign(secret: &[u8], payload: &[u8]) -> Vec<u8> {
 }
 
 pub fn issue(secret: &[u8], account_id: Uuid, now: i64) -> String {
-    let claims = Claims { sub: account_id, exp: now + SESSION_TTL_SECS };
+    let claims = Claims {
+        sub: account_id,
+        exp: now + SESSION_TTL_SECS,
+    };
     let payload = serde_json::to_vec(&claims).expect("serialize claims");
     let body = URL_SAFE_NO_PAD.encode(payload);
     let sig = URL_SAFE_NO_PAD.encode(sign(secret, body.as_bytes()));
@@ -112,11 +115,10 @@ where
 
 /// Admin guard: 401 unauthenticated, 403 authenticated non-admin.
 pub async fn require_admin(app: &App, id: Uuid) -> AppResult<()> {
-    let row: Option<(bool,)> =
-        sqlx::query_as("SELECT is_admin FROM accounts WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&app.pool)
-            .await?;
+    let row: Option<(bool,)> = sqlx::query_as("SELECT is_admin FROM accounts WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&app.pool)
+        .await?;
     match row {
         Some((true,)) => Ok(()),
         Some((false,)) => Err(AppError::Forbidden),

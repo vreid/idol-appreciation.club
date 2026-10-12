@@ -260,3 +260,44 @@ delete-branch-on-merge, required checks = ci.yml jobs (tofu fmt+validate,
 jactionlint, oxfmt markdown, owner readiness markers, backend cargo gates, web
 vp gates, tofu plan). Direct pushes to main are being phased out; agents work on
 branches and use `gh pr merge --auto --squash`.
+
+## State-loss recovery (2026-10-12 incident, runbook)
+
+The local tofu state file was clobbered externally (0 resources) while all
+UpCloud objects stayed alive. Recovery that worked, in order:
+
+1. `tofu import` every live resource (creates nothing). Import IDs used:
+   network/cluster/PG/objsto = UUID; node group = `{cluster}/default`; logical
+   db + db user = `{service}/{name}`; objsto bucket = `{svc}/{name}`; objsto
+   user = `{svc}/{username}`; policy = `{svc}/{name}`; user_policy =
+   `{svc}/{username}/{policy}`; access key = skipped (recreated instead).
+2. `tofu apply` with `-replace` semantics for the two secret-bearing resources
+   whose generated values are unreadable via API:
+   `upcloud_managed_database_user.app` (password) and
+   `upcloud_managed_object_storage_user_access_key.app` (secret key).
+3. Re-apply the `app-env` secret from fresh `tofu output -raw` values.
+
+PG15 gotcha: the provider-created `app` role owns nothing - first backend boot
+fails on `permission denied for schema public`. One-time grant:
+`ALTER DATABASE app OWNER TO app; GRANT ALL ON SCHEMA public TO app;` as the
+admin URI.
+
+## Costs (monthly, Helsinki fi-hel2)
+
+| Item                             | Plan                              | Price       |
+| -------------------------------- | --------------------------------- | ----------- |
+| Managed Kubernetes control plane | Development tier                  | EUR 0       |
+| Worker node                      | STARTER-2xCPU-4GB                 | ~EUR 7      |
+| Managed PostgreSQL               | rdb.development.1CPU-1GB          | ~EUR 9      |
+| Managed Object Storage           | 250 GB tier                       | EUR 5       |
+| Load balancer                    | Essentials (via CCM, web Service) | EUR 0       |
+| **Total**                        |                                   | **~EUR 21** |
+
+Hourly billing everywhere; a destroy/recreate cycle costs pennies.
+
+## UpCloud S3 quirk
+
+Streamed SigV4 PUTs (boto3 default signed payload) fail with
+`XAmzContentSHA256Mismatch` through UpCloud's object-storage LB; presigned URLs
+and header-signed PUTs work. Backend blob uploads must be verified early; if
+streamed PUTs fail in Rust too, switch to buffered/presigned writes.

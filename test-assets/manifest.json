@@ -868,5 +868,15 @@
     "bytes": 235977,
     "prompt": "Suit-concept teaser photo of a female fictional idol in a tailored black three-piece suit with a loose tie, leaning against a dark studio wall with dramatic side light, smoldering confident gaze, high-fashion editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/72-uniform-concept-teaser.jpg",
+    "category": "uniform-concept-teaser",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 219794,
+    "prompt": "School-uniform concept teaser photo of a female fictional idol with a ribbon tie and pleated skirt, sitting backwards on a classroom chair with a bright grin, chalk doodles on the board behind, youthful concept photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

@@ -360,7 +360,10 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
     pendingAccounts: async () =>
       pendingAccountsOf(await request("/api/admin/accounts?pending=true")),
     approveAccount: (username) =>
-      postJson(`/api/admin/accounts/${encodeURIComponent(username)}/approve`, {}),
+      postJson(
+        `/api/admin/accounts/${encodeURIComponent(username)}/approve`,
+        {},
+      ),
     removePlacement: async (placementId) => {
       await request(`/api/admin/placements/${placementId}`, {
         method: "DELETE",

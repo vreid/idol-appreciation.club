@@ -100,10 +100,16 @@ test("@full place flow: place, near, cooldown 429, center shape", async ({
   const center = await request.get("/api/center");
   expect(center.ok()).toBeTruthy();
   const centerBody: unknown = await center.json();
-  expect(centerBody).toEqual(
-    expect.objectContaining({
-      current: expect.anything(),
-      all_time: expect.any(Array),
-    }),
-  );
+  if (!isRecord(centerBody))
+    throw new Error("center response was not an object");
+  // `current` is null until someone holds 0/0 — valid on a fresh world.
+  const current = centerBody["current"];
+  expect(
+    current === null || isRecord(current),
+    "current must be a holder object or null",
+  ).toBe(true);
+  expect(
+    Array.isArray(centerBody["all_time"]),
+    "all_time must be an array",
+  ).toBe(true);
 });

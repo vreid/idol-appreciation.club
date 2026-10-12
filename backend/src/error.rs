@@ -38,9 +38,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, None, *m),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, None, "unauthorized"),
             AppError::Forbidden => (StatusCode::FORBIDDEN, None, "forbidden"),
-            AppError::PendingApproval => {
-                (StatusCode::FORBIDDEN, None, "account pending approval")
-            }
+            AppError::PendingApproval => (StatusCode::FORBIDDEN, None, "account pending approval"),
             AppError::NotFound => (StatusCode::NOT_FOUND, None, "not found"),
             AppError::Conflict => (StatusCode::CONFLICT, None, "conflict"),
             AppError::Cooldown(secs) => (StatusCode::TOO_MANY_REQUESTS, Some(*secs), "cooldown"),

@@ -68,13 +68,16 @@ pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> A
     // The gate targets external signups; the bootstrap admin is exempt
     // (approved = true) so gated deployments never lock out their admin.
     let approved = !app.cfg.registration_approval_required;
-    let mut resp = match try_insert(&app, id, &req.username, &hash, true, true).await {
-        Ok(r) => r,
+    // The admin attempt always inserts approved=true; the retry path may
+    // be pending. The session cookie follows the actual insert outcome.
+    let (mut resp, session) = match try_insert(&app, id, &req.username, &hash, true, true).await {
+        Ok(r) => (r, true),
         Err(e) => {
             // Lost the single-admin race → retry as a normal account.
             if constraint_of(&e) == Some("accounts_single_admin") {
                 try_insert(&app, id, &req.username, &hash, false, approved)
                     .await
+                    .map(|r| (r, approved))
                     .map_err(|e| {
                         if constraint_of(&e) == Some("accounts_username_key") {
                             AppError::Conflict
@@ -89,7 +92,7 @@ pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> A
             }
         }
     };
-    if approved {
+    if session {
         let token = issue(&app.cfg.session_secret, id, chrono::Utc::now().timestamp());
         set_cookie(&mut resp, cookie_value(&token, app.cfg.secure_cookies()));
     }

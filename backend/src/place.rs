@@ -259,11 +259,12 @@ pub async fn admin_delete(
     crate::auth::require_admin(&app, admin_id).await?;
     // Peek the rect first so chunk locks can be acquired before any row
     // locks, matching the placement pipeline's lock order.
-    let peeked: Option<(i64, i64, i64, i64)> =
-        sqlx::query_as("SELECT x, y, w, h FROM placements WHERE id = $1 AND removed_at IS NULL")
-            .bind(id)
-            .fetch_optional(&app.pool)
-            .await?;
+    let peeked: Option<(i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT x, y, w::bigint, h::bigint FROM placements WHERE id = $1 AND removed_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&app.pool)
+    .await?;
     let Some((x, y, w, h)) = peeked else {
         return Err(AppError::NotFound);
     };
@@ -276,11 +277,12 @@ pub async fn admin_delete(
     let _guards = app.chunk_locks.lock_sorted(&lock_keys).await;
 
     let mut tx = app.pool.begin().await?;
-    let still_there: Option<(i64,)> =
-        sqlx::query_as("SELECT 1 FROM placements WHERE id = $1 AND removed_at IS NULL FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let still_there: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1::bigint FROM placements WHERE id = $1 AND removed_at IS NULL FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
     if still_there.is_none() {
         tx.rollback().await.map_err(internal)?;
         return Err(AppError::NotFound);

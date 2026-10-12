@@ -46,11 +46,11 @@ metadata:
     app.kubernetes.io/part-of: idol-appreciation.club
   annotations:
     # Server-sent events: keep the stream open and unbuffered.
+    # (configuration-snippet is disabled by the ingress admission webhook;
+    # proxy-buffering off already covers cache bypass.)
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_cache off;
 spec:
   ingressClassName: nginx
   tls:

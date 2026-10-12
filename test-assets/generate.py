@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the 16 fictional-idol test images via the NanoGPT Image API.
+"""Generate the 100 fictional-idol test images via the NanoGPT Image API.
 
 Stdlib only (urllib, json, base64). Reads NANO_GPT_API_KEY from ../.env
 relative to this script. Writes idols/NN-slug.jpg and manifest.json.
@@ -19,8 +19,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 API = "https://api.nano-gpt.com/api/v1/images"
 MODEL = "bytedance/seedream-v5.0-pro"
 RESOLUTION = "1k"  # supported tiers per endpoints metadata: aspect ratios + "1k"/"2k"
-BUDGET_TARGET_USD = 8.0
+HERO_RESOLUTION = "2k"  # occasional hero shots
+HERO_NUMBERS = {"30", "59", "64", "65"}
+BUDGET_TARGET_USD = 9.5  # hard lifetime NanoGPT cap for this asset set
 PER_IMAGE_EST_USD = 0.10
+HERO_EST_USD = 0.35      # conservative pre-flight estimate for 2k requests
 MIN_BYTES = 30 * 1024
 
 TAIL = ("professional photography, editorial quality, sharp focus, "

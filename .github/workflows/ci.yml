@@ -222,7 +222,7 @@ jobs:
       - name: Fail if any gate failed or was skipped
         run: |
           failed=0
-          for r in "${{ join(needs.*.result, ' ') }}"; do
+          for r in ${{ join(needs.*.result, ' ') }}; do
             case "$r" in
               success) ;;
               *) echo "gate result: $r"; failed=1 ;;

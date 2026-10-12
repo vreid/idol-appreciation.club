@@ -1068,5 +1068,75 @@
     "bytes": 355970,
     "prompt": "Girl group of fictional idols waiting in the stage wings moments before going on, peeking at the packed arena through the curtain gap, hands stacked together in the middle, tense-excited expressions, candid backstage documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/92-picnic-vlog-park.jpg",
+    "category": "picnic-vlog-park",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 434824,
+    "prompt": "Vlog-style shot of a girl group of fictional idols at a spring picnic under cherry blossoms, checkered blanket with fruit and snacks, members laughing over a board game, petals drifting through sunlight, candid lifestyle photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/93-seollal-hanbok-greeting.jpg",
+    "category": "seollal-hanbok-greeting",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 398491,
+    "prompt": "Lunar New Year greeting photo of a female fictional idol in a soft pink traditional hanbok with golden embroidery, performing a deep formal bow, warm paper lanterns and pine branches behind, festive editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/94-fancam-closeup.jpg",
+    "category": "fancam-closeup",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 384847,
+    "prompt": "Fancam-style close-up of a female fictional idol mid-choreography on a music-show stage, sharp eye contact with the lens, glossy stage makeup, sequined outfit sparkling under moving lights, dynamic performance photography, 135mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/95-piano-stage-solo.jpg",
+    "category": "piano-stage-solo",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 152663,
+    "prompt": "Female fictional idol performing a piano ballad at a white grand piano on a circular stage surrounded by calm water reflections, soft blue spotlight, audience silhouettes in the foreground, cinematic concert photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/96-beauty-morning-light.jpg",
+    "category": "beauty-morning-light",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 115615,
+    "prompt": "Soft beauty close-up of a female fictional idol with bare dewy skin in morning window light, tiny hearts drawn in highlighter on her cheek, fluffy lashes, natural makeup look, fresh clean beauty editorial photography, macro 100mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/97-sports-day-event.jpg",
+    "category": "sports-day-event",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 382861,
+    "prompt": "Girl group of fictional idols at an idol sports-day event, members in matching tracksuits passing a relay baton on an indoor field, laughing mid-race, stadium lighting, energetic documentary sports photography, 70mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/98-rooftop-golden-hour.jpg",
+    "category": "rooftop-golden-hour",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 373399,
+    "prompt": "Girl group of fictional idols on a city rooftop at golden hour, wind catching coordinated white summer outfits, skyline glowing behind them, arms over each other's shoulders, cinematic editorial group photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

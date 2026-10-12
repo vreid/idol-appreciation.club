@@ -31,6 +31,20 @@ fi
 LB_IPV4="$1"
 LB_IPV6="${2:-}"
 
+# Accept an LB hostname too: resolve it to an address up front.
+if [[ ! "${LB_IPV4}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  resolved="$(getent ahosts "${LB_IPV4}" 2>/dev/null | awk '{print $1}' | sort -u | grep -E '^[0-9]+\.' | head -1 || true)"
+  if [ -z "${resolved}" ]; then
+    resolved="$(dig +short "${LB_IPV4}" A 2>/dev/null | grep -E '^[0-9]+\.' | head -1 || true)"
+  fi
+  if [ -z "${resolved}" ]; then
+    echo "error: could not resolve '${LB_IPV4}' to an IPv4 address" >&2
+    exit 1
+  fi
+  echo "resolved ${LB_IPV4} -> ${resolved}"
+  LB_IPV4="${resolved}"
+fi
+
 auth() { curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "$@"; }
 
 zone_id="$(auth "${API}/zones?name=${ZONE}" | jq -r '.result[0].id // empty')"
@@ -48,14 +62,17 @@ upsert() {
     '{type: $t, name: $n, content: $c, ttl: 300, proxied: false}')"
 
   if [[ -n "${record_id}" ]]; then
-    auth -X PUT "${API}/zones/${zone_id}/dns_records/${record_id}" \
-      -H "Content-Type: application/json" -d "${body}" > /dev/null
-    echo "updated ${type} ${name} -> ${content}"
+    resp="$(auth -X PUT "${API}/zones/${zone_id}/dns_records/${record_id}" \
+      -H "Content-Type: application/json" -d "${body}")"
   else
-    auth -X POST "${API}/zones/${zone_id}/dns_records" \
-      -H "Content-Type: application/json" -d "${body}" > /dev/null
-    echo "created ${type} ${name} -> ${content}"
+    resp="$(auth -X POST "${API}/zones/${zone_id}/dns_records" \
+      -H "Content-Type: application/json" -d "${body}")"
   fi
+  if ! jq -e '.success == true' <<< "${resp}" > /dev/null; then
+    echo "error: ${type} ${name} upsert failed: ${resp}" >&2
+    exit 1
+  fi
+  echo "upserted ${type} ${name} -> ${content}"
 }
 
 for name in "${ZONE}" "www.${ZONE}"; do

@@ -350,6 +350,66 @@
     "cost_if_known": 0.08549999999999999
   },
   {
+    "file": "idols/21-solo-winter-snow.jpg",
+    "category": "solo-winter-snow",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 226934,
+    "prompt": "Winter portrait of a young Korean woman fictional idol in a long cream wool coat and knitted muffler, snowflakes falling gently around her, breath visible in cold air, soft dusk light over a snowy street, editorial winter photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/22-solo-halloween-witch.jpg",
+    "category": "solo-halloween-witch",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 312290,
+    "prompt": "Halloween concept portrait of a young Korean woman fictional idol in a playful cute witch costume with a small round hat, holding a carved pumpkin bucket, orange and purple party lights with gentle fog, festive studio photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/23-solo-christmas-knit.jpg",
+    "category": "solo-christmas-knit",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 322152,
+    "prompt": "Christmas concept portrait of a young Korean woman fictional idol in a cozy red knitted sweater beside a decorated tree with warm fairy lights, holding a mug with both hands, soft bokeh, holiday editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/24-duo-unit-pastel.jpg",
+    "category": "duo-unit-pastel",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 253760,
+    "prompt": "Two-member female fictional idol unit posing together for a pastel concept photo, matching mint and pink outfits, cheerful synchronized poses, clean studio backdrop with soft clouds, unit debut promo photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/25-duo-unit-hiphop.jpg",
+    "category": "duo-unit-hiphop",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 273531,
+    "prompt": "Two-member female fictional idol hip-hop unit performing a synchronized move on an underground-style stage, black and silver streetwear, dramatic single spotlight, gritty urban concert photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/26-trio-unit-street.jpg",
+    "category": "trio-unit-street",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 518492,
+    "prompt": "Three-member female fictional idol unit posing on a pastel city crosswalk for a street-style concept photo, coordinated denim outfits, confident expressions, morning sunlight, fashion editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/30-group-seven-girls.jpg",
     "category": "group-seven-girls",
     "aspect_ratio": "16:9",

@@ -247,8 +247,9 @@ jobs:
           ips=""
           n=0
           while [ -z "$ips" ] && [ "$n" -lt 30 ]; do
-            ips="$(kubectl -n idol get svc web placeholder \
-              -o json 2>/dev/null | jq -r '.items[] | select(.status.loadBalancer.ingress)
+            ips="$( (kubectl -n idol get svc web placeholder -o json 2>/dev/null \
+              || echo '{"items":[]}') \
+              | jq -r '.items[] | select(.status.loadBalancer.ingress)
               | .status.loadBalancer.ingress[]? | (.ip // .hostname)')"
             [ -n "$ips" ] || sleep 10
             n=$((n + 1))

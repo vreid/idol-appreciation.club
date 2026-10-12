@@ -46,7 +46,7 @@ describe("Countdown", () => {
     );
     countdown.start();
     vi.advanceTimersByTime(1500);
-    expect(ticks).toEqual([2000, 1500, 1000]);
+    expect(ticks).toEqual([2000, 1500, 1000, 500]);
     countdown.stop();
   });
 

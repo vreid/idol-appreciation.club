@@ -28,7 +28,7 @@ describe("longEdgeToSize", () => {
   });
 
   it("keeps near-square images balanced", () => {
-    expect(longEdgeToSize(101, 100, 256)).toEqual({ w: 257, h: 254 });
+    expect(longEdgeToSize(101, 100, 256)).toEqual({ w: 256, h: 253 });
   });
 
   it("scales a tiny image up to the requested long edge", () => {

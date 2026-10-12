@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tofu-fmt-validate:
+    name: tofu fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-tofu@v1
+        with:
+          tofu_version: 1.13.1
+      - name: tofu fmt -check
+        run: tofu fmt -check -recursive
+        working-directory: tofu
+      - name: tofu init (backend disabled)
+        run: tofu init -backend=false -input=false
+        working-directory: tofu
+      - name: tofu validate
+        run: tofu validate
+        working-directory: tofu
+
+  tofu-plan:
+    name: tofu plan (PRs only)
+    if: github.event_name == 'pull_request'
+    environment: production
+    runs-on: ubuntu-latest
+    env:
+      UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-tofu@v1
+        with:
+          tofu_version: 1.13.1
+      - name: tofu init (backend disabled)
+        run: tofu init -backend=false -input=false
+        working-directory: tofu
+      # Plan without backend state: PRs get a full "would create" preview,
+      # which is enough to catch config errors before merge. Real diffing
+      # happens in infra-apply.
+      - name: tofu plan
+        run: tofu plan -input=false -no-color
+        working-directory: tofu
+
+  markdown-fmt:
+    name: prettier markdown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Gate covers every *.md in the repo (README, docs/, agents' notes);
+      # ignores come from .prettierignore.
+      - name: prettier --check
+        if: hashFiles('**/*.md') != ''
+        run: npx --yes prettier --check "**/*.md"
+
+  backend-checks:
+    name: backend cargo gates
+    if: hashFiles('backend/Cargo.toml') != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: cargo fmt --check
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test
+
+  web-checks:
+    name: web vp gates
+    if: hashFiles('web/package.json') != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: voidzero-dev/setup-vp@v1
+      - name: vp install
+        run: vp install
+      # vp check = tsgo typecheck + oxlint + oxfmt; vp test = vitest with
+      # coverage threshold (>=80% on src/lib, enforced by web/ config).
+      - name: vp check
+        run: vp check
+      - name: vp test
+        run: vp test

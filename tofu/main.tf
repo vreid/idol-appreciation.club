@@ -70,8 +70,12 @@ resource "upcloud_managed_database_postgresql" "this" {
   title = "idol-appreciation.club PostgreSQL"
 
   # plan is deprecated for PostgreSQL; plan_compute takes the new
-  # rdb.* shape names. Smallest development shape = 1 vCPU / 1 GiB.
-  plan_compute = var.pg_plan_compute
+  # rdb.* shape names. Smallest development shape = 1 vCPU / 1 GiB,
+  # single node, 10 GiB storage, "mini" backup tier.
+  plan_compute     = var.pg_plan_compute
+  plan_node_count  = var.pg_node_count
+  plan_storage_gib = var.pg_storage_gib
+  plan_backups     = var.pg_plan_backups
 
   labels = {
     project    = "idol-appreciation.club"

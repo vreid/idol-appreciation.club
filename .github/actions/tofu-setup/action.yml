@@ -1,0 +1,43 @@
+name: Set up OpenTofu
+description: |
+  Installs OpenTofu, restores the local backend (state + plugins) from the
+  Actions cache, and runs tofu init. The state file contains secrets, so it
+  must never be committed; the cache is the single source of truth for it.
+  If the cache is ever evicted, the runbook in docs/infra.md applies
+  (state loss => full clean recreate).
+
+inputs:
+  working-directory:
+    description: Directory containing the tofu config.
+    default: tofu
+  backend:
+    description: >-
+      "true" enables the local backend (state restore from cache);
+      "false" for stateless runs.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - uses: opentofu/setup-tofu@v1
+      with:
+        tofu_version: 1.13.1
+
+    - name: Cache tofu state and plugins
+      if: inputs.backend == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ inputs.working-directory }}/.terraform
+          ${{ inputs.working-directory }}/terraform.tfstate
+          ${{ inputs.working-directory }}/terraform.tfstate.backup
+        key: tofu-state-${{ github.run_id }}
+        restore-keys: |
+          tofu-state-
+
+    - name: tofu init
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: >-
+        tofu init -input=false
+        ${{ inputs.backend == 'true' && '' || '-backend=false' }}

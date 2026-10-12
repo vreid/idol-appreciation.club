@@ -85,6 +85,7 @@ export class SseClient {
   private source: EventSourceLike | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs: number;
+  private scheduledDelayMs = 0;
   private running = false;
 
   constructor(options: SseClientOptions) {
@@ -109,6 +110,7 @@ export class SseClient {
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+      this.scheduledDelayMs = 0;
     }
     this.source?.close();
     this.source = null;
@@ -116,7 +118,7 @@ export class SseClient {
 
   /** Milliseconds of the next scheduled reconnect wait. */
   currentBackoffMs(): number {
-    return this.backoffMs;
+    return this.reconnectTimer !== null ? this.scheduledDelayMs : this.backoffMs;
   }
 
   isReconnectScheduled(): boolean {
@@ -135,6 +137,7 @@ export class SseClient {
     };
     source.onerror = () => {
       if (source.readyState !== READY_STATE_CLOSED) return; // browser retries
+      source.close();
       this.source = null;
       if (!this.running) return;
       this.scheduleReconnect();
@@ -143,14 +146,14 @@ export class SseClient {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer !== null) return;
+    const delay = this.backoffMs;
+    this.scheduledDelayMs = delay;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      this.scheduledDelayMs = 0;
       if (this.running) this.connect();
-    }, this.backoffMs);
-    this.backoffMs = Math.min(
-      this.backoffMs * 2,
-      this.options.maxBackoffMs,
-    );
+    }, delay);
+    this.backoffMs = Math.min(delay * 2, this.options.maxBackoffMs);
   }
 }
 

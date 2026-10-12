@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: idol-appreciation-club
+  namespace: idol
+  labels:
+    app.kubernetes.io/part-of: idol-appreciation.club
+  annotations:
+    # www.idol-appreciation.club -> idol-appreciation.club redirect.
+    nginx.ingress.kubernetes.io/from-to-www-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - idol-appreciation.club
+        - www.idol-appreciation.club
+      secretName: letsencrypt-idol
+  rules:
+    - host: idol-appreciation.club
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 80

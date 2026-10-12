@@ -1,0 +1,94 @@
+# Bootstrap placeholder: gives the LoadBalancer an IP and serves a static
+# page before the real backend image exists. deploy.yml deletes these
+# resources (kubectl delete --ignore-not-found) once the backend rolls out;
+# infra workflows never apply this file.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: placeholder-html
+  namespace: idol
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+      <head><meta charset="utf-8"><title>idol-appreciation.club</title></head>
+      <body style="font-family: system-ui; max-width: 40rem; margin: 4rem auto">
+        <h1>idol-appreciation.club</h1>
+        <p>bootstrapping&hellip; the canvas arrives soon.</p>
+      </body>
+    </html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: placeholder
+  namespace: idol
+  labels:
+    app: placeholder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: placeholder
+  template:
+    metadata:
+      labels:
+        app: placeholder
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: html
+              mountPath: /usr/share/nginx/html
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: html
+          configMap:
+            name: placeholder-html
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: placeholder
+  namespace: idol
+spec:
+  type: ClusterIP
+  selector:
+    app: placeholder
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: placeholder
+  namespace: idol
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - idol-appreciation.club
+        - www.idol-appreciation.club
+      secretName: letsencrypt-idol
+  rules:
+    - host: idol-appreciation.club
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: placeholder
+                port:
+                  number: 80

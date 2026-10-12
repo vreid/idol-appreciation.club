@@ -1,0 +1,37 @@
+name: infra-recreate
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: infra
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recreate:
+    name: destroy then apply
+    environment: production
+    runs-on: ubuntu-latest
+    env:
+      UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/tofu-setup
+      - name: tofu destroy (best effort)
+        run: tofu destroy -auto-approve -input=false || true
+        working-directory: tofu
+      - name: tofu apply
+        run: tofu apply -auto-approve -input=false
+        working-directory: tofu
+      - name: Summary
+        run: |
+          {
+            echo "### infra recreated"
+            echo "- cluster: $(tofu output -raw cluster_name)"
+            echo "- node plan: $(tofu output -raw node_plan) x$(tofu output -raw node_count)"
+          } >> "$GITHUB_STEP_SUMMARY"
+        working-directory: tofu

@@ -1,0 +1,82 @@
+//! Environment-driven configuration. Exact env names wired by infra.
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub listen_addr: SocketAddr,
+    pub database_url: String,
+    /// S3-compatible endpoint. `file://…` selects a local-filesystem store
+    /// (dev only); anything else is an S3 endpoint (UpCloud object storage).
+    pub s3_endpoint: Option<String>,
+    pub s3_bucket: String,
+    pub s3_access_key_id: Option<String>,
+    pub s3_secret_access_key: Option<String>,
+    pub session_secret: Vec<u8>,
+    pub public_base_url: String,
+    pub static_dir: PathBuf,
+    /// Paint cooldown: placement intersecting existing art (seconds).
+    pub cooldown_paint_secs: i64,
+    /// Placement into empty space (seconds).
+    pub cooldown_empty_secs: i64,
+    /// Max accepted upload bytes for the `image` part.
+    pub max_upload_bytes: usize,
+    pub min_size: i64,
+    pub max_size: i64,
+    /// Entries in the hot-tile LRU (zooms > 4; zooms <= 4 are unbounded —
+    /// at most 341 tiles exist).
+    pub tile_cache_entries: usize,
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_req(key: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| panic!("missing required env var {key}"))
+}
+
+impl Config {
+    pub fn from_env() -> Self {
+        let session_secret = env_req("SESSION_SECRET");
+        assert!(
+            session_secret.len() >= 32,
+            "SESSION_SECRET must be at least 32 bytes"
+        );
+        Self {
+            listen_addr: env_or("LISTEN_ADDR", "0.0.0.0:8080")
+                .parse()
+                .expect("invalid LISTEN_ADDR"),
+            database_url: env_req("DATABASE_URL"),
+            s3_endpoint: std::env::var("S3_ENDPOINT").ok(),
+            s3_bucket: env_req("S3_BUCKET"),
+            s3_access_key_id: std::env::var("S3_ACCESS_KEY_ID").ok(),
+            s3_secret_access_key: std::env::var("S3_SECRET_ACCESS_KEY").ok(),
+            session_secret: session_secret.into_bytes(),
+            public_base_url: env_or("PUBLIC_BASE_URL", "https://idol-appreciation.club"),
+            static_dir: PathBuf::from(env_or("STATIC_DIR", "../web/dist")),
+            cooldown_paint_secs: env_or("COOLDOWN_PAINT_SECS", "300")
+                .parse()
+                .expect("invalid COOLDOWN_PAINT_SECS"),
+            cooldown_empty_secs: env_or("COOLDOWN_EMPTY_SECS", "1")
+                .parse()
+                .expect("invalid COOLDOWN_EMPTY_SECS"),
+            max_upload_bytes: env_or("MAX_UPLOAD_BYTES", "10485760")
+                .parse()
+                .expect("invalid MAX_UPLOAD_BYTES"),
+            min_size: env_or("MIN_SIZE", "16").parse().expect("invalid MIN_SIZE"),
+            max_size: env_or("MAX_SIZE", "2048")
+                .parse()
+                .expect("invalid MAX_SIZE"),
+            tile_cache_entries: env_or("TILE_CACHE_ENTRIES", "2048")
+                .parse()
+                .expect("invalid TILE_CACHE_ENTRIES"),
+        }
+    }
+
+    /// True when PUBLIC_BASE_URL is https → cookie gets `Secure`.
+    pub fn secure_cookies(&self) -> bool {
+        self.public_base_url.starts_with("https://")
+    }
+}

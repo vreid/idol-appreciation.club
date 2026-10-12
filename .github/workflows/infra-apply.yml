@@ -1,0 +1,43 @@
+name: infra-apply
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tofu/**
+      - .github/workflows/infra-apply.yml
+
+concurrency:
+  group: infra
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: tofu apply
+    environment: production
+    runs-on: ubuntu-latest
+    env:
+      UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/tofu-setup
+      - name: tofu validate
+        run: tofu validate
+        working-directory: tofu
+      - name: tofu apply
+        run: tofu apply -auto-approve -input=false
+        working-directory: tofu
+      - name: Report non-sensitive outputs
+        run: |
+          {
+            echo "### infra apply"
+            echo "- cluster: $(tofu output -raw cluster_name)"
+            echo "- zone: $(tofu output -raw cluster_zone)"
+            echo "- node plan: $(tofu output -raw node_plan) x$(tofu output -raw node_count)"
+          } >> "$GITHUB_STEP_SUMMARY"
+        working-directory: tofu

@@ -58,5 +58,45 @@
     "bytes": 408920,
     "prompt": "Candid paparazzi-style photo of a stylish female fictional idol walking through an airport terminal pulling a suitcase, oversized designer streetwear, face mask pulled down to her chin, flash photography aesthetic, editorial street style, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/07-rehearsal.jpg",
+    "category": "rehearsal",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 452827,
+    "prompt": "Practice-room mirror rehearsal shot of a fictional idol group in casual sweats, late-night warm lighting, water bottles and phones on the floor, candid documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/08-music-show-win.jpg",
+    "category": "music-show-win",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 551173,
+    "prompt": "A fictional idol group celebrating an encore win on a music-show stage, holding a shiny trophy while golden confetti rains down, joyful tears and laughter, bright stage lights, celebratory editorial photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/09-dark-concept.jpg",
+    "category": "dark-concept",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 257057,
+    "prompt": "Cinematic dark-concept teaser shot of a fictional idol, moody black set with deep shadows and a single dramatic rim light, high-fashion avant garde styling, smoldering gaze, film-noir editorial photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/10-photobook-nature.jpg",
+    "category": "photobook-nature",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 262486,
+    "prompt": "Photobook concept photo of a female fictional idol standing in a wildflower field at golden hour, flowing white summer dress, warm backlit sun flare, dreamy soft focus background, editorial fashion photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
   }
 ]

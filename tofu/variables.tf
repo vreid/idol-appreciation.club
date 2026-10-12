@@ -84,6 +84,24 @@ variable "pg_user" {
   default     = "app"
 }
 
+variable "pg_node_count" {
+  description = "PostgreSQL node count (1 = development shapes only)."
+  type        = number
+  default     = 1
+}
+
+variable "pg_storage_gib" {
+  description = "PostgreSQL base storage in GiB."
+  type        = number
+  default     = 10
+}
+
+variable "pg_plan_backups" {
+  description = "PostgreSQL backup tier (mini is the smallest)."
+  type        = string
+  default     = "mini"
+}
+
 variable "objsto_name" {
   description = "Managed Object Storage (S3) service name."
   type        = string

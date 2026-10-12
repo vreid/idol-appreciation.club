@@ -325,6 +325,9 @@ pub fn composite_chunks(
     targets: &[(i64, i64)],
 ) -> crate::error::AppResult<Vec<Vec<u8>>> {
     let (ov, _) = decode(overlay)?;
+    // WebP sources decode to sequential-access lazy images; embedding or
+    // compositing at offsets clips them, which needs random access.
+    let ov = ops::image_copy_memory(&ov)?;
     let mut out = Vec::with_capacity(bases.len());
     for (base, (lx, ly)) in bases.into_iter().zip(targets) {
         let composed = match base {

@@ -1,7 +1,5 @@
 node_modules/
 dist/
 target/
-test-assets/idols/
 *.lock
-*.tfstate*
 .terraform/

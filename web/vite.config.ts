@@ -18,7 +18,6 @@ export default defineConfig({
     semi: true,
     singleQuote: false,
     svelte: true,
-    ignorePatterns: ["**/*.md"],
   },
   lint: {
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],

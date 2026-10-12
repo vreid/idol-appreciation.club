@@ -17,7 +17,7 @@ Run inside `web/` (pnpm is the enforced package manager via `devEngines`; use
 | `vpr check`          | npm script: svelte-check + tsc (second net)     |
 | `vp test`            | Vitest unit tests                               |
 | `vp test --coverage` | Tests + v8 coverage, fails below 80% lines      |
-| `vp fmt`             | Format (oxfmt); `.md` is excluded (prettier)    |
+| `vp fmt`             | Format code and Markdown (oxfmt)                |
 
 CI runs `vp check` and `vp test --coverage`; the `web/.ci-ready` marker enables
 those jobs once the local tree is green.
@@ -61,11 +61,11 @@ Configured in `web/vite.config.ts` under `lint`:
     `L.map(...)` — Leaflet's map factory trips the Array#map heuristic.
 - oxlint has no `unsafe` category (that is Clippy vocabulary); the strictest
   supported groups are enabled as described above.
-- Formatting: oxfmt `printWidth 80`, `semi`, double quotes, proseWrap for
-  non-md; Markdown is owned by the repo-wide prettier gate (`.prettierrc`:
-  printWidth 80, proseWrap always) — oxfmt ignores `**/*.md` so the two
-  formatters never fight. `web/README.md` and `docs/frontend.md` are
-  prettier-clean.
+- Formatting: oxfmt everywhere, `printWidth 80`, `semi`, double quotes,
+  `proseWrap: always` — including Markdown. Verified empirically against
+  Prettier on prose-heavy samples: outputs are byte-identical, so the repo-wide
+  Prettier markdown gate and oxfmt agree; Prettier is being retired as the
+  markdown authority (infra removes the root gate).
 
 ## Tests & coverage
 

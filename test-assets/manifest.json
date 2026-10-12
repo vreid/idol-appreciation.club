@@ -578,5 +578,95 @@
     "bytes": 309449,
     "prompt": "Girl group of fictional idols rehearsing in a mirror-walled practice room late at night, casual sweats and sneakers, water bottles and phones along the wall, one member checking a choreography video, candid documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
     "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/43-studio-choreography.jpg",
+    "category": "studio-choreography",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 296193,
+    "prompt": "Overhead-angle shot of a girl group of fictional idols running choreography in a bright dance studio, perfectly synchronized arm lines reflected in the mirror, soft daylight from tall windows, clean practice-wear styling, documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/44-recording-booth.jpg",
+    "category": "recording-booth",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 356312,
+    "prompt": "Female fictional idol singing into a large studio microphone behind booth glass, wearing headphones and a cozy hoodie, warm amber studio lighting, VU meters and pop filter in frame, intimate music-studio photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/45-jacket-making-bts.jpg",
+    "category": "jacket-making-bts",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 439101,
+    "prompt": "Behind-the-scenes making-film shot of a girl group of fictional idols at an album jacket photoshoot, members laughing between takes on a pastel studio set, lighting rigs and a photographer silhouette in frame, candid documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/46-mv-set-bts.jpg",
+    "category": "mv-set-bts",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 388221,
+    "prompt": "Behind-the-scenes shot of a female fictional idol on a music-video set between takes, sitting on a prop vintage sofa wrapped in a blanket, crew adjusting lights around her, cinematic set lighting, candid film-set photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/47-camping-vlog.jpg",
+    "category": "camping-vlog",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 366436,
+    "prompt": "Vlog-style shot of a girl group of fictional idols at a lakeside campsite at dusk, string lights strung over a picnic table, members roasting marshmallows in cozy fleece, tents and a calm lake behind, warm candid lifestyle photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/48-fanmeet-finger-heart.jpg",
+    "category": "fanmeet-finger-heart",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 121308,
+    "prompt": "Female fictional idol at a fan meeting making a double finger-heart with a bright laugh, pastel stage outfit with a small crown prop, warm golden lights and soft bokeh crowd behind, heartwarming event photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/49-birthday-cafe-display.jpg",
+    "category": "birthday-cafe-display",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 155310,
+    "prompt": "Fan-organized birthday cafe display for a fictional idol, pastel bunting with star symbols over the counter, a two-tier cream cake with a gold star topper, a photo wall of candid prints and handwritten notes, cozy cafe interior, lifestyle photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols/50-birthday-cafe-visit.jpg",
+    "category": "birthday-cafe-visit",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 325418,
+    "prompt": "Female fictional idol visiting her own fan-organized birthday cafe, holding a decorated cup with both hands near her face, eyes closed in delight, pastel star banners and cake display behind her, warm candid event photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols/51-album-flatlay-pastel.jpg",
+    "category": "album-flatlay-pastel",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 194344,
+    "prompt": "Album unboxing flat lay photographed from directly above, generic pastel mint album sleeve with abstract cloud artwork, glossy photocard fanned beside a shimmering CD, sticker sheets and washi tape on a linen desk mat, no readable text or logos, product photography, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
   }
 ]

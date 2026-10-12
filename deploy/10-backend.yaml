@@ -16,8 +16,9 @@ spec:
       labels:
         app: backend
     spec:
+      # image declares USER idol (non-numeric), so kubelet cannot verify
+      # runAsNonRoot - the image's own USER enforces non-root.
       securityContext:
-        runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       containers:

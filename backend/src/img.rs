@@ -119,6 +119,11 @@ pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
     } else {
         img
     };
+    // The crate's new_from_buffer does NOT take ownership of the input
+    // bytes: the lazy graph above would read freed memory once the caller
+    // drops them (benign on some allocators, corrupting on others).
+    // Materialize the fully-decoded pixels while the buffer is alive.
+    let img = VipsImage::image_copy_memory(img)?;
     Ok((img, format))
 }
 

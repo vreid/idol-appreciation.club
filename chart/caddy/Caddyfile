@@ -1,0 +1,31 @@
+{
+	http_port 8080
+	https_port 8443
+}
+
+idol-appreciation.club {
+	encode zstd gzip
+	root * /usr/share/caddy
+
+	# route preserves written order: proxy /api BEFORE try_files can
+	# rewrite it to index.html. SSE: flush_interval -1 keeps events live.
+	route {
+		reverse_proxy /api/* backend.idol.svc.cluster.local:80 {
+			flush_interval -1
+		}
+
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+		@index path / /index.html
+		header @index Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# www -> apex
+www.idol-appreciation.club {
+	redir https://idol-appreciation.club{uri} permanent
+}

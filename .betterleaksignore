@@ -24,23 +24,26 @@ e8d22d8e528fa273483e1d20916380daadfc6e40:backend/tests/integration.rs:generic-pa
 # working tree
 backend/scripts/smoke.sh:generic-password:122
 backend/scripts/smoke.sh:generic-password:72
-backend/tests/integration.rs:generic-password:206
-backend/tests/integration.rs:generic-password:243
-backend/tests/integration.rs:generic-password:252
-backend/tests/integration.rs:generic-password:264
-backend/tests/integration.rs:generic-password:737
-backend/tests/integration.rs:generic-password:748
 docs/backend.md:generic-credential-uri:216
 web/e2e/helpers.ts:generic-password:14
 web/src/lib/api.test.ts:generic-password:76
 
-# 50684f2 (stale-serve render queue) added a tile load-test script + its
-# shared test fixture that log in a throwaway "loader" seed account; the
-# files were removed again by a later merge, so these are git-history-only.
-# Synthetic load-test fixture values, verified not real credentials.
+# 6a9941c (stale-serve render queue) added a tile load-test script + its
+# shared test harness fixture that log in throwaway seed accounts; the
+# 50684f2 pre-amend shapes of the same blobs are covered by the entries
+# below (fingerprints are content+path+rule+line). Synthetic load-test /
+# unit-test fixture values, verified not real credentials.
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/tests/common/mod.rs:generic-password:251
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/scripts/load_tile_swr.sh:generic-password:69
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/scripts/load_tile_swr.sh:generic-password:71
+backend/tests/common/mod.rs:generic-password:251
+backend/scripts/load_tile_swr.sh:generic-password:69
+backend/scripts/load_tile_swr.sh:generic-password:71
+backend/tests/integration.rs:generic-password:42
+backend/tests/integration.rs:generic-password:51
+backend/tests/integration.rs:generic-password:63
+backend/tests/integration.rs:generic-password:554
+backend/tests/integration.rs:generic-password:565
 
 # 3700663 (Solid frontend rewrite, since replaced) briefly carried
 # AuthPopover.tsx + web/test/contract/contract.test.ts: one finding is UI

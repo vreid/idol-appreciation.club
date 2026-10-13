@@ -75,3 +75,15 @@ web/test/contract/contract.test.ts:generic-password:163
 # fixture, not a leak. Git fingerprint is commit-pinned (immutable);
 # regenerate per .betterleaks.toml if the placeholder ever changes.
 791cc80b6cc1cd83446ec7b0828846866a9958c0:deploy/reseed-job.yaml:generic-password:60
+
+# The bulk-image-import branch (PR #89) carries deploy/reseed-job.yaml —
+# a k8s Secret TEMPLATE whose values self-label as placeholders
+# ("pw-reseed-admin-user" / "pw-reseed-admin-pw-replace-before-apply");
+# the real credential is injected at apply time, never committed.
+# Its rebase force-pushes rewrite the introducing commit, so the scan's
+# commit-pinned fingerprints churn (791cc80b -> 9dfc9a29 + 014e56c2 are
+# two rebase generations, both verified placeholders). Pins kept for
+# every generation seen so far; new ones may appear until #89 merges —
+# regenerate per .betterleaks.toml if the gate trips again.
+9dfc9a297cdb1a981b7072436175dbdb29effac7:deploy/reseed-job.yaml:generic-password:60
+014e56c2ca2fdd3eb9a8c31e852cb8dae698a852:deploy/reseed-job.yaml:generic-password:60

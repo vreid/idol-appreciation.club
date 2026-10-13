@@ -143,6 +143,48 @@ circular dependency. `tofu init -migrate-state` moves existing state.
 To restore state locally from a CI run: `actions/cache` keys are
 `tofu-state-<run-id>`; restore with `tofu-state-` prefix fallback.
 
+### State drift rebuild + pre-merge gate (2026-10-13, validated)
+
+Two findings from the autoscaling PR's merge gate:
+
+- `ci.yml`'s tofu-plan job is **structurally stateless** — it never touches the
+  Actions cache, so every PR plans against empty state ("12 to add"). That check
+  proves config validity, nothing about live infra. The only state-aware CI
+  paths are `infra-apply`/`deploy` (they use `.github/actions/tofu-setup`, which
+  restores `tofu-state-*` and saves it back).
+- The shared checkout's tfstate AND the CI cache had drifted: the live cluster
+  (`0d4c74ac-…`) was not the state's cluster (`0d25605e-…`); state refresh
+  showed the live node group as deleted and planned a duplicate node group on
+  the dead one.
+
+Validated rebuild (read-only against live; do it in a scratch worktree, never
+the shared checkout):
+
+1. `tofu init`, then delete local `terraform.tfstate*`.
+2. Import all 12 resources. IDs: network / k8s cluster / PG / object storage =
+   their UUIDs (cluster's network UUID comes from `GET /1.3/kubernetes/{uuid}` →
+   `network`); node group = `{cluster_uuid}/default`; logical db + db user =
+   `{db_uuid}/app`; bucket = `{objsto_uuid}/idol-canvas`; objsto user =
+   `{objsto_uuid}/app`; policy = `{objsto_uuid}/app-bucket-access`;
+   user_policy = `{objsto_uuid}/app/app-bucket-access`; access key =
+   `{objsto_uuid}/app/{access_key_id}`.
+3. `tofu apply -refresh-only -auto-approve` (reconciles computed fields).
+4. Expected plan: **0 to add, 0 to destroy**, 3 benign in-place lines — PG
+   `components` (importer populates a computed list), objsto policy `document`
+   (re-encode of identical JSON), db user `password` (unreadable via API —
+   documented above). None are node-related. A real apply of the password line
+   rotates the app DB password once; the deploy chain self-heals it (deploy.yml
+   always re-reads the password from the API and patches `app-env`).
+5. A/B gate for infra-relevant PRs: plan the branch AND main against the same
+   rebuilt state — they must be byte-identical (proves the PR adds no
+   provider-level behavior).
+
+Before merging any PR that touches `tofu/**`: reconcile the CI cache by
+dispatching `deploy.yml` once (no code change needed — its refresh-only step
+reconciles and re-saves `tofu-state-*`), check its "tofu state settle" step
+shows 0 add / 0 destroy, only then merge; the chained infra-apply then plans
+zero against live.
+
 ### Retrieving account credentials
 
 `scripts/account-password.sh [admin-account|seed-account]` prints the stored

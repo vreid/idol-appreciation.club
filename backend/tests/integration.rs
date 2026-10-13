@@ -1186,3 +1186,35 @@ async fn max_long_edge_is_4096() {
     let resp = place_rot(&server, &cookie, &img, 0, 8192, 4097, None).await;
     assert_eq!(resp.status, 400);
 }
+
+// Ignored by default: cold-pyramid render timing for the parallel-children
+// change (`-- --ignored --nocapture`). Places one image near the center,
+// then times the first GET of the z0 tile — the spine render resolves 4
+// children per level through the cache/lock/s3 path.
+#[tokio::test]
+#[ignore = "timing probe: run explicitly to compare child fan-out latency"]
+async fn z0_cold_render_timing() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let img = png(256, 256);
+    // One placement per z1 quadrant, ~1M px from the center split: the z0
+    // tile's four children are all non-empty, so the parent must resolve
+    // four real spines. Sequential: sum of spines. Parallel: max of spines.
+    let m = 1_000_000i64;
+    let spots = [
+        (CENTER - m - 128, CENTER - m - 128),
+        (CENTER + m, CENTER - m - 128),
+        (CENTER - m - 128, CENTER + m),
+        (CENTER + m, CENTER + m),
+    ];
+    for (i, (x, y)) in spots.into_iter().enumerate() {
+        let cookie = register(&server, &format!("timer{i}")).await;
+        let resp = place_rot(&server, &cookie, &img, x, y, 256, Some(0.0)).await;
+        assert_eq!(resp.status, 201);
+    }
+    let t0 = std::time::Instant::now();
+    let resp = request(&server, "GET", "/api/tiles/0/0/0.webp", &[], vec![]).await;
+    let elapsed = t0.elapsed();
+    assert_eq!(resp.status, 200);
+    assert!(!resp.body.is_empty());
+    println!("cold z0 four-spine render: {elapsed:?}");
+}

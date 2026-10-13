@@ -564,54 +564,64 @@ input[type="range"] {
   border: none;
 }
 
-/* ---------- popups ---------- */
+/* ---------- place detail (anchored panel) ---------- */
 
-.world-popup .leaflet-popup-content-wrapper {
+/* Solid-rendered card docked beside the selected placement. Positioned
+   in px by PlaceDetail's layout effect; sits above Leaflet's panes
+   (pane stack tops out at 700, controls at 800) but below toasts. */
+.place-detail {
+  position: absolute;
+  z-index: 900;
+  min-width: 190px;
+  max-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
   background: var(--bg-2);
-  color: var(--text);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
 
-.world-popup .leaflet-popup-content {
-  margin: 12px 14px;
-  line-height: 1.4;
-}
-
-.world-popup .leaflet-popup-tip {
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-}
-
-.world-popup a.leaflet-popup-close-button {
-  color: var(--muted);
-}
-
-.placement-popup {
-  min-width: 170px;
+.pd-head {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.pp-head {
+.pd-user {
   font-weight: 800;
   color: var(--accent);
 }
 
-.pp-meta {
+.pd-close {
+  padding: 0 4px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.pd-close:hover {
+  color: var(--text);
+}
+
+.pd-meta {
   font-size: 12.5px;
   color: var(--muted);
 }
 
-.pp-actions {
+.pd-actions {
   display: flex;
   gap: 8px;
   margin-top: 2px;
 }
 
-.pp-btn {
+.pd-btn {
   flex: 1;
   padding: 6px 10px;
   font: inherit;
@@ -620,19 +630,19 @@ input[type="range"] {
   color: var(--text);
   background: var(--bg-3);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 
-.pp-btn:hover {
+.pd-btn:hover {
   border-color: var(--accent);
 }
 
-.pp-danger {
+.pd-danger {
   color: var(--danger);
 }
 
-.pp-danger:hover {
+.pd-danger:hover {
   border-color: var(--danger);
 }
 

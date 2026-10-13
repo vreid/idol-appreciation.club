@@ -172,6 +172,20 @@ happy-dom via a `// @vitest-environment happy-dom` docblock.
   `<img>`; the dashed outline is a sibling div sized to the AABB at the current
   zoom. The long edge is clamped client-side to 16..4096 px.
 
+## Selection & the anchored detail panel
+
+- Clicking a placement selects it: the dashed AABB highlight stays on the image
+  and `PlaceDetail` (a Solid-rendered `.card`) docks BESIDE the selection —
+  right side preferred, flipping to the left near the right viewport edge,
+  clamped to the top/bottom. It never covers the selected image (`PANEL_GAP`
+  clearance; `src/lib/panelLayout.ts` is the pure layout math and the unit tests
+  pin the invariant; the e2e asserts the DOM bboxes stay disjoint).
+- Deselect: `Escape`, clicking empty canvas (still a silent no-op apart from the
+  deselect), the panel's ✕, or a successful Remove. Panning and zooming
+  reposition the panel live (`onViewportChange` → layout effect).
+- This replaced the old Leaflet popup (`world-popup`), which rendered on top of
+  the image it described.
+
 ## API usage map
 
 Cookie auth, same-origin. `src/lib/api.ts` is the only fetch site (fetch +
@@ -196,9 +210,10 @@ as CSS variables and re-points Chota's own variables at them
 - one floating control cluster per corner: topbar, place panel (bottom right),
   footer chip (bottom left), toasts (top center), zoom (map).
 
-App CSS retains component rules (`.btn`, `.topbar`, `.place-panel`, popups,
-toasts, keyframes); Chota owns base typography, inputs, and the card box
-(restyled with the tokens above). Never introduce a second radius or a gradient.
+App CSS retains component rules (`.btn`, `.topbar`, `.place-panel`, the anchored
+`.place-detail` panel, toasts, keyframes); Chota owns base typography, inputs,
+and the card box (restyled with the tokens above). Never introduce a second
+radius or a gradient.
 
 ## Docker
 

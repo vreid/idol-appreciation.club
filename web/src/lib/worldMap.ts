@@ -27,28 +27,12 @@ import {
   setGhostImage,
   type GhostState,
 } from "./ghost";
-import { timeAgo } from "./format";
+import type { Placement } from "./api";
 
 const PULSE_MS = 1400;
 
-export interface PlacementForPopup {
-  id: string;
-  username: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  rot: number;
-  created_at: string;
-}
-
 export interface MapCallbacks {
   onMapClick(x: number, y: number): void;
-  isLoggedIn(): boolean;
-  isAdmin(): boolean;
-  onReport(id: string): void;
-  onRemove(id: string, bbox: BBox): void;
-  onAuthPrompt(): void;
 }
 
 export interface GhostImage {
@@ -70,8 +54,11 @@ export interface WorldMapController {
   setPlacing(placing: boolean): void;
   currentZoom(): number;
   worldToScreenPoint(x: number, y: number): { x: number; y: number };
-  showPlacement(p: PlacementForPopup): void;
-  closePopup(): void;
+  /** Highlight the selection's AABB; the panel itself is Solid-rendered. */
+  showSelection(p: Placement): void;
+  clearSelection(): void;
+  /** Fires on every pan/zoom so anchored overlays can reposition. */
+  onViewportChange(cb: () => void): void;
   destroy(): void;
 }
 
@@ -95,7 +82,7 @@ function addPulseRect(map: L.Map, bbox: BBox): void {
  */
 function showHighlight(
   map: L.Map,
-  highlight: { current: L.Marker | null; placement: PlacementForPopup | null },
+  highlight: { current: L.Marker | null; placement: Placement | null },
 ): void {
   const p = highlight.placement;
   if (p === null) return;
@@ -123,62 +110,12 @@ function showHighlight(
   }).addTo(map);
 }
 
-function popupContent(
-  p: PlacementForPopup,
-  callbacks: MapCallbacks,
-  map: L.Map,
-): HTMLDivElement {
-  const content = document.createElement("div");
-  content.className = "placement-popup";
-
-  const head = document.createElement("div");
-  head.className = "pp-head";
-  head.textContent = `@${p.username}`;
-  content.append(head);
-
-  const meta = document.createElement("div");
-  meta.className = "pp-meta";
-  meta.textContent = `${p.w}×${p.h} px · ${timeAgo(p.created_at)}`;
-  content.append(meta);
-
-  const actions = document.createElement("div");
-  actions.className = "pp-actions";
-
-  const reportBtn = document.createElement("button");
-  reportBtn.type = "button";
-  reportBtn.className = "pp-btn";
-  reportBtn.textContent = "Report";
-  reportBtn.addEventListener("click", () => {
-    if (callbacks.isLoggedIn()) {
-      callbacks.onReport(p.id);
-      map.closePopup();
-    } else {
-      callbacks.onAuthPrompt();
-    }
-  });
-  actions.append(reportBtn);
-
-  if (callbacks.isAdmin()) {
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "pp-btn pp-danger";
-    removeBtn.textContent = "Remove";
-    removeBtn.addEventListener("click", () => {
-      callbacks.onRemove(p.id, { x: p.x, y: p.y, w: p.w, h: p.h });
-    });
-    actions.append(removeBtn);
-  }
-
-  content.append(actions);
-  return content;
-}
-
 interface MapInternals {
   map: L.Map;
   tileLayer: L.TileLayer;
   ghost: GhostState;
   callbacks: MapCallbacks;
-  highlight: { current: L.Marker | null; placement: PlacementForPopup | null };
+  highlight: { current: L.Marker | null; placement: Placement | null };
 }
 
 function wireMapEvents(internal: MapInternals): void {
@@ -263,6 +200,14 @@ export function createWorldMap(
   });
   L.control.zoom({ position: "bottomright" }).addTo(map);
 
+  // Single-slot notify for anchored overlays (the place-detail panel):
+  // "move" covers pans and zoom animations; fires at frame rate, so the
+  // consumer must be cheap.
+  let viewportCb: (() => void) | null = null;
+  map.on("move", () => {
+    if (viewportCb !== null) viewportCb();
+  });
+
   const tileLayer = L.tileLayer("/api/tiles/{z}/{x}/{y}.webp", {
     tileSize: TILE_SIZE,
     minZoom: MIN_ZOOM,
@@ -329,17 +274,21 @@ export function createWorldMap(
       return { x: point.x, y: point.y };
     },
 
-    showPlacement(p: PlacementForPopup): void {
+    showSelection(p: Placement): void {
       highlight.placement = p;
       showHighlight(map, highlight);
-      L.popup({ className: "world-popup", closeButton: true })
-        .setLatLng(worldToLatLng(p.x + p.w / 2, p.y + p.h / 2))
-        .setContent(popupContent(p, callbacks, map))
-        .openOn(map);
     },
 
-    closePopup(): void {
-      map.closePopup();
+    clearSelection(): void {
+      highlight.placement = null;
+      if (highlight.current !== null) {
+        map.removeLayer(highlight.current);
+        highlight.current = null;
+      }
+    },
+
+    onViewportChange(cb: () => void): void {
+      viewportCb = cb;
     },
 
     destroy(): void {

@@ -52,7 +52,7 @@ backend/tests/integration.rs:generic-password:51
 backend/tests/integration.rs:generic-password:63
 backend/tests/integration.rs:generic-password:574
 backend/tests/integration.rs:generic-password:585
-backend/tests/integration.rs:generic-password:1080
+backend/tests/integration.rs:generic-password:1197
 
 # 3700663 (Solid frontend rewrite, since replaced) briefly carried
 # AuthPopover.tsx + web/test/contract/contract.test.ts: one finding is UI
@@ -87,12 +87,14 @@ web/test/contract/contract.test.ts:generic-password:163
 # regenerate per .betterleaks.toml if the gate trips again.
 9dfc9a297cdb1a981b7072436175dbdb29effac7:deploy/reseed-job.yaml:generic-password:60
 014e56c2ca2fdd3eb9a8c31e852cb8dae698a852:deploy/reseed-job.yaml:generic-password:60
-
-# 2026-10-13 late: (1) #89 rebased again — third rewritten generation of
-# the reseed template placeholder (d0da54d0). (2) fix/backend-decode-
-# The memory-cap branch (issue #83 lane) adds a rate-limit negative test whose
+0f002361c07128bc0b23093946d9ca467ad34003:deploy/reseed-job.yaml:generic-password:60
+# 2026-10-13 late: (1) #89 rebased again — the reseed template placeholder
+# fingerprint churns across rewritten generations (d0da54d0, 0f002361),
+# all the same verified placeholder. (2) The memory-cap branch (issue #83
+# lane) adds a rate-limit negative test whose
 # login uses the literal wrong-password fixture "definitely-wrong"
 # (asserts 401/429); CI's fetch-depth:0 pulls every branch ref, so its
 # fingerprint trips the git scan from ANY PR. Both verified non-secrets.
 d0da54d0ad5ad5da42ea4e9713fc9c338a901532:deploy/reseed-job.yaml:generic-password:60
 18dffef80fb98dc31cd2086768ed7d3b6c91dfea:backend/tests/integration.rs:generic-password:1080
+c9a0d42946a22082947257a8f2aa5d4a5580b6c8:backend/tests/integration.rs:generic-password:1080

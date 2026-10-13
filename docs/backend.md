@@ -294,6 +294,21 @@ removed, seq order, derivatives as sources) inside the same transaction, then a
 holder rewinds to the previous covering placement (documented consequence of
 manifest-derived history).
 
+## Dig stack
+
+`GET /api/dig?x=&y=` (auth-free read) returns the wheel-dig stack: every
+placement whose **rotated** rect contains the point, newest-first —
+`{ stack: [{depth, id, username, x, y, w, h, rot, seq, created_at}], total, truncated }`,
+depth 1 = topmost. Candidates come from the GiST bbox (`bbox @> point`),
+membership is refined with the exact rotated hit-test
+(`world::rotated_contains`), so an AABB corner hit that misses the rotated
+pixels does not dig up. The stack is capped at 64 entries (`truncated: true`
+reports a cut stack; `total` is the full size — the UI's "3 of 12"). The ETag is
+the global `placement_seq` counter — the generator the tile-read staleness
+marker derives from — so a matching If-None-Match is a cheap 304 and any new
+placement invalidates every outstanding stack; removals surface via the SSE
+`remove` event (a removed middle stratum does not move the seq).
+
 ## Events
 
 One `PgListener` task `LISTEN`s on channel `events` and fans payloads into a

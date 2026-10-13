@@ -272,6 +272,30 @@ max-delay anchor) and `last_bump_at` (the quiet anchor):
   a zero-cost constant and are served instantly even under congestion. The cap
   is soft under enqueue races (a pre-statement snapshot count) — it is a flood
   guard, not an accounting invariant.
+- **Decoded-raster cache.** Decoding a 1024×1024 chunk webp is the single
+  largest per-render cost (~64% of a zoom-20 leaf render), and one chunk feeds
+  up to 16 zoom-20 tiles, so the decoded raster is kept in a small LRU keyed by
+  the **sha256 of the encoded blob** (`TILE_RASTER_CACHE_ENTRIES`, default 8 — a
+  chunk raster is 4 MiB, so a ~32 MiB ceiling). Content addressing is the entire
+  invalidation story: a rewritten chunk is a different blob hence a different
+  key, so there is no TTL and no staleness window, and a hit is provably the
+  pixels a fresh decode would have produced — rendered tile bytes are
+  byte-identical to the pre-cache path (unit-tested). The cache is only ever
+  touched while holding the process-wide `VIPS` lock. Caching the _encoded_ blob
+  keyed `(cx, cy, seq)` is deliberately NOT done: chunks have no version of
+  their own, and a placement removal that is not the chunk's max-seq placement
+  changes the bytes without moving any seq, which would bake stale pixels under
+  a fresh `seq`.
+- **Decode-budget boundary.** `MAX_DECODE_PIXELS` (default 64 MPx) is an
+  ingestion gate: the placement path probes and decodes uploads against it
+  (`img::probe` / `img::decode`) before anything is stored. The raster cache's
+  miss path decodes stored blobs with an unbudgeted internal decode
+  (`img::decoded_blob`), on purpose: a chunk placed before a budget tightening
+  (or under a since-lowered limit) must keep rendering, so reads never enforce
+  the budget — only new placements do. The cache therefore never widens
+  admission either; it can only re-use pixels that a placement decode already
+  admitted, and a cached raster of a historical over-budget chunk serves reads
+  exactly like a fresh one.
 
 The table IS the queue so a future dedicated render node group (out-of-process
 worker Deployment, same image, render role, cheap 2c/2G nodes scaling 0..9) can
@@ -395,7 +419,8 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `COOLDOWN_PAINT_SECS=300`, `COOLDOWN_EMPTY_SECS=1`, `MAX_UPLOAD_BYTES=10485760`,
 `MAX_DECODE_PIXELS=67108864`, `MIN_SIZE=16`, `MAX_SIZE=4096`,
 `TILE_CACHE_ENTRIES=2048`, `TILE_RENDER_QUIET_SECS=4`,
-`TILE_RENDER_MAX_DELAY_SECS=12`, `TILE_RENDER_QUEUE_CAP=512`, `RUST_LOG=info`,
+`TILE_RENDER_MAX_DELAY_SECS=12`, `TILE_RENDER_QUEUE_CAP=512`,
+`TILE_RASTER_CACHE_ENTRIES=8`, `RUST_LOG=info`,
 `REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
 signups behind admin approval).
 

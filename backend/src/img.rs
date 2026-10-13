@@ -17,6 +17,8 @@ use libvips::ops;
 pub use libvips::VipsImage;
 
 use sha2::{Digest, Sha256};
+use std::num::NonZeroUsize;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
 /// Paper background tiles render on.
 pub const PAPER: [f64; 3] = [244.0, 240.0, 232.0];
@@ -52,6 +54,125 @@ pub fn init() -> anyhow::Result<()> {
         std::mem::forget(app);
     });
     Ok(())
+}
+
+/// Decoded raster of one encoded blob (chunk or tile), uchar RGBA/RGB.
+struct Raster {
+    bytes: Arc<Vec<u8>>,
+    width: i32,
+    height: i32,
+    bands: i32,
+    /// The interpretation the decode produced. `new_from_memory_copy` leaves
+    /// it at MULTIBAND, and downstream ops (notably `flatten` via
+    /// `image_hasalpha`) behave differently for a MULTIBAND vs an sRGB image,
+    /// so it must be reapplied — otherwise a cached source renders a
+    /// different (alpha-bearing) tile than a freshly decoded one.
+    interp: ops::Interpretation,
+    xres: f64,
+    yres: f64,
+}
+
+/// Bounded LRU of decoded blobs, keyed by the sha256 of the ENCODED bytes.
+///
+/// Content-addressed on purpose: the key is derived from the exact bytes the
+/// decode would have consumed, so a hit is provably the pixels `decode` would
+/// have produced — no invalidation protocol and no staleness window (a chunk
+/// rewrite changes the blob ⇒ new key ⇒ miss). This targets the single
+/// dominant per-render cost: decoding one 1024×1024 chunk webp is ~11 ms, and
+/// one chunk feeds up to 16 zoom-20 tiles (4×4), every one of which re-decoded
+/// the same blob from scratch.
+///
+/// Entries are the full raster (4 MiB for a 1024² chunk); the default cap of 8
+/// bounds the cache at ~32 MiB. Sized by `TILE_RASTER_CACHE_ENTRIES`.
+static RASTER_CACHE: LazyLock<StdMutex<lru::LruCache<[u8; 32], Arc<Raster>>>> =
+    LazyLock::new(|| {
+        StdMutex::new(lru::LruCache::new(
+            NonZeroUsize::new(raster_cache_entries()).expect("raster cache entries"),
+        ))
+    });
+
+fn raster_cache_entries() -> usize {
+    std::env::var("TILE_RASTER_CACHE_ENTRIES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(8)
+}
+
+fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.finalize().into()
+}
+
+/// Decode an encoded blob to an in-memory random-access raster, reusing a
+/// previously decoded one when the bytes are identical (see [`RASTER_CACHE`]).
+/// The raster is copied into libvips-owned memory, so the cache entry may be
+/// evicted immediately after this returns.
+///
+/// Deliberately UNbudgeted: `MAX_DECODE_PIXELS` is an ingestion gate —
+/// [`decode`] enforces it when a placement is accepted. This function serves
+/// reads (leaf tile renders, chunk replay), and a chunk that predates a
+/// budget tightening must keep rendering: whichever path runs first after a
+/// restart (cache-miss render or replay) decodes the stored blob as-is. The
+/// cache never widens admission, either — it only reuses pixels `decode`
+/// already admitted for placement.
+fn decoded_blob(bytes: &[u8]) -> Result<VipsImage, AppError> {
+    let key = sha256_bytes(bytes);
+    if let Some(raster) = RASTER_CACHE
+        .lock()
+        .expect("raster cache")
+        .get(&key)
+        .cloned()
+    {
+        return raster_image(&raster);
+    }
+    // Miss: decode once and keep the raster so the next tile of this chunk is
+    // a memcpy instead of another webp decode.
+    let img = VipsImage::new_from_buffer(bytes, "")?;
+    let img = VipsImage::image_copy_memory(img)?;
+    let (width, height, bands) = (img.get_width(), img.get_height(), img.get_bands());
+    let raster = Arc::new(Raster {
+        bytes: Arc::new(img.image_write_to_memory()),
+        width,
+        height,
+        bands,
+        interp: img
+            .get_interpretation()
+            .unwrap_or(ops::Interpretation::Multiband),
+        xres: img.get_xres(),
+        yres: img.get_yres(),
+    });
+    RASTER_CACHE
+        .lock()
+        .expect("raster cache")
+        .put(key, raster.clone());
+    raster_image(&raster)
+}
+
+/// Rebuild a libvips image over a cached raster, restoring the header fields
+/// `new_from_memory_copy` cannot infer (see [`Raster::interp`]).
+fn raster_image(raster: &Raster) -> Result<VipsImage, AppError> {
+    let img = VipsImage::new_from_memory_copy(
+        &raster.bytes,
+        raster.width,
+        raster.height,
+        raster.bands,
+        ops::BandFormat::Uchar,
+    )?;
+    Ok(ops::copy_with_opts(
+        &img,
+        &ops::CopyOptions {
+            width: raster.width,
+            height: raster.height,
+            bands: raster.bands,
+            format: ops::BandFormat::Uchar,
+            interpretation: raster.interp,
+            xres: raster.xres,
+            yres: raster.yres,
+            ..Default::default()
+        },
+    )?)
 }
 
 /// Apply EXIF orientation manually (the crate has no autorotate binding).
@@ -319,9 +440,7 @@ pub fn strip_resave(img: &VipsImage, format: SourceFormat) -> Result<Vec<u8>, Ap
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    hex(&h.finalize())
+    hex(&sha256_bytes(bytes))
 }
 
 fn hex(b: &[u8]) -> String {
@@ -695,10 +814,11 @@ pub fn render_leaf_tile(
     let _vips = VIPS.lock();
     let chunk = match chunk {
         Some(bytes) => {
-            // WebP chunk blobs decode to sequential images; materialize
-            // once so crop/flatten/encode can read in any order.
-            let img = VipsImage::new_from_buffer(&bytes, "")?;
-            VipsImage::image_copy_memory(img)?
+            // WebP chunk blobs decode to sequential images; materialize to a
+            // random-access raster so crop/flatten/encode can read in any
+            // order. Cached by blob content, so the many tiles sharing one
+            // chunk pay the decode once (see [`decoded_blob`]).
+            decoded_blob(&bytes)?
         }
         None => blank_chunk(CHUNK_CANVAS_PX)?,
     };
@@ -949,6 +1069,88 @@ mod tests {
         // All alpha must be 0.
         let mem = back.image_write_to_memory();
         assert!(mem.chunks(4).all(|px| px[3] == 0));
+    }
+
+    /// A blob decoded through the cache must yield exactly the pixels a fresh
+    /// decode produces, on both the miss and the hit path. This is the whole
+    /// correctness argument for the content-addressed key: no invalidation,
+    /// no staleness window — a changed blob is simply a different key.
+    #[test]
+    fn decoded_blob_cache_is_pixel_transparent() {
+        if !vips() {
+            return;
+        }
+        let (img, _) = decode(&red_png(1024, 1024), DEFAULT_MAX_DECODE_PIXELS).unwrap();
+        let blob = webp_bytes(&img, 90).unwrap();
+
+        let miss = decoded_blob(&blob).unwrap(); // first touch: decode + store
+        let hit = decoded_blob(&blob).unwrap(); // second touch: cache hit
+        let fresh =
+            VipsImage::image_copy_memory(VipsImage::new_from_buffer(&blob, "").unwrap()).unwrap();
+
+        for (label, got) in [("miss", &miss), ("hit", &hit)] {
+            assert_eq!(
+                (got.get_width(), got.get_height(), got.get_bands()),
+                (fresh.get_width(), fresh.get_height(), fresh.get_bands()),
+                "{label} geometry"
+            );
+            assert_eq!(
+                got.image_write_to_memory(),
+                fresh.image_write_to_memory(),
+                "{label} pixels must equal a fresh decode"
+            );
+        }
+    }
+
+    /// `render_leaf_tile` must be byte-identical to the pre-cache algorithm
+    /// (inline decode → crop/scale → encode), both cold and cached: the cache
+    /// changes only where the pixels are held, never what they are.
+    #[test]
+    fn render_leaf_tile_is_byte_identical_cold_and_cached() {
+        if !vips() {
+            return;
+        }
+        let (img, _) = decode(&red_png(1024, 1024), DEFAULT_MAX_DECODE_PIXELS).unwrap();
+        // Vary the paint so the tile is not a flat colour.
+        let (ov, _) = decode(&asymmetric_test_png(300, 200), DEFAULT_MAX_DECODE_PIXELS).unwrap();
+        let ov = VipsImage::image_copy_memory(ov).unwrap();
+        let painted = composite(&img, &ov, 100, 100).unwrap();
+        let blob = webp_bytes(&painted, 90).unwrap();
+
+        for (ox, oy, native) in [(0i64, 0i64, 1024i64), (256, 256, 256), (512, 0, 512)] {
+            let cold = render_leaf_tile(Some(blob.clone()), ox, oy, native).unwrap();
+            let cached = render_leaf_tile(Some(blob.clone()), ox, oy, native).unwrap();
+
+            // Reference: the algorithm as it was before the cache existed.
+            let decoded =
+                VipsImage::image_copy_memory(VipsImage::new_from_buffer(&blob, "").unwrap())
+                    .unwrap();
+            let tile = tile_from_chunk(&decoded, ox, oy, native).unwrap();
+            let reference = webp_bytes(&tile, 80).unwrap();
+
+            assert_eq!(cold, reference, "cold render must match reference");
+            assert_eq!(cached, cold, "cached render must match cold render");
+        }
+    }
+
+    /// More distinct blobs than the cache capacity: every entry must still
+    /// decode to the right pixels after its predecessor was evicted.
+    #[test]
+    fn raster_cache_stays_correct_under_eviction() {
+        if !vips() {
+            return;
+        }
+        let mut blobs = Vec::new();
+        for w in 32..(32 + raster_cache_entries() + 4) as u32 {
+            let (img, _) = decode(&red_png(w, 32), DEFAULT_MAX_DECODE_PIXELS).unwrap();
+            blobs.push(webp_bytes(&img, 90).unwrap());
+        }
+        for blob in &blobs {
+            let got = decoded_blob(blob).unwrap();
+            let fresh = VipsImage::image_copy_memory(VipsImage::new_from_buffer(blob, "").unwrap())
+                .unwrap();
+            assert_eq!(got.image_write_to_memory(), fresh.image_write_to_memory());
+        }
     }
 
     #[test]

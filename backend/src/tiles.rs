@@ -206,12 +206,23 @@ async fn render_tile(app: &App, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
             .map_err(internal)?
             .map_err(internal)?
     } else {
-        let mut children: Vec<Vec<u8>> = Vec::with_capacity(4);
-        for (dx, dy) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)] {
-            let (child_bytes, _) = tile_bytes(app, z + 1, 2 * x + dx, 2 * y + dy).await?;
-            children.push(child_bytes.to_vec());
-        }
-        let kids: [Vec<u8>; 4] = children
+        // Resolve the four children CONCURRENTLY: each child goes through
+        // its own tile_bytes (mem cache / s3 / render), serialized only by
+        // its own per-tile lock. Deadlock-free: the parent holds "z/x/y"
+        // while children take "z+1/x'/y'" keys — the wait-for graph only
+        // ever points DOWN the pyramid (a child's own recursion goes
+        // deeper, never back up), so no cycle is possible regardless of
+        // scheduling; lock_sorted orders within a single acquisition and
+        // every concurrent child here acquires a different key. First
+        // child error aborts the join (same ? semantics as the old
+        // sequential loop).
+        let child_futures = [(0i64, 0i64), (1, 0), (0, 1), (1, 1)]
+            .map(|(dx, dy)| tile_bytes(app, z + 1, 2 * x + dx, 2 * y + dy));
+        let resolved = futures::future::try_join_all(child_futures).await?;
+        let kids: [Vec<u8>; 4] = resolved
+            .into_iter()
+            .map(|(bytes, _)| bytes.to_vec())
+            .collect::<Vec<_>>()
             .try_into()
             .map_err(|_| internal("children count"))?;
         tokio::task::spawn_blocking(move || img::render_parent_tile(&kids))

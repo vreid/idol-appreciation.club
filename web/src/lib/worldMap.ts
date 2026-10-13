@@ -4,10 +4,7 @@ import {
   latLngToWorld,
   MAX_ZOOM,
   MIN_ZOOM,
-  parseTileKey,
   TILE_SIZE,
-  tileUrl,
-  tilesIntersecting,
   WORLD_CENTER,
   WORLD_LAT_LNG_BOUNDS,
   rotAABB,
@@ -16,6 +13,13 @@ import {
   worldToLatLng,
   type BBox,
 } from "./world";
+import {
+  affectedRenderedTiles,
+  createTileRefresher,
+  type TileRefreshSource,
+  type TileRefresher,
+} from "./tileRefresh";
+import { refetchTiles, renderedTileMap, viewWorldBBox } from "./tileDom";
 import { wireUrlViewState } from "./urlViewState";
 import {
   makeGhostState,
@@ -24,7 +28,6 @@ import {
   type GhostState,
 } from "./ghost";
 import { timeAgo } from "./format";
-import { isRecord } from "./guards";
 
 const PULSE_MS = 1400;
 
@@ -58,7 +61,10 @@ export interface GhostImage {
 }
 
 export interface WorldMapController {
+  /** Immediate single-bbox refresh (optimistic local changes). */
   invalidateBBox(bbox: BBox): void;
+  /** Coalesced refresh for SSE event storms (~500ms window, deduped). */
+  queueTileRefresh(bbox: BBox): void;
   pulse(bbox: BBox): void;
   setGhost(ghost: GhostImage | null): void;
   setPlacing(placing: boolean): void;
@@ -67,34 +73,6 @@ export interface WorldMapController {
   showPlacement(p: PlacementForPopup): void;
   closePopup(): void;
   destroy(): void;
-}
-
-function tileImageOf(
-  tiles: Record<string, unknown>,
-  key: string,
-): HTMLImageElement | null {
-  const record: unknown = tiles[key];
-  if (!isRecord(record)) return null;
-  const el = record["el"];
-  return el instanceof HTMLImageElement ? el : null;
-}
-
-/** Refetch every rendered tile intersecting the bbox (ETag/no-cache tiles). */
-function invalidateTiles(tileLayer: L.TileLayer, bbox: BBox): void {
-  // Leaflet keeps rendered tiles in the undocumented, protected `_tiles`
-  // index keyed "z:x:y". Read it through a widened alias — the shape is
-  // re-validated before use because the library does not publish it.
-  const internal: object = tileLayer;
-  if (!("_tiles" in internal)) return;
-  const tiles: unknown = internal["_tiles"];
-  if (!isRecord(tiles)) return;
-  for (const key of tilesIntersecting(Object.keys(tiles), bbox)) {
-    const el = tileImageOf(tiles, key);
-    const tile = parseTileKey(key);
-    if (el !== null && tile !== null) {
-      el.src = tileUrl(tile.z, tile.x, tile.y);
-    }
-  }
 }
 
 function addPulseRect(map: L.Map, bbox: BBox): void {
@@ -295,6 +273,17 @@ export function createWorldMap(
   const stopCentering = wireWorldCentering(map);
   const stopUrlView = wireUrlViewState(map);
 
+  const refreshSource: TileRefreshSource = {
+    renderedTileKeys: () => Object.keys(renderedTileMap(tileLayer)),
+    viewport: () => viewWorldBBox(map),
+  };
+  const refresher: TileRefresher = createTileRefresher(
+    refreshSource,
+    (keys) => {
+      refetchTiles(tileLayer, keys);
+    },
+  );
+
   const internal: MapInternals = {
     map,
     tileLayer,
@@ -307,7 +296,11 @@ export function createWorldMap(
 
   return {
     invalidateBBox(bbox: BBox): void {
-      invalidateTiles(tileLayer, bbox);
+      refetchTiles(tileLayer, affectedRenderedTiles(refreshSource, [bbox]));
+    },
+
+    queueTileRefresh(bbox: BBox): void {
+      refresher.queue(bbox);
     },
 
     pulse(bbox: BBox): void {
@@ -350,6 +343,7 @@ export function createWorldMap(
     },
 
     destroy(): void {
+      refresher.dispose();
       stopCentering();
       stopUrlView();
       ghost.el?.remove();

@@ -24,7 +24,9 @@
     onEvent: (event) => {
       const [x, y, w, h] = event.bbox;
       const bbox: BBox = { x, y, w, h };
-      controller?.invalidateBBox(bbox);
+      // Coalesced: place AND remove events refresh the affected visible
+      // tiles at most once per ~500ms window, deduped by tile coord.
+      controller?.queueTileRefresh(bbox);
       controller?.pulse(bbox);
       if (eventTouchesCenter(event.bbox)) void store.refreshCenter();
     },

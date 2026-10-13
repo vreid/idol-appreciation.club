@@ -42,7 +42,7 @@ those jobs once the local tree is green.
 - tsconfig.app.json: `strict`, `noUncheckedIndexedAccess`,
   `exactOptionalPropertyTypes` (on top of `@tsconfig/svelte`). No `any`, no
   non-null `!` bypasses; library-internal access goes through runtime-validated
-  narrowing (see `src/lib/worldMap.ts`).
+  narrowing (see `src/lib/tileDom.ts`).
 
 ## Lint policy (aggressive)
 
@@ -73,8 +73,11 @@ Configured in `web/vite.config.ts` under `lint`:
 
 - Coordinate helpers (`world.ts`): world↔latLng round-trips, CRS.Simple y-flip,
   scale at z=0/16/20, tile bboxes at z=0/16/20, tile URL building,
-  `parseTileKey`, bbox→tile selection for SSE invalidation, query-radius clamps,
-  world clamps.
+  `parseTileKey` (Leaflet's `x:y:z`), rotated-AABB → tile selection, viewport
+  bbox conversion, query-radius clamps, world clamps.
+- Tile refresh (`tileRefresh.ts`): fake timers — ~500 ms coalescing window,
+  tile-coord dedupe across overlapping events, viewport filtering, manual flush,
+  dispose semantics.
 - API client (`api.ts`): mock-fetch tests for register/login/logout, me (200 +
   401→null), place() multipart construction (x/y/size/rot FormData), 429 with
   Retry-After, 400 message, near/center parsing (incl. null current, rot),
@@ -117,10 +120,17 @@ lines**.
   latLng `[-1, 0]..[0, 1]` with viscosity 1.0; tile layer bounds match, so no
   wrap and no out-of-world tiles.
 
-- SSE invalidation: `place`/`remove` events carry `bbox: [x, y, w, h]`; the
-  client intersects the bbox against visible tile keys (Leaflet's internal
-  `_tiles`, format `z:x:y`) and reassigns each matching `<img>.src` — tiles are
-  ETag/no-cache, so the refetch is a cheap conditional GET.
+- SSE invalidation: `place`/`remove` events carry `bbox: [x, y, w, h]` (the
+  rotated AABB). Events queue in a ~500 ms coalescing window (`tileRefresh.ts`);
+  each flush intersects the buffered bboxes against visible tile keys (Leaflet's
+  internal `_tiles`, format `x:y:z`) restricted to the current viewport and
+  reassigns each matching `<img>.src` once, deduped. The refetch URL is
+  cache-busted (`?r=`): same-URL reloads would be answered from the HTTP cache's
+  stale-while-revalidate grace and lag a refresh behind, while a unique query
+  gets 200-with-current-bytes immediately — the old bitmap stays on screen until
+  the new bytes decode, so tiles never blank or flicker. `invalidateBBox`
+  remains the immediate single-shot path for optimistic local changes (e.g.
+  admin removal).
 - Popup query radius: `256 * 2^(16 - z)` clamped to `[256, 65536]`.
 
 ## URL view state (`#z/x/y`)

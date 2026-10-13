@@ -35,6 +35,20 @@ spec:
           envFrom:
             - secretRef:
                 name: app-env
+          env:
+            # libvips sizes its per-pipeline threadpool to the host core
+            # count by default (4 here). Concurrent composites then
+            # oversubscribe: two placements = 8 vips threads on 4 cores,
+            # starving tile serving (observed in the N=2 soak: tile
+            # empty-path mean 0.94s vs 19ms). Cap each pipeline at 2
+            # threads so aggregate composite load stays near one core and
+            # leaves headroom for the tokio/serving paths. Upstream:
+            # libvips "using-threads" (default = ncpus) and maintainer
+            # guidance in libvips discussion #4063 — threadpools are per
+            # evaluation pipeline, so concurrent pipelines multiply the
+            # setting; VIPS_CONCURRENCY bounds it process-wide.
+            - name: VIPS_CONCURRENCY
+              value: "2"
           resources:
             requests:
               cpu: 100m

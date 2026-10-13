@@ -41,6 +41,18 @@ tile, which keeps cold pyramid renders proportional to the art spine instead of
 
 ## Image processing: libvips crate (option a)
 
+Threading: libvips defaults each evaluation pipeline's threadpool to the host
+core count (`VIPS_CONCURRENCY` unset ⇒ ncpus — see the upstream "VIPS and
+threads" notes and `vips_concurrency_set`). Pipelines are per-operation, so
+concurrent placements multiply that: two composites on the 4-core node meant 8
+vips threads competing with tile serving (N=2 soak: tile empty-path mean 0.94s
+vs 19ms baseline). The deployment sets `VIPS_CONCURRENCY=2` to bound aggregate
+composite threads (~1 core for two concurrent placements) and keep cores
+available for the async/serving paths. Maintainer guidance (libvips discussion
+#4063): for throughput, keep threads-with-useful-work ≈ physical cores; libvips
+also runs a few threads beyond the setting, and threadpools self-size down under
+load.
+
 Chosen: the `libvips` crate (2.3), in-process, against system libvips (Debian
 `libvips-dev` 8.15+ / `libvips42` at runtime). Rationale:
 

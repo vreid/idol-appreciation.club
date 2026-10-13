@@ -350,3 +350,53 @@ the first-registered race; 9 were demoted on 2026-10-12), then verifies via
   endpoint.
 
 Seed runbook: register seed account -> approve it -> SEED_ALL.
+
+## Recreate proof cycle 3 (2026-10-12/13, full destroy → apply → site-up)
+
+The on-demand destroy/recreate requirement was proven end-to-end via
+`infra-recreate` (workflow_dispatch) followed by `deploy`. Four real defects
+were found and fixed in the process — each one only shows on a **cold** cluster:
+
+1. **helm timeout vs CCM LB provisioning (PR #13).** A fresh cluster's CCM
+   takes 15–20 min to allocate and attach the edge LoadBalancer. helm
+   `--atomic --wait --timeout 15m` expired mid-wait and *uninstalled* the
+   release, which in turn made CCM delete the half-built LB (churn loop).
+   Budget is now `--timeout 30m`. Rule of thumb: the helm wait budget must
+   exceed cold LB provisioning by a wide margin.
+2. **Namespace collision (PR #12).** The chart shipped a Namespace document
+   AND the deploy used `--create-namespace`; first install failed with
+   `namespaces "idol" already exists`. Chart no longer ships a namespace;
+   helm owns the release namespace.
+3. **Secret-before-helm ordering (PR #14).** On a fresh cluster the backend
+   Deployment cannot start without the `app-env` secret, but the deploy
+   workflow created that secret *after* helm. helm `--wait` then blocked on a
+   backend stuck in `CreateContainerConfigError`. The secret step now runs
+   before `helm upgrade --install`.
+4. **Managed-DB password divergence (PR #16).** The tofu state's recorded
+   `app_database_uri` did not authenticate against the recreated database
+   service: UpCloud may rotate managed-DB user passwords at creation time
+   relative to what the provider records. Deploy now fetches the authoritative
+   `app` user password from the UpCloud API
+   (`GET /1.3/database/<uuid>/users` — passwords are returned in the response)
+   and splices it into the URI; host/port still come from tofu output.
+
+Also exercised during the cycle (manual, one-time): PG 15+ denies
+`CREATE` on schema `public` to non-owners, so migrations need
+`ALTER SCHEMA public OWNER TO app; GRANT ALL ON SCHEMA public TO app;`
+executed once per recreated database (done via a `postgres:16-alpine` Job
+using the `upadmin` credentials from the same API endpoint).
+
+### Data loss warning (destroy/recreate)
+
+**Managed PostgreSQL is destroyed and recreated EMPTY by the recreate flow.**
+All canvas/user data is lost unless backed up first (managed-DB daily backups
+exist but a full re-import is manual). The recreate capability is for dev;
+run `tofu destroy`/`apply` against prod data only with explicit acknowledgment.
+
+### DNS during recreate
+
+`scripts/sync-dns.sh` is idempotent and re-points A/AAAA to whatever the
+current edge LB hostname resolves to; it runs in the deploy flow after the LB
+exists. If the LB is mid-provisioning (or was deleted by an atomic-uninstall
+churn), re-run the deploy once the Service has an ingress — or resolve
+`<lb-id>.upcloudlb.com` and run the script manually.

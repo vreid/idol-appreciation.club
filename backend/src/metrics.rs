@@ -98,7 +98,19 @@ pub struct Metrics {
     chunk_composites: AtomicU64,
     /// Login attempts rejected by the per-IP / per-(username, IP) limiter.
     auth_rate_limited: AtomicU64,
+    /// Batch import: completed batches, inserted placement rows, chunk
+    /// raster writes, and per-batch wall time.
+    import_batches: AtomicU64,
+    import_images: AtomicU64,
+    import_chunk_writes: AtomicU64,
+    import_duration: Histogram<{ IMPORT_BUCKETS.len() }>,
 }
+
+/// Batch imports run minutes-to-hours; log-ish buckets up to 3 h (the
+/// 100k stretch target is ≤ 3 h).
+const IMPORT_BUCKETS: &[f64] = &[
+    1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0, 1800.0, 3600.0, 7200.0, 10800.0,
+];
 
 pub const TILE_OUTCOMES: [&str; 6] = [
     "hit_mem",
@@ -120,6 +132,10 @@ pub static METRICS: LazyLock<Metrics> = LazyLock::new(|| Metrics {
     s3_duration: std::array::from_fn(|_| Histogram::new(WIDE_BUCKETS)),
     chunk_composites: AtomicU64::new(0),
     auth_rate_limited: AtomicU64::new(0),
+    import_batches: AtomicU64::new(0),
+    import_images: AtomicU64::new(0),
+    import_chunk_writes: AtomicU64::new(0),
+    import_duration: Histogram::new(IMPORT_BUCKETS),
 });
 
 pub fn place_done(elapsed: Duration) {
@@ -162,6 +178,18 @@ pub fn chunk_composited() {
 
 pub fn auth_rate_limited() {
     METRICS.auth_rate_limited.fetch_add(1, Ordering::Relaxed);
+}
+
+/// One completed import batch: rows inserted, chunk rasters written, and
+/// wall time (request start through the last block commit; the optional
+/// tile prewarm is excluded).
+pub fn import_done(images: u64, chunk_writes: u64, elapsed: Duration) {
+    let m = &*METRICS;
+    m.import_batches.fetch_add(1, Ordering::Relaxed);
+    m.import_images.fetch_add(images, Ordering::Relaxed);
+    m.import_chunk_writes
+        .fetch_add(chunk_writes, Ordering::Relaxed);
+    m.import_duration.observe(elapsed);
 }
 
 /// Exposition of all series. `pool` supplies the sqlx connection gauges;
@@ -261,6 +289,49 @@ pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> Stri
     out.push_str(&format!(
         "tile_render_queue_dropped_total {queue_dropped}\n"
     ));
+
+    out.push_str(
+        "# HELP import_batches_total Completed admin import batches.\n# TYPE import_batches_total counter\n",
+    );
+    out.push_str(&format!(
+        "import_batches_total {}\n",
+        m.import_batches.load(Ordering::Relaxed)
+    ));
+
+    out.push_str(
+        "# HELP import_images_total Placement rows inserted by batch import.\n# TYPE import_images_total counter\n",
+    );
+    out.push_str(&format!(
+        "import_images_total {}\n",
+        m.import_images.load(Ordering::Relaxed)
+    ));
+
+    out.push_str(
+        "# HELP import_chunk_writes_total Chunk raster writes performed by batch import (one per chunk per group, not per image).\n# TYPE import_chunk_writes_total counter\n",
+    );
+    out.push_str(&format!(
+        "import_chunk_writes_total {}\n",
+        m.import_chunk_writes.load(Ordering::Relaxed)
+    ));
+
+    out.push_str(
+        "# HELP import_duration_seconds Batch import wall time (first entry through last block commit; prewarm excluded).\n# TYPE import_duration_seconds histogram\n",
+    );
+    out.push_str(&m.import_duration.render("import_duration_seconds", ""));
+
+    // The amplification proof: images placed per chunk raster write. The
+    // per-placement HTTP path is pinned at ~1 (one composite + PUT set per
+    // image); the batch engine collapses this to images-per-chunk.
+    let writes = m.import_chunk_writes.load(Ordering::Relaxed);
+    let amp = if writes == 0 {
+        0.0
+    } else {
+        m.import_images.load(Ordering::Relaxed) as f64 / writes as f64
+    };
+    out.push_str(
+        "# HELP chunk_write_amplification Images per chunk raster write (batch import).\n# TYPE chunk_write_amplification gauge\n",
+    );
+    out.push_str(&format!("chunk_write_amplification {amp}\n"));
 
     out.push_str(
         "# HELP db_pool_connections sqlx connection pool state.\n# TYPE db_pool_connections gauge\n",

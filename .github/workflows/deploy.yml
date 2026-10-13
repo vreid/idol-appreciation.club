@@ -292,6 +292,10 @@ jobs:
             --from-literal="S3_SECRET_ACCESS_KEY=$(tofu output -raw s3_secret_access_key)" \
             --from-literal="REGISTRATION_APPROVAL_REQUIRED=true" \
             --dry-run=client -o yaml | kubectl apply -f -
+          # secret-only changes do not restart pods; the S3 key rotation
+          # above would leave running backends on a deleted key
+          kubectl -n idol rollout restart deployment/backend
+          kubectl -n idol rollout status deployment/backend --timeout=180s
         env:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           UPCLOUD_API_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}

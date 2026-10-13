@@ -8,6 +8,7 @@ backend/target/
 # Frontend
 web/node_modules/
 web/dist/
+contract/node_modules/
 
 # OpenTofu / Terraform
 *.tfstate

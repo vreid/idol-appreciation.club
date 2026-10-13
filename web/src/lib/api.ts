@@ -2,65 +2,39 @@
  * Typed client for the idol-appreciation.club API (same-origin, cookie auth).
  * Pure data layer: every method takes a fetch implementation so tests can
  * stub it; the app injects globalThis.fetch.
+ *
+ * Response shapes are parsed with the wire-contract schemas (contract/zod,
+ * imported as `@contract`) the moment data enters the app. A malformed
+ * payload throws ApiError(0, …) after a console warning — callers convert
+ * that into toasts, never a crash.
  */
 
-import { isRecord } from "./guards";
+import type {
+  CenterInfo,
+  Me,
+  PendingAccount,
+  Placement,
+  PlacedPlacement,
+  RegisterResult,
+} from "@contract";
+import {
+  centerInfoSchema,
+  meSchema,
+  pendingAccountsSchema,
+  placementsNearSchema,
+  placedPlacementSchema,
+  registerResultSchema,
+} from "@contract";
 
-export interface Me {
-  id: string;
-  username: string;
-  is_admin: boolean;
-  cooldown_until: string | null;
-}
-
-export interface RegisterResult {
-  username: string;
-  pending: boolean;
-}
-
-export interface PendingAccount {
-  username: string;
-  created_at: string;
-}
-
-export interface Placement {
-  id: string;
-  username: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  rot: number;
-  created_at: string;
-}
-
-export interface PlacedPlacement {
-  id: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  rot: number;
-  seq: number;
-}
-
-export interface CenterHolder {
-  username: string;
-  since: string;
-  placement: {
-    id: string;
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-    rot: number;
-  };
-}
-
-export interface CenterInfo {
-  current: CenterHolder | null;
-  all_time: { username: string; seconds: number }[];
-}
+export type {
+  CenterHolder,
+  CenterInfo,
+  Me,
+  PendingAccount,
+  Placement,
+  PlacedPlacement,
+  RegisterResult,
+} from "@contract";
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
@@ -110,6 +84,12 @@ export interface ApiClient {
 
 export interface ApiClientDeps {
   fetch?: typeof fetch;
+  /**
+   * Prefix for every request path. The browser keeps "" (same-origin
+   * relative URLs); the contract integration suite passes the booted
+   * backend's origin.
+   */
+  base?: string;
 }
 
 function retryAfterOf(response: Response): number | null {
@@ -141,43 +121,19 @@ function messageOf(body: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
-function expectObject(body: unknown): Record<string, unknown> {
-  if (!isRecord(body)) {
-    throw new ApiError(0, "unexpected response body");
-  }
-  return body;
+/** Structural shape of a schema at the parse boundary (zod-agnostic). */
+interface Parses<T> {
+  safeParse(
+    value: unknown,
+  ): { success: true; data: T } | { success: false; error: unknown };
 }
 
-function num(obj: Record<string, unknown>, key: string): number {
-  const value = obj[key];
-  if (typeof value !== "number") {
-    throw new ApiError(0, `missing number field "${key}"`);
-  }
-  return value;
-}
-
-function str(obj: Record<string, unknown>, key: string): string {
-  const value = obj[key];
-  if (typeof value !== "string") {
-    throw new ApiError(0, `missing string field "${key}"`);
-  }
-  return value;
-}
-
-function bool(obj: Record<string, unknown>, key: string): boolean {
-  const value = obj[key];
-  if (typeof value !== "boolean") {
-    throw new ApiError(0, `missing boolean field "${key}"`);
-  }
-  return value;
-}
-
-function nullableStr(obj: Record<string, unknown>, key: string): string | null {
-  const value = obj[key];
-  if (value !== null && typeof value !== "string") {
-    throw new ApiError(0, `missing nullable string field "${key}"`);
-  }
-  return value;
+/** Contract-boundary parse: schema or ApiError(0), with a loud warning. */
+function parseOk<T>(schema: Parses<T>, body: unknown, label: string): T {
+  const parsed = schema.safeParse(body);
+  if (parsed.success) return parsed.data;
+  console.warn(`[api] malformed ${label} payload`, parsed.error);
+  throw new ApiError(0, `unexpected ${label} response`);
 }
 
 interface RequestOptions {
@@ -186,108 +142,9 @@ interface RequestOptions {
   json?: boolean;
 }
 
-function placementOf(body: unknown): PlacedPlacement {
-  const obj = expectObject(body);
-  return {
-    id: str(obj, "id"),
-    x: num(obj, "x"),
-    y: num(obj, "y"),
-    w: num(obj, "w"),
-    h: num(obj, "h"),
-    rot: num(obj, "rot"),
-    seq: num(obj, "seq"),
-  };
-}
-
-function placementFields(obj: Record<string, unknown>): Placement {
-  return {
-    id: str(obj, "id"),
-    username: str(obj, "username"),
-    x: num(obj, "x"),
-    y: num(obj, "y"),
-    w: num(obj, "w"),
-    h: num(obj, "h"),
-    rot: num(obj, "rot"),
-    created_at: str(obj, "created_at"),
-  };
-}
-
-function registerOf(body: unknown): RegisterResult {
-  const obj = expectObject(body);
-  return {
-    username: str(obj, "username"),
-    pending: bool(obj, "pending"),
-  };
-}
-
-function meOf(body: unknown): Me {
-  const obj = expectObject(body);
-  return {
-    id: str(obj, "id"),
-    username: str(obj, "username"),
-    is_admin: bool(obj, "is_admin"),
-    cooldown_until: nullableStr(obj, "cooldown_until"),
-  };
-}
-
-function pendingAccountsOf(body: unknown): PendingAccount[] {
-  if (!Array.isArray(body)) {
-    throw new ApiError(0, "expected an array of pending accounts");
-  }
-  return body.map((entry) => {
-    const obj = expectObject(entry);
-    return {
-      username: str(obj, "username"),
-      created_at: str(obj, "created_at"),
-    };
-  });
-}
-
-function placementsNearOf(body: unknown): Placement[] {
-  if (!Array.isArray(body)) {
-    throw new ApiError(0, "expected an array of placements");
-  }
-  return body.map((raw) => placementFields(expectObject(raw)));
-}
-
-function centerOf(body: unknown): CenterInfo {
-  const obj = expectObject(body);
-  const rawCurrent = obj["current"];
-  let current: CenterHolder | null = null;
-  if (rawCurrent !== null && rawCurrent !== undefined) {
-    const cur = expectObject(rawCurrent);
-    const placement = expectObject(cur["placement"]);
-    current = {
-      username: str(cur, "username"),
-      since: str(cur, "since"),
-      placement: {
-        id: str(placement, "id"),
-        x: num(placement, "x"),
-        y: num(placement, "y"),
-        w: num(placement, "w"),
-        h: num(placement, "h"),
-        rot: num(placement, "rot"),
-      },
-    };
-  }
-  const rawAllTime = obj["all_time"];
-  if (!Array.isArray(rawAllTime)) {
-    throw new ApiError(0, 'missing "all_time" array');
-  }
-  return {
-    current,
-    all_time: rawAllTime.map((raw) => {
-      const entry = expectObject(raw);
-      return {
-        username: str(entry, "username"),
-        seconds: num(entry, "seconds"),
-      };
-    }),
-  };
-}
-
 export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
   const doFetch = deps.fetch ?? fetch;
+  const base = deps.base ?? "";
 
   async function request(
     url: string,
@@ -305,7 +162,7 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
     }
     let response: Response;
     try {
-      response = await doFetch(url, init);
+      response = await doFetch(base + url, init);
     } catch (cause) {
       throw new ApiError(0, `network error: ${String(cause)}`);
     }
@@ -330,19 +187,21 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
 
   return {
     register: async (username, password) =>
-      registerOf(
+      parseOk(
+        registerResultSchema,
         await request("/api/auth/register", {
           method: "POST",
           json: true,
           body: JSON.stringify({ username, password }),
         }),
+        "register",
       ),
     login: (username, password) =>
       postJson("/api/auth/login", { username, password }),
     logout: () => postJson("/api/auth/logout", {}),
     me: async () => {
       try {
-        return meOf(await request("/api/auth/me"));
+        return parseOk(meSchema, await request("/api/auth/me"), "me");
       } catch (cause) {
         if (cause instanceof ApiError && [401, 403].includes(cause.status)) {
           return null;
@@ -357,8 +216,10 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       form.append("y", String(req.y));
       form.append("size", String(req.size));
       form.append("rot", String(req.rot));
-      return placementOf(
+      return parseOk(
+        placedPlacementSchema,
         await request("/api/place", { method: "POST", body: form }),
+        "place",
       );
     },
     near: async (x, y, r) => {
@@ -367,13 +228,22 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         y: String(y),
         r: String(r),
       });
-      return placementsNearOf(await request(`/api/placements/near?${query}`));
+      return parseOk(
+        placementsNearSchema,
+        await request(`/api/placements/near?${query}`),
+        "placements/near",
+      );
     },
-    center: async () => centerOf(await request("/api/center")),
+    center: async () =>
+      parseOk(centerInfoSchema, await request("/api/center"), "center"),
     report: (placementId) =>
       postJson("/api/reports", { placement_id: placementId }),
     pendingAccounts: async () =>
-      pendingAccountsOf(await request("/api/admin/accounts?pending=true")),
+      parseOk(
+        pendingAccountsSchema,
+        await request("/api/admin/accounts?pending=true"),
+        "pending accounts",
+      ),
     approveAccount: (username) =>
       postJson(
         `/api/admin/accounts/${encodeURIComponent(username)}/approve`,

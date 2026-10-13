@@ -61,7 +61,7 @@ tasks:
   web:lint:
     desc: vp check (oxfmt + oxlint + tsgo type check) (ci.yml web-lint)
     dir: web
-    deps: [web:install]
+    deps: [web:install, contract:install]
     cmds:
       - pnpm exec vp check
 
@@ -118,11 +118,29 @@ tasks:
   # ---------------- test ----------------
 
   web:test:
-    desc: vp test (vitest, >=80% coverage gate) (ci.yml web-test)
+    desc: vp test --coverage (vitest incl. contract schema fixtures, >=80% lines gate) (ci.yml web-test)
     dir: web
-    deps: [web:install]
+    deps: [web:install, contract:install]
     cmds:
-      - pnpm exec vp test
+      - pnpm exec vp test --coverage
+
+  contract:install:
+    desc: install contract/ dependencies with the pinned pnpm (frozen lockfile)
+    dir: contract
+    cmds:
+      # Same materialization web:install does: node/pnpm resolve from THIS
+      # package.json's devEngines, not the root mise.toml, and task runs
+      # deps in parallel — without `mise install` first, a cold CI cache
+      # has no pnpm on PATH yet (observed as exit 127 in web-lint).
+      - mise install
+      - pnpm install --frozen-lockfile
+
+  web:contract:
+    desc: contract integration suite — boots the real backend (gate image) + Postgres, parses every response/SSE event against contract/zod (ci.yml web-contract)
+    dir: web
+    deps: [web:install, contract:install, backend:image]
+    cmds:
+      - RUNNER='{{.RUNNER}}' ./scripts/contract-harness.sh
 
   backend:lint:
     desc: cargo fmt + clippy in the pinned libvips 8.16.1 image (ci.yml backend-lint)
@@ -237,8 +255,8 @@ tasks:
 
   image:web:
     desc: build + push web image, print digest (deploy.yml web-build)
-    dir: web
-    # Same contract as image:backend.
+    # Context is the REPO ROOT: the bundle imports contract/zod, so the
+    # Dockerfile (web/Dockerfile) copies web/ AND contract/.
     cmds:
       - |
         tags=("$WEB_IMAGE")
@@ -246,6 +264,7 @@ tasks:
         args=()
         for t in "${tags[@]}"; do args+=(-t "$t"); done
         docker buildx build --platform linux/amd64 --push "${args[@]}" \
+          -f web/Dockerfile \
           --metadata-file /tmp/web-image-metadata.json .
         jq -r '."containerimage.digest"' /tmp/web-image-metadata.json
 

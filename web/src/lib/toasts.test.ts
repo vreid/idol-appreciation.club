@@ -6,7 +6,7 @@ import {
   it,
   vi,
 } from "vite-plus/test";
-import { MAX_VISIBLE_TOASTS, createToastHub } from "./toasts.svelte";
+import { MAX_VISIBLE_TOASTS, createToastHub } from "./toasts";
 
 describe("toast hub", () => {
   beforeEach(() => {

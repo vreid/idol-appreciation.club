@@ -1,3 +1,5 @@
+import { createSignal } from "solid-js";
+
 export type ToastKind = "info" | "error" | "success";
 
 export interface Toast {
@@ -28,7 +30,7 @@ export function createToastHub(
   const toastMs = deps.toastMs ?? TOAST_MS;
   const errorToastMs = deps.errorToastMs ?? ERROR_TOAST_MS;
 
-  let toasts = $state<Toast[]>([]);
+  const [toasts, setToasts] = createSignal<Toast[]>([]);
   let nextId = 1;
   const timers = new Map<number, ReturnType<typeof setTimeout>>();
 
@@ -49,13 +51,13 @@ export function createToastHub(
   function dismiss(id: number): void {
     clearTimeout(timers.get(id));
     timers.delete(id);
-    toasts = toasts.filter((toast) => toast.id !== id);
+    setToasts((list) => list.filter((toast) => toast.id !== id));
   }
 
   function push(kind: ToastKind, message: string): void {
     // Dedupe: a repeated message re-arms the visible pill instead of
     // stacking an identical one.
-    const existing = toasts.find(
+    const existing = toasts().find(
       (toast) => toast.kind === kind && toast.message === message,
     );
     if (existing !== undefined) {
@@ -63,11 +65,11 @@ export function createToastHub(
       return;
     }
     const id = nextId++;
-    toasts.push({ id, kind, message });
+    setToasts((list) => [...list, { id, kind, message }]);
     arm(id, kind);
     // Hard cap: drop the oldest toasts beyond the visible limit.
-    while (toasts.length > MAX_VISIBLE_TOASTS) {
-      const oldest = toasts[0];
+    while (toasts().length > MAX_VISIBLE_TOASTS) {
+      const oldest = toasts()[0];
       if (oldest === undefined) break;
       dismiss(oldest.id);
     }
@@ -75,7 +77,7 @@ export function createToastHub(
 
   return {
     get list() {
-      return toasts;
+      return toasts();
     },
     push,
     dismiss,

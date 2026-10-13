@@ -1,8 +1,4 @@
-/**
- * Application state (Svelte 5 runes). All logic here is framework-light and
- * covered by state.test.ts; Svelte components only render and delegate.
- */
-
+import { createSignal } from "solid-js";
 import type {
   ApiClient,
   CenterInfo,
@@ -19,7 +15,7 @@ import {
   longEdgeToSize,
 } from "./sizing";
 import { clampToWorldPoint } from "./world";
-import { createToastHub } from "./toasts.svelte";
+import { createToastHub } from "./toasts";
 import type {
   AppStore,
   AppStoreDeps,
@@ -28,7 +24,7 @@ import type {
   PreparedImage,
 } from "./stateTypes";
 
-export type { Toast, ToastKind } from "./toasts.svelte";
+export type { Toast, ToastKind } from "./toasts";
 export type {
   AppStore,
   AppStoreDeps,
@@ -49,68 +45,68 @@ export function createAppStore(
       URL.revokeObjectURL(url);
     });
 
-  let me = $state<Me | null>(null);
-  let authChecked = $state(false);
-  let center = $state<CenterInfo | null>(null);
-  let placeMode = $state<PlaceMode>("idle");
-  let prepared = $state<PreparedImage | null>(null);
-  let longEdge = $state(DEFAULT_LONG_EDGE);
-  let rotation = $state(0);
-  let submittingPlace = $state(false);
-  let authPrompt = $state(false);
+  const [me, setMe] = createSignal<Me | null>(null);
+  const [authChecked, setAuthChecked] = createSignal(false);
+  const [center, setCenter] = createSignal<CenterInfo | null>(null);
+  const [placeMode, setPlaceMode] = createSignal<PlaceMode>("idle");
+  const [prepared, setPrepared] = createSignal<PreparedImage | null>(null);
+  const [longEdge, setLongEdgeSignal] = createSignal(DEFAULT_LONG_EDGE);
+  const [rotation, setRotationSignal] = createSignal(0);
+  const [submittingPlace, setSubmittingPlace] = createSignal(false);
+  const [authPrompt, setAuthPrompt] = createSignal(false);
+  const [registrationPending, setRegistrationPending] = createSignal(false);
+  const [authError, setAuthError] = createSignal("");
+  const [adminPending, setAdminPending] = createSignal<PendingAccount[]>([]);
 
   const toastHub = createToastHub(deps);
   const { push: pushToast, dismiss: dismissToast } = toastHub;
 
   function requireAuth(): boolean {
-    if (me !== null) return true;
-    authPrompt = true;
+    if (me() !== null) return true;
+    setAuthPrompt(true);
     pushToast("error", "Please log in first");
     return false;
   }
 
   function releasePrepared(): void {
-    if (prepared !== null) revokeObjectUrl(prepared.previewUrl);
-    prepared = null;
+    const image = prepared();
+    if (image !== null) revokeObjectUrl(image.previewUrl);
+    setPrepared(null);
   }
 
   function doCancelPlace(): void {
     releasePrepared();
-    rotation = 0;
-    placeMode = "idle";
-    submittingPlace = false;
+    setRotationSignal(0);
+    setPlaceMode("idle");
+    setSubmittingPlace(false);
   }
 
   async function doRefreshMe(): Promise<void> {
     try {
-      me = await client.me();
+      setMe(await client.me());
     } catch {
-      me = null;
+      setMe(null);
       pushToast("error", "Could not reach the server");
     } finally {
-      authChecked = true;
+      setAuthChecked(true);
     }
   }
 
   async function doRefreshCenter(): Promise<void> {
     try {
-      center = await client.center();
+      setCenter(await client.center());
     } catch {
       /* keep the last known holder; the next poll may succeed */
     }
   }
-
-  let registrationPending = $state(false);
-  let authError = $state("");
-  let adminPending = $state<PendingAccount[]>([]);
 
   async function authenticate(
     action: "login" | "register",
     username: string,
     password: string,
   ): Promise<boolean> {
-    registrationPending = false;
-    authError = "";
+    setRegistrationPending(false);
+    setAuthError("");
     try {
       if (action === "login") {
         await client.login(username, password);
@@ -118,7 +114,7 @@ export function createAppStore(
         const created = await client.register(username, password);
         if (created.pending) {
           // External approval gate: no session yet, account awaits an admin.
-          registrationPending = true;
+          setRegistrationPending(true);
           pushToast("info", "Account created — awaiting admin approval");
           return false;
         }
@@ -126,13 +122,15 @@ export function createAppStore(
     } catch (err) {
       // While authenticating, an error status IS the answer: surface the
       // server's words inline (e.g. 403 "account pending approval").
-      authError = err instanceof ApiError ? err.message : describeApiError(err);
-      pushToast("error", authError);
+      const message =
+        err instanceof ApiError ? err.message : describeApiError(err);
+      setAuthError(message);
+      pushToast("error", message);
       return false;
     }
     await doRefreshMe();
-    authPrompt = false;
-    const who = me?.username ?? username;
+    setAuthPrompt(false);
+    const who = me()?.username ?? username;
     const verb =
       action === "login" ? "Welcome back" : "Account created, welcome";
     pushToast("success", `${verb}, ${who}!`);
@@ -141,7 +139,7 @@ export function createAppStore(
 
   async function loadAdminPending(): Promise<void> {
     try {
-      adminPending = await client.pendingAccounts();
+      setAdminPending(await client.pendingAccounts());
     } catch (err) {
       pushToast("error", describeApiError(err));
     }
@@ -150,7 +148,9 @@ export function createAppStore(
   async function approveAccount(username: string): Promise<void> {
     try {
       await client.approveAccount(username);
-      adminPending = adminPending.filter((a) => a.username !== username);
+      setAdminPending((list) =>
+        list.filter((account) => account.username !== username),
+      );
       pushToast("success", `Approved ${username}`);
     } catch (err) {
       pushToast("error", describeApiError(err));
@@ -159,43 +159,47 @@ export function createAppStore(
 
   return {
     get me() {
-      return me;
+      return me();
     },
     get authChecked() {
-      return authChecked;
+      return authChecked();
     },
     get center() {
-      return center;
+      return center();
     },
     get toasts() {
       return toastHub.list;
     },
     get placeMode() {
-      return placeMode;
+      return placeMode();
     },
     get prepared() {
-      return prepared;
+      return prepared();
     },
     get longEdge() {
-      return longEdge;
+      return longEdge();
     },
     get rotation() {
-      return rotation;
+      return rotation();
     },
     setRotation(value: number): void {
-      rotation = Math.max(-180, Math.min(180, Math.round(value)));
+      setRotationSignal(Math.max(-180, Math.min(180, Math.round(value))));
     },
     get submittingPlace() {
-      return submittingPlace;
+      return submittingPlace();
     },
     get authPrompt() {
-      return authPrompt;
+      return authPrompt();
     },
 
     dismissToast,
 
     notify: (message: string) => {
       pushToast("info", message);
+    },
+
+    notifyError: (message: string) => {
+      pushToast("error", message);
     },
 
     refreshMe: doRefreshMe,
@@ -205,16 +209,16 @@ export function createAppStore(
     register: (username, password) =>
       authenticate("register", username, password),
     get registrationPending() {
-      return registrationPending;
+      return registrationPending();
     },
     get authError() {
-      return authError;
+      return authError();
     },
     clearAuthError() {
-      authError = "";
+      setAuthError("");
     },
     get adminPending() {
-      return adminPending;
+      return adminPending();
     },
     loadAdminPending,
     approveAccount,
@@ -226,16 +230,16 @@ export function createAppStore(
         pushToast("error", describeApiError(err));
         return;
       }
-      me = null;
+      setMe(null);
       pushToast("info", "Logged out");
     },
 
     promptAuth(): void {
-      authPrompt = true;
+      setAuthPrompt(true);
     },
 
     dismissAuth(): void {
-      authPrompt = false;
+      setAuthPrompt(false);
     },
 
     startPlace(file, fileName, naturalW, naturalH): boolean {
@@ -247,43 +251,45 @@ export function createAppStore(
         return false;
       }
       releasePrepared();
-      prepared = {
+      setPrepared({
         file,
         fileName,
         previewUrl: createObjectUrl(file),
         naturalW,
         naturalH,
-      };
-      longEdge = DEFAULT_LONG_EDGE;
-      placeMode = "panel";
+      });
+      setLongEdgeSignal(DEFAULT_LONG_EDGE);
+      setPlaceMode("panel");
       return true;
     },
 
     setLongEdge(value: number): void {
-      longEdge = clampLongEdge(value);
+      setLongEdgeSignal(clampLongEdge(value));
     },
 
     ghostSize() {
-      if (prepared === null) return { w: longEdge, h: longEdge };
-      return longEdgeToSize(prepared.naturalW, prepared.naturalH, longEdge);
+      const image = prepared();
+      if (image === null) return { w: longEdge(), h: longEdge() };
+      return longEdgeToSize(image.naturalW, image.naturalH, longEdge());
     },
 
     enterChoose(): void {
-      if (prepared !== null) placeMode = "choose";
+      if (prepared() !== null) setPlaceMode("choose");
     },
 
     backToPanel(): void {
-      if (prepared !== null) placeMode = "panel";
+      if (prepared() !== null) setPlaceMode("panel");
     },
 
     cancelPlace: doCancelPlace,
 
     async confirmSpot(x, y): Promise<PlaceAttempt> {
-      const image = prepared;
-      if (image === null || submittingPlace) return { ok: false };
-      const size = longEdgeToSize(image.naturalW, image.naturalH, longEdge);
+      const image = prepared();
+      if (image === null || submittingPlace()) return { ok: false };
+      const size = longEdgeToSize(image.naturalW, image.naturalH, longEdge());
+      const rot = rotation();
       const spot = clampToWorldPoint({ x, y });
-      submittingPlace = true;
+      setSubmittingPlace(true);
       try {
         const placement = await client.place({
           image: image.file,
@@ -291,7 +297,7 @@ export function createAppStore(
           x: spot.x,
           y: spot.y,
           size: Math.max(size.w, size.h),
-          rot: rotation,
+          rot,
         });
         doCancelPlace();
         pushToast("success", "Image placed!");
@@ -308,10 +314,10 @@ export function createAppStore(
         } else {
           pushToast("error", describeApiError(err));
         }
-        placeMode = "panel";
+        setPlaceMode("panel");
         return { ok: false };
       } finally {
-        submittingPlace = false;
+        setSubmittingPlace(false);
       }
     },
 

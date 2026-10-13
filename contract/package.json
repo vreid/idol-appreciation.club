@@ -1,0 +1,27 @@
+{
+  "name": "@idol/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.11.2",
+  "description": "Single source of truth for the idol-appreciation.club web↔backend wire contract (Zod schemas). Backend PRs that change a response or SSE event shape MUST update this package in the same PR.",
+  "exports": {
+    ".": "./zod/index.ts",
+    "./zod/*": "./zod/*"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.11.2",
+      "onFail": "download"
+    },
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "download"
+    }
+  }
+}

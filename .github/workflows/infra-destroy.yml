@@ -29,10 +29,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      # Restores the tofu local backend (state + plugins) from the Actions
-      # cache and runs tofu init; tofu itself comes from mise.
-      - uses: ./.github/actions/tofu-setup
+      # mise first: the composite's tofu init needs tofu on PATH.
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      # Restores the tofu local backend (state + plugins) from the Actions
+      # cache and runs tofu init.
+      - uses: ./.github/actions/tofu-setup
       # task tofu:destroy defers the orphaned-LB cleanup so it still runs
       # (and stops the billing) when the destroy itself fails.
       - name: tofu destroy + LB cleanup

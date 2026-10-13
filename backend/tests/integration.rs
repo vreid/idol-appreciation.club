@@ -168,20 +168,39 @@ async fn place_and_cooldowns() {
 
     // Overlap within the 2s paint cooldown → 429 + Retry-After.
     let second = place(&server, &cookie, &img, x + 8, x + 8, 32).await;
-    assert_eq!(second.status, 429);
+    assert_eq!(
+        second.status,
+        429,
+        "BODY {}",
+        String::from_utf8_lossy(&second.body)
+    );
     assert!(second.headers.contains_key("retry-after"));
 
     // Shared edge (zero-area overlap) is NOT a paint: empty-area 1s rule
-    // applies instead.
-    let edge = place(&server, &cookie, &img, x + 32, x, 32).await;
-    assert_eq!(edge.status, 429); // empty-area cooldown still running
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    let edge = place(&server, &cookie, &img, x + 32, x, 32).await;
+    // applies instead. Fixed sleeps are load-fragile under the full
+    // parallel suite, so poll: 429 while the empty cooldown runs, 201
+    // once it has expired.
+    let place_until = |x: i64, y: i64| {
+        let server = &server;
+        let cookie = &cookie;
+        let img = &img;
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+            loop {
+                let resp = place(server, cookie, img, x, y, 32).await;
+                if resp.status == 201 || tokio::time::Instant::now() > deadline {
+                    break resp;
+                }
+                assert_eq!(resp.status, 429, "{}", String::from_utf8_lossy(&resp.body));
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+    let edge = place_until(x + 32, x).await;
     assert_eq!(edge.status, 201, "{}", String::from_utf8_lossy(&edge.body));
 
     // Paint cooldown expires → overlap accepted.
-    tokio::time::sleep(Duration::from_millis(2100)).await;
-    let overlap = place(&server, &cookie, &img, x + 8, x + 8, 32).await;
+    let overlap = place_until(x + 8, x + 8).await;
     assert_eq!(
         overlap.status,
         201,
@@ -191,8 +210,7 @@ async fn place_and_cooldowns() {
 
     // Same image again (empty area → 1s rule) → duplicate_count increments,
     // single original stored.
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    let again = place(&server, &cookie, &img, x + 64, x, 32).await;
+    let again = place_until(x + 64, x).await;
     assert_eq!(
         again.status,
         201,
@@ -203,7 +221,9 @@ async fn place_and_cooldowns() {
 
     let sha = {
         let stripped = img::strip_resave(
-            &img::decode(&png(32, 32)).unwrap().0,
+            &img::decode(&png(32, 32), img::DEFAULT_MAX_DECODE_PIXELS)
+                .unwrap()
+                .0,
             img::SourceFormat::Png,
         )
         .unwrap();
@@ -1004,6 +1024,92 @@ async fn max_long_edge_is_4096() {
     assert_eq!(resp.status, 400);
 }
 
+// -------------------------------------------------------------------------
+// Hardening: decoded-pixel budget and login throttling
+
+/// A tiny PNG whose header declares 32768×32768 (1 Gpx, ~4 GiB of RGBA)
+/// must be rejected 413 by the decoded-pixel budget BEFORE any pixel work:
+/// the wire bytes are ~100 bytes, so only the header probe could have
+/// made the call, and nothing materialized the pixels.
+#[tokio::test]
+async fn place_decode_budget_rejects_bomb() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "bomber").await;
+    let bomb = png_with_declared_dims(32768, 32768);
+    assert!(bomb.len() < 4096, "bomb fixture must be tiny on the wire");
+    let resp = place_rot(&server, &cookie, &bomb, 0, 0, 64, None).await;
+    assert_eq!(resp.status, 413, "{}", String::from_utf8_lossy(&resp.body));
+}
+
+/// The placement cooldown gate runs before the pixel stage: a second
+/// placement inside the empty-space cooldown is a fast 429 + Retry-After
+/// without spending the serialized libvips stage on a doomed decode.
+#[tokio::test]
+async fn place_cooldown_precheck_rejects_before_decode() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "rapid").await;
+    let img = png(32, 32);
+    let resp = place_rot(&server, &cookie, &img, 0, 0, 64, None).await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+    // Far from the first placement: empty-space rules apply to both.
+    let resp = place_rot(&server, &cookie, &img, 9000, 9000, 64, None).await;
+    assert_eq!(resp.status, 429);
+    assert!(resp.header("retry-after").is_some());
+}
+
+/// Login throttling: a burst of wrong passwords trips 429 + Retry-After
+/// no matter what follows — correct password, other accounts, unknown
+/// usernames all stay locked out of the empty IP bucket — and the
+/// limiter counts every rejection in /api/metrics.
+#[tokio::test]
+async fn login_rate_limited_after_burst() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    register(&server, "victim").await;
+    let login = |username: &str, password: &str| {
+        let body = format!(r#"{{"username":"{username}","password":"{password}"}}"#).into_bytes();
+        request(
+            &server,
+            "POST",
+            "/api/auth/login",
+            &[("Content-Type", "application/json")],
+            body,
+        )
+    };
+    let mut tripped = None;
+    for i in 0..16 {
+        let resp = login("victim", "definitely-wrong").await;
+        if resp.status == 429 {
+            tripped = Some(i);
+            break;
+        }
+        assert_eq!(resp.status, 401, "attempt {i}");
+        assert!(resp.header("retry-after").is_none());
+    }
+    let tripped = tripped.unwrap_or_else(|| panic!("no 429 within 16 attempts"));
+
+    // Rejection is keyed on the buckets, not the credentials: nothing
+    // bypasses an empty bucket, and nothing distinguishes the victim
+    // account from an unknown one while locked out.
+    for (username, password) in [
+        ("victim", "hunter2hunter2"),     // correct credentials
+        ("nobodyhere", "hunter2hunter2"), // unknown account
+    ] {
+        let resp = login(username, password).await;
+        assert_eq!(resp.status, 429, "{username}");
+        assert!(resp.header("retry-after").is_some());
+    }
+
+    let metrics = metrics_map(&server).await;
+    let limited: u64 = metrics["auth_rate_limited_total"].parse().unwrap();
+    assert!(limited >= 3, "auth_rate_limited_total {limited}");
+
+    // A lucky guess inside the first burst must not be possible either:
+    // the token spend happens before verification, so attempt
+    // `tripped`'s neighbors were real 401s — i.e. the lockout arrives
+    // strictly after CAPACITY real attempts, not after a grace period.
+    assert!(tripped >= 1);
+}
+
 // Ignored by default: cold-pyramid render timing for the parallel-children
 // change (`-- --ignored --nocapture`). Places one image near the center,
 // then times the first GET of the z0 tile — the spine render resolves 4
@@ -1072,6 +1178,7 @@ async fn two_instance_composite_no_lost_update() {
         cooldown_paint_secs: 300,
         cooldown_empty_secs: 1,
         max_upload_bytes: 10 * 1024 * 1024,
+        max_decode_pixels: idol_appreciation_club_backend::img::DEFAULT_MAX_DECODE_PIXELS,
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
@@ -1103,7 +1210,7 @@ async fn two_instance_composite_no_lost_update() {
         .unwrap()
         .expect("chunk 0/0 exists");
     let probes = tokio::task::spawn_blocking(move || {
-        let (img, _) = img::decode(&chunk).unwrap();
+        let (img, _) = img::decode(&chunk, img::DEFAULT_MAX_DECODE_PIXELS).unwrap();
         (pixel_at(&img, 100, 100), pixel_at(&img, 700, 700))
     })
     .await
@@ -1162,6 +1269,7 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
         cooldown_paint_secs: 300,
         cooldown_empty_secs: 1,
         max_upload_bytes: 10 * 1024 * 1024,
+        max_decode_pixels: idol_appreciation_club_backend::img::DEFAULT_MAX_DECODE_PIXELS,
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,

@@ -23,6 +23,51 @@ pub fn cooldown_check(elapsed_secs: f64, threshold_secs: i64) -> Result<(), i64>
     Err(retry.max(1))
 }
 
+/// Read-only early cooldown gate, run BEFORE the pixel stage so a
+/// cooled-down account cannot spend the serialized libvips stage on a
+/// request the placement transaction would reject anyway. Mirrors the
+/// transaction's threshold decision (paint vs empty from the true-AABB
+/// intersection); the transactional UPDATE stays the authoritative gate
+/// under races.
+async fn cooldown_precheck(app: &App, account_id: Uuid, aabb: &Rect) -> AppResult<()> {
+    let acct: (bool, Option<chrono::DateTime<Utc>>) =
+        sqlx::query_as("SELECT cooldown_exempt, last_placement_at FROM accounts WHERE id = $1")
+            .bind(account_id)
+            .fetch_one(&app.pool)
+            .await?;
+    if acct.0 {
+        return Ok(());
+    }
+    let intersects: (bool,) = sqlx::query_as(
+        "SELECT EXISTS(
+             SELECT 1 FROM placements
+             WHERE removed_at IS NULL
+               AND bbox && box(point($1::float8, $2::float8),
+                               point($3::float8, $4::float8)))",
+    )
+    .bind(aabb.x)
+    .bind(aabb.y)
+    .bind(aabb.x + aabb.w - 1)
+    .bind(aabb.y + aabb.h - 1)
+    .fetch_one(&app.pool)
+    .await?;
+    let threshold = if intersects.0 {
+        app.cfg.cooldown_paint_secs
+    } else {
+        app.cfg.cooldown_empty_secs
+    };
+    let elapsed = match acct.1 {
+        // Never placed: the transaction's `last_placement_at IS NULL OR`
+        // arm admits unconditionally.
+        None => return Ok(()),
+        Some(t) => (Utc::now() - t).num_milliseconds() as f64 / 1000.0,
+    };
+    match cooldown_check(elapsed, threshold) {
+        Ok(()) => Ok(()),
+        Err(retry) => Err(AppError::Cooldown(retry)),
+    }
+}
+
 async fn read_multipart(app: &App, mut mp: Multipart) -> AppResult<(Vec<u8>, i64, i64, i64, f32)> {
     let mut image: Option<Vec<u8>> = None;
     let mut x: Option<i64> = None;
@@ -119,11 +164,33 @@ pub async fn place(
             "size must be within the configured bounds",
         ));
     }
+    // Everything cheap is decided BEFORE any pixel work: header probe,
+    // decoded-pixel budget, world bounds, cooldown. An oversizing or
+    // cooled-down request never reaches the (process-wide serialized)
+    // libvips stage, so neither a decompression bomb nor a cooldown retry
+    // loop can monopolize it.
+    let (probe_w, probe_h) = img::probe(&image_bytes)?;
+    let declared = i64::from(probe_w) * i64::from(probe_h);
+    if declared > 0 && u64::try_from(declared).unwrap_or(u64::MAX) > app.cfg.max_decode_pixels {
+        return Err(AppError::TooLarge);
+    }
+    // The strip/resave stage preserves dimensions, so the probed header
+    // determines the placement rect exactly.
+    let (w, h) = derive_w_h(i64::from(probe_w), i64::from(probe_h), size);
+    // Bounds are checked on the AABB of the rotated rect: it contains the
+    // unrotated rect, and the painted bitmap is the AABB.
+    let aabb = crate::world::rotated_aabb(x, y, w, h, rot);
+    if aabb.x < 0 || aabb.y < 0 || aabb.x + aabb.w > WORLD_PX || aabb.y + aabb.h > WORLD_PX {
+        return Err(AppError::BadRequest("rect out of world bounds"));
+    }
+    cooldown_precheck(&app, account_id, &aabb).await?;
+
     // Sync pixel stage (libvips is !Send): decode, strip metadata,
     // re-save in the source codec, hash; then build the deterministic
     // webp derivative from the stripped raster.
+    let max_pixels = app.cfg.max_decode_pixels;
     let pipeline = tokio::task::spawn_blocking(move || -> AppResult<_> {
-        let (src, format) = img::decode(&image_bytes)?;
+        let (src, format) = img::decode(&image_bytes, max_pixels)?;
         let (w, h) = derive_w_h(
             i64::from(src.get_width()),
             i64::from(src.get_height()),
@@ -133,7 +200,7 @@ pub async fn place(
         // codec; sha256 of these bytes is the content address. No GPS or
         // EXIF data ever leaves the process.
         let stripped = img::strip_resave(&src, format)?;
-        let (derivative_src, _) = img::decode(&stripped)?;
+        let (derivative_src, _) = img::decode(&stripped, max_pixels)?;
         let dw = i32::try_from(w).map_err(|_| internal("width overflow"))?;
         let dh = i32::try_from(h).map_err(|_| internal("height overflow"))?;
         let derivative = img::resize_exact(&derivative_src, dw, dh)?;
@@ -143,12 +210,6 @@ pub async fn place(
     .await
     .map_err(internal)??;
     let (stripped, format, (w, h), derivative_bytes) = pipeline;
-    // Bounds are checked on the AABB of the rotated rect: it contains the
-    // unrotated rect, and the painted bitmap is the AABB.
-    let aabb = crate::world::rotated_aabb(x, y, w, h, rot);
-    if aabb.x < 0 || aabb.y < 0 || aabb.x + aabb.w > WORLD_PX || aabb.y + aabb.h > WORLD_PX {
-        return Err(AppError::BadRequest("rect out of world bounds"));
-    }
     let rect = Rect::new(x, y, w, h);
     let original_sha = img::sha256_hex(&stripped);
     let original_key = format!("originals/{original_sha}.{}", format.ext());

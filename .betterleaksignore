@@ -20,6 +20,13 @@ d4829c8b63c735108d84ba75aa4b1fbd2e3271be:backend/tests/integration.rs:generic-pa
 d4829c8b63c735108d84ba75aa4b1fbd2e3271be:backend/tests/integration.rs:generic-password:733
 e8d22d8e528fa273483e1d20916380daadfc6e40:backend/tests/integration.rs:generic-password:722
 e8d22d8e528fa273483e1d20916380daadfc6e40:backend/tests/integration.rs:generic-password:733
+# The bulk-import branch tip (791cc80, above) was squash-landed as d0da54d:
+# same placeholder Secret template, same line.
+d0da54d0ad5ad5da42ea4e9713fc9c338a901532:deploy/reseed-job.yaml:generic-password:60
+# The stale-serve render queue (#70) was squash-landed as ac46638: its
+# shared test-harness fixture password is the same verified synthetic
+# value already covered below by working-tree and pre-squash entries.
+ac466386c9f6afa83e6729215a26568d1352e08d:backend/tests/common/mod.rs:generic-password:251
 
 # working tree
 backend/scripts/smoke.sh:generic-password:122
@@ -37,14 +44,15 @@ web/src/lib/components/AuthPopover.tsx:generic-password:89
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/tests/common/mod.rs:generic-password:251
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/scripts/load_tile_swr.sh:generic-password:69
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/scripts/load_tile_swr.sh:generic-password:71
-backend/tests/common/mod.rs:generic-password:251
+backend/tests/common/mod.rs:generic-password:252
 backend/scripts/load_tile_swr.sh:generic-password:69
 backend/scripts/load_tile_swr.sh:generic-password:71
 backend/tests/integration.rs:generic-password:42
 backend/tests/integration.rs:generic-password:51
 backend/tests/integration.rs:generic-password:63
-backend/tests/integration.rs:generic-password:554
-backend/tests/integration.rs:generic-password:565
+backend/tests/integration.rs:generic-password:574
+backend/tests/integration.rs:generic-password:585
+backend/tests/integration.rs:generic-password:1080
 
 # 3700663 (Solid frontend rewrite, since replaced) briefly carried
 # AuthPopover.tsx + web/test/contract/contract.test.ts: one finding is UI
@@ -79,3 +87,12 @@ web/test/contract/contract.test.ts:generic-password:163
 # regenerate per .betterleaks.toml if the gate trips again.
 9dfc9a297cdb1a981b7072436175dbdb29effac7:deploy/reseed-job.yaml:generic-password:60
 014e56c2ca2fdd3eb9a8c31e852cb8dae698a852:deploy/reseed-job.yaml:generic-password:60
+
+# 2026-10-13 late: (1) #89 rebased again — third rewritten generation of
+# the reseed template placeholder (d0da54d0). (2) fix/backend-decode-
+memory-cap branch (issue #83 lane) adds a rate-limit negative test whose
+# login uses the literal wrong-password fixture "definitely-wrong"
+# (asserts 401/429); CI's fetch-depth:0 pulls every branch ref, so its
+# fingerprint trips the git scan from ANY PR. Both verified non-secrets.
+d0da54d0ad5ad5da42ea4e9713fc9c338a901532:deploy/reseed-job.yaml:generic-password:60
+18dffef80fb98dc31cd2086768ed7d3b6c91dfea:backend/tests/integration.rs:generic-password:1080

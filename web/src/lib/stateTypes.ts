@@ -74,6 +74,10 @@ export interface AppStore {
   refreshNear(x: number, y: number, r: number): Promise<Placement[]>;
   reportPlacement(placementId: string): Promise<void>;
   removePlacement(placementId: string): Promise<boolean>;
+  /** The placement whose anchored detail panel is open, if any. */
+  get selectedPlace(): Placement | null;
+  selectPlace(placement: Placement): void;
+  deselectPlace(): void;
 }
 
 export interface AppStoreDeps {

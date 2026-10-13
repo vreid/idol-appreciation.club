@@ -177,20 +177,6 @@ If that friction is unwanted for apply/deploy, move infra-destroy's job to a
 dedicated environment `production-dangerous` with the reviewer rule, leaving
 `production` free.
 
-## Costs (UpCloud list prices, EUR, verified 2026-10)
-
-| item                        | plan / shape               | price      |
-| --------------------------- | -------------------------- | ---------- |
-| k8s control plane           | `dev-md` (Development)     | €0/mo      |
-| worker node (1)             | `STARTER-2xCPU-4GB`        | €12/mo     |
-| managed PostgreSQL          | `rdb.development.1CPU-1GB` | €9/mo      |
-| managed object storage      | 250 GB tier                | €5/mo      |
-| load balancer (UpCloud CCM) | `essentials`               | €0/mo      |
-| **total steady state**      |                            | **€26/mo** |
-
-All hourly-billed; destroy drops the burn to zero. One destroy/recreate cycle
-costs cents.
-
 ## Provider quirks worth remembering
 
 - The UpCloud provider's registry namespace is **`UpCloudLtd/upcloud`** (not

@@ -23,6 +23,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      # gh workflow run deploy.yml (release -> deploy chain) needs
+      # actions:write; without it the dispatch 403s after the tag lands.
+      actions: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

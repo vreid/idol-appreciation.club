@@ -5,8 +5,37 @@
     "main"
   ],
   "plugins": [
-    "@semantic-release/commit-analyzer",
-    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "angular",
+        "parserOpts": {
+          "headerPattern": "^(\\w*)(?:\\((.*)\\))?!?: (.*)$",
+          "breakingHeaderPattern": "^(\\w*)(?:\\((.*)\\))?!: (.*)$",
+          "headerCorrespondence": ["type", "scope", "subject"],
+          "noteKeywords": ["BREAKING CHANGE"]
+        },
+        "releaseRules": [
+          { "breaking": true, "release": "major" },
+          { "revert": true, "release": "patch" },
+          { "type": "feat", "release": "minor" },
+          { "type": "fix", "release": "patch" },
+          { "type": "perf", "release": "patch" }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "angular",
+        "parserOpts": {
+          "headerPattern": "^(\\w*)(?:\\((.*)\\))?!?: (.*)$",
+          "breakingHeaderPattern": "^(\\w*)(?:\\((.*)\\))?!: (.*)$",
+          "headerCorrespondence": ["type", "scope", "subject"],
+          "noteKeywords": ["BREAKING CHANGE"]
+        }
+      }
+    ],
     "@semantic-release/github"
   ]
 }

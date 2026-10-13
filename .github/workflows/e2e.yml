@@ -20,21 +20,16 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: web
     env:
       BASE_URL: https://idol-appreciation.club
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af
-      - run: vp install
-      - run: ./node_modules/.bin/playwright install --with-deps chromium
-      # @smoke always runs; @full self-skips if /api/health is not green.
-      - run: ./node_modules/.bin/playwright test --config e2e/playwright.config.ts --grep @smoke
-      - run: ./node_modules/.bin/playwright test --config e2e/playwright.config.ts
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      # task web:e2e installs chromium via playwright, then runs @smoke and
+      # the full suite (playwright from node_modules/.bin — never npx).
+      - run: task web:e2e
       - name: Upload e2e artifacts
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

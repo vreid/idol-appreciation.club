@@ -55,6 +55,10 @@ tasks:
       - tofu init -backend=false -input=false
       - tofu validate
 
+  tofu:ci:
+    desc: tofu fmt + validate (ci.yml tofu)
+    deps: [tofu:fmt, tofu:validate]
+
   # ---------------- test ----------------
 
   web:test:
@@ -86,6 +90,271 @@ tasks:
       - betterleaks git . --config .betterleaks.toml --redact
       - betterleaks dir . --config .betterleaks.toml --redact
 
+  # ---------------- deploy.yml gates + aggregates ----------------
+
+  lint:fast:
+    desc: fast universal lint subset (deploy.yml lint)
+    deps: [lint:md, lint:workflows, helm:lint, tofu:fmt]
+
+  backend:ci:
+    desc: backend lint + test gates, serial (deploy.yml backend-checks)
+    cmds:
+      - task: backend:lint
+      - task: backend:test
+
+  web:ci:
+    desc: web lint + test gates, serial (deploy.yml web-checks)
+    cmds:
+      - task: web:lint
+      - task: web:test
+
+  # ---------------- tofu stateful workflows (CI-only; need secrets) ------
+
+  tofu:plan:
+    desc: tofu init (real backend) + plan (ci.yml tofu-plan)
+    dir: tofu
+    cmds:
+      - tofu init -input=false
+      - tofu plan -input=false -no-color
+
+  tofu:apply:
+    desc: tofu apply with honest one-retry convergence (infra-apply.yml)
+    dir: tofu
+    cmds:
+      - tofu validate
+      # First apply can abort on provider read races (e.g. managed DB
+      # "waiting for service name to propagate") after resources were
+      # created; a second pass converges. A second failure still fails.
+      - tofu apply -auto-approve -input=false || tofu apply -auto-approve -input=false
+
+  tofu:destroy:
+    desc: tofu destroy + orphaned CCM load-balancer cleanup (infra-destroy.yml)
+    dir: tofu
+    cmds:
+      # deferred so the billing-relevant cleanup still runs when the
+      # destroy itself fails
+      - defer: { task: infra:delete-lbs }
+      - tofu destroy -auto-approve -input=false
+
+  infra:delete-lbs:
+    internal: true
+    desc: delete UpCloud load balancers the CCM orphaned (kept billing)
+    cmds:
+      - |
+        set -o pipefail; set -e
+        # Destroying the cluster does not remove LBs the CCM provisioned
+        # for LoadBalancer Services - they keep billing until deleted.
+        for lb in $(curl -s -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            https://api.upcloud.com/1.3/load-balancer \
+            | jq -r '.[] | select(.name | startswith("'"$CLUSTER"'")) | .uuid'); do
+          echo "deleting LB $lb"
+          curl -s -X DELETE -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/load-balancer/$lb" -o /dev/null -w "%{http_code}\n"
+        done
+
+  tofu:recreate:
+    desc: destroy (best effort) then apply, with LB cleanup (infra-recreate.yml)
+    dir: tofu
+    cmds:
+      - task: infra:delete-lbs
+      - tofu destroy -auto-approve -input=false || true
+      - tofu apply -auto-approve -input=false || tofu apply -auto-approve -input=false
+
+  # ---------------- container images (deploy.yml; docker + buildx) -------
+
+  image:backend:
+    desc: build + push backend image, print digest (deploy.yml backend-build)
+    dir: backend
+    # Requires a prior registry login and docker buildx (both provided by
+    # the deploy.yml job). Prints the pushed image digest on the last line.
+    cmds:
+      - |
+        docker buildx build --platform linux/amd64 --push \
+          -t "$BACKEND_IMAGE" --metadata-file /tmp/backend-image-metadata.json .
+        jq -r '."containerimage.digest"' /tmp/backend-image-metadata.json
+
+  image:web:
+    desc: build + push web image, print digest (deploy.yml web-build)
+    dir: web
+    # Same contract as image:backend.
+    cmds:
+      - |
+        docker buildx build --platform linux/amd64 --push \
+          -t "$WEB_IMAGE" --metadata-file /tmp/web-image-metadata.json .
+        jq -r '."containerimage.digest"' /tmp/web-image-metadata.json
+
+  # ---------------- deploy choreography (deploy.yml deploy job) ----------
+
+  deploy:k8s:
+    desc: >-
+      kubeconfig fetch, tofu state settle, atomic helm upgrade, app-env
+      secret rotation, DNS sync, placeholder removal (deploy.yml deploy)
+    env:
+      KUBECONFIG: '{{.KUBECONFIG | default "/tmp/idol-deploy-kubeconfig"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        uuid="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_TOKEN}" \
+          https://api.upcloud.com/1.3/kubernetes \
+          | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
+        test -n "$uuid" || { echo "cluster $CLUSTER not found" >&2; exit 1; }
+        curl -sS -H "Authorization: Bearer ${UPCLOUD_TOKEN}" \
+          "https://api.upcloud.com/1.3/kubernetes/${uuid}/kubeconfig" \
+        | jq -r '.kubeconfig' > "$KUBECONFIG"
+        chmod 600 "$KUBECONFIG"
+      - |
+        set -euo pipefail
+        cd tofu
+        tofu apply -auto-approve -refresh-only -input=false || true
+      - |
+        set -euo pipefail
+        cp web/Caddyfile chart/caddy/Caddyfile
+        ARGS=()
+        if [ "$READY_BACKEND" != "true" ]; then
+          echo "backend not .ci-ready: chart deploys without it is not supported; aborting stack changes" >&2
+          exit 1
+        fi
+        if [ "$READY_WEB" != "true" ]; then
+          echo "web not .ci-ready: bootstrap placeholder is the edge"
+          ARGS+=(--set web.enabled=false)
+        fi
+        helm upgrade --install idol chart/ \
+          --namespace idol --create-namespace --atomic --wait --timeout 15m \
+          --take-ownership \
+          --set-string images.backend.digest="$BACKEND_DIGEST" \
+          --set-string images.web.digest="$WEB_DIGEST" \
+          "${ARGS[@]}"
+        if [ "$READY_WEB" = "true" ]; then
+          kubectl -n idol delete deploy placeholder svc placeholder --ignore-not-found
+        fi
+      - |
+        set -euo pipefail
+        cd tofu
+        # s3_endpoint can lag service creation; refresh until it shows.
+        ep=""
+        i=0
+        while [ "$i" -lt 5 ]; do
+          ep="$(tofu output -raw s3_endpoint 2>/dev/null || true)"
+          if [ -n "$ep" ] && [ "$ep" != "null" ]; then
+            break
+          fi
+          tofu apply -auto-approve -refresh-only -input=false || true
+          sleep 20
+          i=$((i + 1))
+        done
+        if [ -z "$ep" ] || [ "$ep" = "null" ]; then
+          echo "warning: object storage endpoint not available; S3_ENDPOINT empty"
+          ep=""
+        fi
+        db="$(tofu output -raw app_database_uri)"
+        test -n "$db" || { echo "app_database_uri missing" >&2; exit 1; }
+        # every UpCloud call names its stage and retries transient 4xx/5xx
+        uc() { local label="$1" method="$2" url="$3" out="$4" code
+          for attempt in 1 2 3; do
+            code="$(curl -s -o "$out" -w '%{http_code}' -X "$method" -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "$url")" || code="000"
+            case "$code" in 2*) return 0;; 429|5*) sleep $((attempt * 5));; *)
+              echo "upcloud $label -> HTTP $code"; sed -n '1,3p' "$out"; exit 1;;
+            esac
+          done
+          echo "upcloud $label -> HTTP $code after retries"; exit 1
+        }
+        # UpCloud may rotate managed-DB user passwords after the provider
+        # creates them, so trust the API, not tofu state, for the app user's
+        # password. Host/port stay from tofu output.
+        uc db-list GET https://api.upcloud.com/1.3/database /tmp/uc1.json
+        dbuuid="$(jq -r 'if type == "array" then . else [.database_services[]?] end | map(select(.name == "idol-canvas-db")) | .[0].uuid' /tmp/uc1.json)"
+        test -n "$dbuuid" || { echo "database service not found via API" >&2; exit 1; }
+        uc db-users GET "https://api.upcloud.com/1.3/database/$dbuuid/users" /tmp/uc2.json
+        apppw="$(jq -r '(.users? // .)[] | select(.username == "app") | .password' /tmp/uc2.json)"
+        test -n "$apppw" || { echo "app user password not found via API" >&2; exit 1; }
+        db="$(printf '%s' "$db" | sed -E "s|//[^@]+@|//app:$apppw@|")"
+        # Object storage: trust the UpCloud API, not tofu state. The
+        # provider can record a different endpoint or user key than the
+        # service actually gets (seen on recreate), so fetch both from the
+        # API, rotate the app user's access key, and refuse to ship an
+        # endpoint that does not resolve.
+        uc os-list GET https://api.upcloud.com/1.3/object-storage-2 /tmp/uc3.json
+        osuuid="$(jq -r 'if type == "array" then . else [.object_storages[]?] end | map(select(.name == "idol-canvas-objsto")) | .[0].uuid' /tmp/uc3.json)"
+        test -n "$osuuid" || { echo "object storage not found via API" >&2; exit 1; }
+        uc os-detail GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid" /tmp/uc4.json
+        oshost="$(jq -r '.endpoints[0].domain_name' /tmp/uc4.json)"
+        test -n "$oshost" || { echo "objsto endpoint missing from API" >&2; exit 1; }
+        dig +short "$oshost" | grep -qE '^[0-9]+\.' || { echo "objsto endpoint $oshost does not resolve" >&2; exit 1; }
+        # key limit is 2 per user: delete every existing key BEFORE
+        # creating the fresh one (old keys are dead-by-drift by design)
+        uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc6.json
+        jq -r '.[].access_key_id' /tmp/uc6.json | while read -r old; do
+          uc key-del DELETE "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" /tmp/uc7.json
+        done
+        uc key-create POST "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc5.json
+        newkey="$(cat /tmp/uc5.json)"
+        sak="$(printf '%s' "$newkey" | jq -r .access_key_id)"
+        ssk="$(printf '%s' "$newkey" | jq -r .secret_access_key)"
+        test -n "$ssk" || { echo "access key creation failed" >&2; exit 1; }
+        # prod registration closed until an admin approves the account
+        kubectl -n idol create secret generic app-env \
+          --from-literal="DATABASE_URL=$db" \
+          --from-literal="S3_ENDPOINT=https://$oshost" \
+          --from-literal="S3_BUCKET=$(tofu output -raw s3_bucket)" \
+          --from-literal="S3_ACCESS_KEY_ID=$sak" \
+          --from-literal="S3_SECRET_ACCESS_KEY=$ssk" \
+          --from-literal="REGISTRATION_APPROVAL_REQUIRED=true" \
+          --from-literal="SESSION_SECRET=$SESSION_SECRET" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        # secret-only changes do not restart pods; the S3 key rotation
+        # above would leave running backends on a deleted key
+        kubectl -n idol rollout restart deployment/backend
+        kubectl -n idol rollout status deployment/backend --timeout=180s
+      - |
+        set -euo pipefail
+        ips=""
+        n=0
+        while [ -z "$ips" ] && [ "$n" -lt 30 ]; do
+          ips="$( (kubectl -n idol get svc web placeholder -o json 2>/dev/null \
+            || echo '{"items":[]}') \
+            | jq -r '.items[] | select(.status.loadBalancer.ingress)
+            | .status.loadBalancer.ingress[]? | (.ip // .hostname)')"
+          [ -n "$ips" ] || sleep 10
+          n=$((n + 1))
+        done
+        if [ -z "$ips" ]; then
+          echo "LoadBalancer IP never assigned" >&2
+          exit 1
+        fi
+        # CCM may expose an ip or a dns hostname per ingress entry.
+        addrs=""
+        for entry in $ips; do
+          case "$entry" in
+            *.*.*|*:*) addrs="$addrs $entry" ;;
+            *) addrs="$addrs $(getent ahosts "$entry" | awk '{print $1}' | sort -u | tr '\n' ' ')" ;;
+          esac
+        done
+        ipv4="$(printf '%s\n' "$addrs" | tr ' ' '\n' | grep '\.' | head -1 || true)"
+        ipv6="$(printf '%s\n' "$addrs" | tr ' ' '\n' | grep ':' | head -1 || true)"
+        if [ -z "$ipv4" ]; then
+          echo "no IPv4 address on LB" >&2
+          exit 1
+        fi
+        ./scripts/sync-dns.sh "$ipv4" ${ipv6:+"$ipv6"}
+      - |
+        set -euo pipefail
+        # Tag is mutable (:main), so rollouts are driven by digest pinning.
+        if [ "$READY_WEB" = "true" ]; then
+          kubectl delete -f deploy/placeholder.yaml --ignore-not-found=true
+        fi
+
+  # ---------------- e2e (e2e.yml) ----------------
+
+  web:e2e:
+    desc: playwright e2e, smoke then full (e2e.yml)
+    dir: web
+    deps: [web:install]
+    cmds:
+      - ./node_modules/.bin/playwright install --with-deps chromium
+      # @smoke always runs; @full self-skips if /api/health is not green.
+      - ./node_modules/.bin/playwright test --config e2e/playwright.config.ts --grep @smoke
+      - ./node_modules/.bin/playwright test --config e2e/playwright.config.ts
+
   # ---------------- backend image (internal) ----------------
 
   backend:image:
@@ -109,6 +378,10 @@ tasks:
     desc: install web dependencies with the pinned pnpm (frozen lockfile)
     dir: web
     cmds:
+      # node/pnpm resolve from devEngines here (not the root mise.toml), so
+      # materialize them before pnpm runs — CI shims only exist for
+      # root-config tools until this happens.
+      - mise install
       - pnpm install --frozen-lockfile
 
   ci:

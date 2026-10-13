@@ -167,10 +167,15 @@ segment is a wildcard parsed as `<n>.webp`):
    the live maxSeq; otherwise render (leaf: chunk crop/scale; parent: four
    children) and write through object + row + memory.
 
-`ETag: "maxSeq"`, `Cache-Control: no-cache` ⇒ clients revalidate and get cheap
-304s; a GET computed after a placement commit always re-renders before serving,
-so a stale tile is never served _after_ the placement is visible. Removed art
-lowers maxSeq ⇒ ETag drops back and content re-renders from chunks.
+`ETag: "maxSeq"`, `Cache-Control: public, max-age=1, stale-while-revalidate=30`
+— three cooperating parts: `max-age=1` stops per-tile revalidation storms during
+placement bursts, `stale-while-revalidate` serves tiles instantly while
+refreshing them in the background, and the SSE-driven client refetch bounds
+visible staleness to ~1s past a place/remove commit; the ETag keeps every
+revalidation a cheap 304 while the seq is unchanged. A GET computed after a
+placement commit always re-renders before serving, so a stale tile is never
+served _after_ the placement is visible. Removed art lowers maxSeq ⇒ ETag drops
+back and content re-renders from chunks.
 
 ## Moderation
 

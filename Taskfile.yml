@@ -287,6 +287,12 @@ tasks:
       - |
         set -euo pipefail
         cp web/Caddyfile chart/caddy/Caddyfile
+        # Cluster Autoscaler credential — the chart reads it only when
+        # clusterAutoscaler.enabled; provisioning it on every deploy
+        # keeps that flip a values-only change.
+        kubectl -n idol create secret generic upcloud-autoscaler \
+          --from-literal="token=${UPCLOUD_API_TOKEN}" \
+          --dry-run=client -o yaml | kubectl apply -f -
         ARGS=()
         if [ "$READY_BACKEND" != "true" ]; then
           echo "backend not .ci-ready: chart deploys without it is not supported; aborting stack changes" >&2
@@ -302,6 +308,12 @@ tasks:
           ARGS+=(--set-string images.backend.tag="$RELEASE_TAG" \
                  --set-string images.web.tag="$RELEASE_TAG")
         fi
+        # Cluster uuid for the Cluster Autoscaler (unused while
+        # clusterAutoscaler.enabled is false).
+        cluster_id="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_API_TOKEN}" \
+          https://api.upcloud.com/1.3/kubernetes \
+          | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
+        ARGS+=(--set-string clusterAutoscaler.clusterId="$cluster_id")
         helm upgrade --install idol chart/ \
           --namespace idol --create-namespace --atomic --wait --timeout 15m \
           --take-ownership \

@@ -1,10 +1,10 @@
 /**
  * Image sizing rules for the place flow: the long edge is chosen by the
- * user (16..2048), the short edge follows the natural aspect ratio.
+ * user (16..4096), the short edge follows the natural aspect ratio.
  */
 
 export const MIN_LONG_EDGE = 16;
-export const MAX_LONG_EDGE = 2048;
+export const MAX_LONG_EDGE = 4096;
 export const DEFAULT_LONG_EDGE = 256;
 
 export function clampLongEdge(value: number): number {

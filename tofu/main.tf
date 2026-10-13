@@ -54,6 +54,16 @@ resource "upcloud_kubernetes_node_group" "this" {
   plan       = var.node_plan
   node_count = var.node_count
 
+  # Node count is owned by the in-cluster node-autoscaler CronJob (1..2) once
+  # the group exists; without this ignore, every infra-apply would yank a
+  # warm node back to the create-time count mid-traffic. Plan changes still
+  # apply normally. UpCloud's managed k8s API has no native min/max fields
+  # (verified: PATCH node-groups accepts only "count"), so autoscaling lives
+  # outside tofu by design.
+  lifecycle {
+    ignore_changes = [node_count]
+  }
+
   labels = {
     project    = "idol-appreciation.club"
     managed-by = "tofu"

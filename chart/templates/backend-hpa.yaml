@@ -1,0 +1,27 @@
+{{- if .Values.backendAutoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+  namespace: idol
+  labels:
+    app: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: {{ .Values.backendAutoscaling.minReplicas }}
+  maxReplicas: {{ .Values.backendAutoscaling.maxReplicas }}
+  behavior:
+    scaleDown:
+      # 5m: cold renders / prewarm spikes are short; don't flap.
+      stabilizationWindowSeconds: {{ .Values.backendAutoscaling.scaleDownStabilizationSeconds }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.backendAutoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

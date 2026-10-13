@@ -349,6 +349,10 @@ tasks:
           --from-literal="REGISTRATION_APPROVAL_REQUIRED=true" \
           --from-literal="SESSION_SECRET=$SESSION_SECRET" \
           --dry-run=client -o yaml | kubectl apply -f -
+        # token for the node-autoscaler CronJob (UpCloud node-group API)
+        kubectl -n idol create secret generic upcloud-creds \
+          --from-literal="UPCLOUD_API_TOKEN=${UPCLOUD_TOKEN}" \
+          --dry-run=client -o yaml | kubectl apply -f -
         # secret-only changes do not restart pods; the S3 key rotation
         # above would leave running backends on a deleted key
         kubectl -n idol rollout restart deployment/backend

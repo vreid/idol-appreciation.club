@@ -186,6 +186,47 @@ Decision record — the committed scale path, in order, when traffic justifies
 3. Managed Valkey (1C/1GB) ONLY if the metrics endpoint shows tile-read p95
    dominated by S3-GET latency (role: shared tile LRU across replicas).
 
+### Autoscaling (2026-10-13)
+
+**Backend HPA — shipped DISABLED on purpose.** `backendAutoscaling.enabled`
+defaults to `false` in `chart/values.yaml`; flipping it on is gated on the
+advisory-locks PR validating `replicaCount = 2` — the single-writer invariant
+above must hold until then, and an HPA would happily scale past 1. When
+enabled it is HPA v2: min 1 / max 3, CPU target 65%, 5m scale-down
+stabilization.
+
+Why these numbers: cold tile renders and prewarm bursts are short, pure-CPU
+noise. Requests (`500m/512Mi`) are modest — they are the HPA utilization math
+basis and the scheduler's packing input — while limits (`cpu4/2Gi`) are
+generous so parallel libvips composites never throttle (6-way placement bursts
+OOMKilled at the old 1536Mi limit on 2026-10-13). A 65% target on modest
+requests with a 5m window scales on sustained load instead of burst noise.
+
+**Web/caddy stays fixed-replica by design**: its `caddy-data` PVC is RWO and
+node-pinned by the UpCloud CSI (certs + store), so a second replica cannot
+mount the volume anywhere else.
+
+**Node autoscaling** — UpCloud managed Kubernetes does not offer native
+node-group min/max: the API's PATCH on node groups accepts only `count`
+(verified against the 1.3 docs and live API), the tofu provider
+(`upcloud_kubernetes_node_group` v5.47) has no autoscaling fields, and the
+managed control plane does not run cluster-autoscaler. So the band is
+implemented in-cluster: the `node-autoscaler` CronJob
+(`chart/templates/node-autoscaler.yaml`) runs every minute and PATCHes the
+node group count between `minNodes: 1` and `maxNodes: 2` — scale UP when a
+pod is unschedulable, scale DOWN the newest node after 15 minutes under 25%
+CPU / 60% memory with nothing pending. It needs the `upcloud-creds` secret
+(`UPCLOUD_API_TOKEN`), created by `task deploy:k8s` on every deploy. Because
+the CronJob owns the count, tofu ignores the drift
+(`lifecycle.ignore_changes = [node_count]`); plan changes still apply.
+
+**Cost model**: each warm extra node is a STARTER-4xCPU-8GB — EUR 20/mo
+(hourly-billed, max 28-day month), i.e. ~EUR 0.03/h while scaled up. The dev
+control plane allows up to 30 nodes (`dev-md max_nodes=30`, verified live), so
+max 2 is well within tier. Scale path order stays: locks → validate
+replicas=2 → flip `backendAutoscaling.enabled` → CDN when read traffic
+dominates.
+
 ## Marker removal checklist (do not forget)
 
 The `backend/.ci-ready` / `web/.ci-ready` markers are a trust-based bootstrap
@@ -305,11 +346,13 @@ admin URI.
 | Item                             | Plan                              | Price       |
 | -------------------------------- | --------------------------------- | ----------- |
 | Managed Kubernetes control plane | Development tier                  | EUR 0       |
-| Worker node                      | STARTER-4xCPU-8GB                 | ~EUR 14     |
+| Worker node                      | STARTER-4xCPU-8GB                 | EUR 20      |
 | Managed PostgreSQL               | rdb.development.1CPU-1GB          | ~EUR 9      |
 | Managed Object Storage           | 250 GB tier                       | EUR 5       |
 | Load balancer                    | Essentials (via CCM, web Service) | EUR 0       |
-| **Total**                        |                                   | **~EUR 28** |
+| **Total**                        |                                   | **~EUR 34** |
+
+Autoscaled warm second node: +EUR 20/mo while up (hourly; ~EUR 0.03/h).
 
 Hourly billing everywhere; a destroy/recreate cycle costs pennies.
 

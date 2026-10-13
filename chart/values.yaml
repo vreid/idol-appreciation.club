@@ -54,3 +54,31 @@ edgeLoadBalancer:
     interval: 10
     fall: 3
     rise: 3
+
+# Backend HPA — shipped DISABLED. Flipping it on is gated on the
+# advisory-locks PR validating replicas=2 (single-writer invariant until
+# then; the HPA must never scale past 1 before that lands).
+backendAutoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 65
+  # 5m scale-down window: cold tile renders / prewarm bursts spike CPU
+  # briefly; don't flap the replica count on synthetic noise.
+  scaleDownStabilizationSeconds: 300
+
+# Node autoscaler: UpCloud managed k8s has NO native node-group min/max
+# (API PATCH accepts only "count"), so this CronJob owns the count between
+# nodeAutoscaler.minNodes..maxNodes by calling the UpCloud API. It needs the
+# UPCLOUD_API_TOKEN in secret upcloud-creds (created by deploy.yml).
+nodeAutoscaler:
+  enabled: true
+  image: alpine/k8s:1.33.8
+  schedule: "* * * * *"
+  minNodes: 1
+  maxNodes: 2
+  clusterUuid: "0d4c74ac-96bc-49aa-bbc4-7461708adb1d"
+  nodeGroup: "default"
+  # Scale down only after the newest node is this old and this idle.
+  scaleDownAfterMinutes: 15
+  scaleDownMaxCpuPercent: 25

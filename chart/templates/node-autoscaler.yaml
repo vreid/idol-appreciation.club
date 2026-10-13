@@ -1,0 +1,143 @@
+{{- if .Values.nodeAutoscaler.enabled }}
+# UpCloud managed Kubernetes does not run cluster-autoscaler and its API has
+# no node-group min/max — PATCH /kubernetes/{uuid}/node-groups/{name} accepts
+# only "count". This CronJob implements the min/max band by calling the
+# UpCloud API (scale up on unschedulable pods, scale down on an idle newest
+# node). Tofu ignores node_count drift for the same reason.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-autoscaler
+  namespace: idol
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-autoscaler
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  # discovery + metrics APIs for `kubectl top`
+  - nonResourceURLs: ["/api", "/apis", "/apis/metrics.k8s.io", "/apis/metrics.k8s.io/*"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: node-autoscaler
+    namespace: idol
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-autoscaler
+  namespace: idol
+data:
+  autoscale.sh: |
+    #!/bin/sh
+    set -eu
+    MIN={{ .Values.nodeAutoscaler.minNodes }}
+    MAX={{ .Values.nodeAutoscaler.maxNodes }}
+    UUID={{ .Values.nodeAutoscaler.clusterUuid }}
+    GROUP={{ .Values.nodeAutoscaler.nodeGroup }}
+    AFTER={{ .Values.nodeAutoscaler.scaleDownAfterMinutes }}
+    MAXCPU={{ .Values.nodeAutoscaler.scaleDownMaxCpuPercent }}
+    API=https://api.upcloud.com/1.3
+
+    count() { curl -sSf -H "Authorization: Bearer $UPCLOUD_API_TOKEN" \
+      "$API/kubernetes/$UUID" | jq -r --arg g "$GROUP" \
+      '.node_groups[] | select(.name==$g) | .count'; }
+    set_count() { curl -sSf -X PATCH -H "Authorization: Bearer $UPCLOUD_API_TOKEN" \
+      -H "Content-Type: application/json" -d "{\"count\":$1}" \
+      "$API/kubernetes/$UUID/node-groups/$GROUP" >/dev/null; }
+
+    C=$(count)
+    PENDING=$(kubectl get pods -A --field-selector=status.phase=Pending -o json 2>/dev/null \
+      | jq '[.items[] | select(.status.conditions[]? | select(.reason=="Unschedulable"))] | length')
+    NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+
+    if [ "$PENDING" -gt 0 ] && [ "$C" -lt "$MAX" ]; then
+      echo "scale up: $PENDING unschedulable pod(s), $C -> $((C+1))"
+      set_count $((C+1)); exit 0
+    fi
+
+    if [ "$C" -le "$MIN" ] || [ "$NODES" -le "$MIN" ]; then
+      echo "ok: count=$C nodes=$NODES pending=$PENDING"; exit 0
+    fi
+
+    # scale down candidate: the newest node
+    NEWEST=$(kubectl get nodes --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.creationTimestamp}{"\n"}{end}' | tail -1)
+    NAME=$(echo "$NEWEST" | cut -d' ' -f1)
+    TS=$(kubectl get node "$NAME" -o jsonpath='{.metadata.creationTimestamp}')
+    AGE=$(( ($(date +%s) - $(date -d "$TS" +%s 2>/dev/null || echo 0)) / 60 ))
+    if [ "$AGE" -lt "$AFTER" ]; then
+      echo "hold: newest node $NAME only ${AGE}m old"; exit 0
+    fi
+    CPU=$(kubectl top node "$NAME" --no-headers 2>/dev/null | awk '{print $3}' | tr -d '%')
+    MEM=$(kubectl top node "$NAME" --no-headers 2>/dev/null | awk '{print $5}' | tr -d '%')
+    if [ "${CPU:-100}" -le "$MAXCPU" ] && [ "${MEM:-100}" -le 60 ] && [ "$PENDING" -eq 0 ]; then
+      echo "scale down: $NAME idle (cpu=${CPU}% mem=${MEM}%), $C -> $((C-1))"
+      set_count $((C-1))
+    else
+      echo "hold: $NAME cpu=${CPU:-?}% mem=${MEM:-?}% pending=$PENDING"
+    fi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: node-autoscaler
+  namespace: idol
+spec:
+  schedule: "{{ .Values.nodeAutoscaler.schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app: node-autoscaler
+        spec:
+          serviceAccountName: node-autoscaler
+          restartPolicy: Never
+          containers:
+            - name: autoscale
+              image: {{ .Values.nodeAutoscaler.image }}
+              command: ["/bin/sh", "/scripts/autoscale.sh"]
+              env:
+                - name: UPCLOUD_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: upcloud-creds
+                      key: UPCLOUD_API_TOKEN
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: scripts
+              configMap:
+                name: node-autoscaler
+                defaultMode: 0755
+{{- end }}

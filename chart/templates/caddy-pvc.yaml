@@ -9,7 +9,7 @@ metadata:
   namespace: idol
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: upcloud-block-storage-standard
+  storageClassName: idol-caddy-data
   resources:
     requests:
       storage: 1Gi

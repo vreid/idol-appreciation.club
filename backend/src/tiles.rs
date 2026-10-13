@@ -447,25 +447,6 @@ fn tile_response(bytes: Bytes, seq: i64, stale: bool, if_none_match: Option<&str
     }
     resp
 }
-    }
-    let mut resp = (StatusCode::OK, bytes).into_response();
-    let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, "image/webp".parse().expect("mime"));
-    h.insert(
-        header::CACHE_CONTROL,
-        "public, max-age=1, stale-while-revalidate=30"
-            .parse()
-            .expect("cache-control header"),
-    );
-    h.insert(header::ETAG, etag.parse().expect("etag header"));
-    if stale {
-        h.insert(
-            HeaderName::from_static("x-tile-stale"),
-            HeaderValue::from_static("true"),
-        );
-    }
-    resp
-}
 
 /// The constant empty (pure paper) tile, encoded once per process. Tiles
 /// with maxSeq 0 are exactly this — which is what keeps cold pyramid

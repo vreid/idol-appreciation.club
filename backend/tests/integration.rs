@@ -4,10 +4,16 @@
 
 mod common;
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use common::*;
+use idol_appreciation_club_backend::build_app;
+use idol_appreciation_club_backend::config::Config;
 use idol_appreciation_club_backend::img;
+use testcontainers_modules::postgres;
+use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use testcontainers_modules::testcontainers::ImageExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
@@ -1069,6 +1075,9 @@ async fn two_instance_composite_no_lost_update() {
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
+        tile_render_quiet_secs: 4,
+        tile_render_max_delay_secs: 12,
+        tile_render_queue_cap: 512,
         registration_approval_required: false,
     };
     let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");
@@ -1156,6 +1165,9 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
+        tile_render_quiet_secs: 4,
+        tile_render_max_delay_secs: 12,
+        tile_render_queue_cap: 512,
         registration_approval_required: false,
     };
     let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");

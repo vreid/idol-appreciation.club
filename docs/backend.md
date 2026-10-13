@@ -41,6 +41,18 @@ tile, which keeps cold pyramid renders proportional to the art spine instead of
 
 ## Image processing: libvips crate (option a)
 
+Threading: libvips defaults each evaluation pipeline's threadpool to the host
+core count (`VIPS_CONCURRENCY` unset ⇒ ncpus — see the upstream "VIPS and
+threads" notes and `vips_concurrency_set`). Pipelines are per-operation, so
+concurrent placements multiply that: two composites on the 4-core node meant 8
+vips threads competing with tile serving (N=2 soak: tile empty-path mean 0.94s
+vs 19ms baseline). The deployment sets `VIPS_CONCURRENCY=2` to bound aggregate
+composite threads (~1 core for two concurrent placements) and keep cores
+available for the async/serving paths. Maintainer guidance (libvips discussion
+#4063): for throughput, keep threads-with-useful-work ≈ physical cores; libvips
+also runs a few threads beyond the setting, and threadpools self-size down under
+load.
+
 Chosen: the `libvips` crate (2.3), in-process, against system libvips (Debian
 `libvips-dev` 8.15+ / `libvips42` at runtime). Rationale:
 
@@ -169,9 +181,8 @@ segment is a wildcard parsed as `<n>.webp`). Resolution order:
    resolve fresh, a parent render never bakes stale child bytes) and write
    through object + row + memory.
 
-`ETag: "maxSeq"`,
-`Cache-Control: public, max-age=1, stale-while-revalidate=30` — four
-cooperating parts: `max-age=1` stops per-tile revalidation storms during
+`ETag: "maxSeq"`, `Cache-Control: public, max-age=1, stale-while-revalidate=30`
+— four cooperating parts: `max-age=1` stops per-tile revalidation storms during
 placement bursts, `stale-while-revalidate` serves tiles instantly while
 refreshing them in the background, the SSE-driven client refetch bounds visible
 staleness to ~1s past a place/remove commit, and (this change) the SERVER now
@@ -231,11 +242,11 @@ max-delay anchor) and `last_bump_at` (the quiet anchor):
   the libvips hardening rules above) — so placement pixel work always has
   headroom; renders go through the queue ONLY, never a placement's path. The
   deployment's `VIPS_CONCURRENCY=2` clamp (#68) bounds threads per pipeline
-  env-side; `concurrency_set(1)` overrides it for this service's in-process
-  ops and remains the belt to the env's suspenders — the env is the binding
-  cap for any future render-role worker that does not call `concurrency_set`.
-  Render preemption is deliberately not implemented: a single render's
-  wall-time damage is bounded by one worker slot + per-op vips concurrency.
+  env-side; `concurrency_set(1)` overrides it for this service's in-process ops
+  and remains the belt to the env's suspenders — the env is the binding cap for
+  any future render-role worker that does not call `concurrency_set`. Render
+  preemption is deliberately not implemented: a single render's wall-time damage
+  is bounded by one worker slot + per-op vips concurrency.
 - **Bounds and drop policy.** `TILE_RENDER_QUEUE_CAP` (default 512) bounds
   pending rows. Enqueue attempts beyond the cap are dropped — harmless, the next
   stale GET re-enqueues, and tiles WITH stored bytes are immune (they were
@@ -255,8 +266,7 @@ entire coordination protocol, no advisory locks, and the read/serve path stays
 untouched. To migrate, stop spawning the in-process worker in that deployment
 and run the same loop from a render-role binary; multi-writer safety comes from
 the claim query, per-tile write races are last-write-wins on identical-content
-bytes (the same benignness that already makes cross-instance cold renders
-safe).
+bytes (the same benignness that already makes cross-instance cold renders safe).
 
 Public flood surfaces, for the record: SSE connections and tile GETs are the
 unauthenticated surfaces a flood hits; placement writes stay bounded by the

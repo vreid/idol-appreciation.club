@@ -119,8 +119,15 @@ tasks:
             if [ -n "${keep[${digests[$t]}]:-}" ]; then
               kept=$((kept + 1))
             else
-              crane delete "$repo@${digests[$t]}" \
-                && pruned=$((pruned + 1)) && echo "$pkg: pruned $t (${digests[$t]:0:19})"
+              # GHCR returns UNSUPPORTED for manifest DELETE under
+              # GITHUB_TOKEN (needs a delete:packages PAT). Retention is
+              # best-effort: warn and move on — a failed prune must never
+              # fail the job, or the lock update + deploy behind it die.
+              if crane delete "$repo@${digests[$t]}" 2>/dev/null; then
+                pruned=$((pruned + 1)); echo "$pkg: pruned $t (${digests[$t]:0:19})"
+              else
+                echo "$pkg: WARN prune skipped for $t (${digests[$t]:0:19}) — GHCR DELETE unsupported with this token" >&2
+              fi
             fi
           done
           echo "$pkg: kept $kept, pruned $pruned (lock pin ${lock_digest:0:19} protected)"

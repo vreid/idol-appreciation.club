@@ -50,7 +50,6 @@ jobs:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       RELEASE_TAG: ${{ inputs.semver }}
-      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

@@ -1,0 +1,37 @@
+name: ghcr-prune
+
+on:
+  schedule:
+    # nightly, deliberately off the hour
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ghcr-prune
+  cancel-in-progress: false
+
+# GHCR retention: keep the `main` rolling tag + the last 10 vX.Y.Z
+# version tags per package, prune the rest. images.lock.json digests (the
+# deploy pins) are asserted protected inside the task. The same task runs
+# inline after every images.yml build.
+jobs:
+  prune:
+    name: prune old GHCR version tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+        with:
+          cache: false
+      - name: prune
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: task image:prune

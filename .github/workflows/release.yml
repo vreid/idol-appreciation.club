@@ -1,12 +1,13 @@
 name: release
 
-# Runs after CI succeeds on main: tags a release from conventional commits
-# and, when a release was cut, dispatches deploy.yml with the version so
-# images are tagged with the semver alongside their digest.
+# Runs on every push to main: cuts the version TAG from conventional
+# commits (TAG ONLY — no changelog file, no GitHub Release; git log IS
+# the changelog). When a tag was cut, this job EXPLICITLY dispatches
+# images.yml for that tag: a GITHUB_TOKEN tag push does not trigger
+# `on: push: tags` workflows (GitHub recursion guard), so the dispatch
+# — not the tag event — is the load-bearing chain into the image build.
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
     branches: [main]
 
 permissions:
@@ -18,45 +19,46 @@ concurrency:
 
 jobs:
   release:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
-      # gh workflow run deploy.yml (release -> deploy chain) needs
-      # actions:write; without it the dispatch 403s after the tag lands.
-      actions: write
+      contents: write # push the version tag
+      actions: write # dispatch images.yml
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          # semantic-release pushes the version tag with git, so the
-          # checkout must persist its (job-scoped GITHUB_TOKEN) credential.
+          # PAT checkout: the version tag is pushed with this credential,
+          # and a PAT (unlike GITHUB_TOKEN) DOES trigger `on: push: tags`
+          # workflows — that is the primary release->images chain. Falls
+          # back to the job-scoped token + explicit dispatch below when
+          # the secret is absent.
+          token: ${{ secrets.OMP_PAT || github.token }}
           persist-credentials: true
-          # semantic-release analyzes full commit history
+          # version decision scans full commit history
           fetch-depth: 0
       # cache: false — release provenance must not depend on a potentially
       # poisoned tool cache (jactionlint cache-poisoning).
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
         with:
           cache: false
-      - name: semantic-release
-        id: rel
+      - name: cut version tag and dispatch image build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OMP_PAT_SET: ${{ secrets.OMP_PAT != '' }}
         run: |
           set -euo pipefail
           before="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
           task release
-          # @semantic-release/github creates the tag via the API, not local
-          # git — re-fetch before comparing.
           git fetch origin 'refs/tags/v*:refs/tags/v*' --quiet
           after="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
-          echo "before=$before" >> "$GITHUB_OUTPUT"
-          echo "after=$after" >> "$GITHUB_OUTPUT"
-          echo "release: ${before:-none} -> ${after:-none}"
-        env:
-          GH_TOKEN: ${{ github.token }}
-      - name: dispatch deploy with release version
-        if: steps.rel.outputs.after != steps.rel.outputs.before
-        run: gh workflow run deploy.yml --ref main -f semver="$AFTER"
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AFTER: ${{ steps.rel.outputs.after }}
+          if [ "$after" = "$before" ]; then
+            echo "no release-worthy commits; no tag, no image build"
+            exit 0
+          fi
+          if [ "$OMP_PAT_SET" = "true" ]; then
+            echo "tag $after pushed with OMP_PAT; images.yml fires on the tag event"
+          else
+            echo "WARNING: OMP_PAT not set — token tag pushes do not trigger tag workflows; using explicit dispatch as fallback" >&2
+            gh workflow run images.yml --ref "$after"
+            echo "dispatched images.yml for $after"
+          fi

@@ -223,7 +223,7 @@ jobs:
   web-test:
     name: web-test (vp test)
     needs: [changed, tier1, lint]
-    if: needs.changed.outputs.web == 'true'
+    if: always() && needs.changed.outputs.web == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -256,7 +256,7 @@ jobs:
     # container convention as the backend gates) and parses every live
     # response/SSE event against contract/zod.
     needs: [changed, tier1, lint]
-    if: needs.changed.outputs.web == 'true'
+    if: always() && needs.changed.outputs.web == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:

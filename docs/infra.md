@@ -108,12 +108,41 @@ Policy:
   whose lock entry is unchanged for a component leaves that Deployment
   untouched: a backend-only merge rolls only the backend pod, and a chart-only
   merge rolls neither. Soak and maintenance windows shrink accordingly.
-- **Repo semver stays the release audit trail** (vX.Y.Z tags, GitHub Releases,
-  `images.*.tag` + rollout annotations). Release deploys re-stamp the recorded
-  digests with the semver tag (`crane tag`); the digest remains what actually
-  runs.
+- **Releases are TAGS, nothing else.** `release.yml` (on every push to main)
+  cuts the `vX.Y.Z` tag from conventional commits — no changelog file, no GitHub
+  Release; git log IS the changelog. The tag is pushed with the `OMP_PAT` secret
+  (a GITHUB_TOKEN push does not trigger tag workflows), so the tag event itself
+  fires `images.yml`, which builds from the tag's commit, tags the images
+  `vX.Y.Z` + digest, and updates the lock — version -> image is causal, and a
+  version can never strand without its images. If `OMP_PAT` is unset,
+  release.yml falls back to explicitly dispatching `images.yml` for the tag
+  (with a loud warning).
+- **`main` rolling guard.** Pushes touching `backend/**` or `web/**` also build
+  the `main` rolling tag + lock update without a semver — src-touching commits
+  that strict conventional rules don't bump still get fresh images.
+- **GHCR retention.** After every images build and nightly (`ghcr-prune.yml`),
+  `task image:prune` keeps the `main` tag + the last 10 `vX.Y.Z` tags per
+  package and prunes the rest; digests pinned by `images.lock.json` are verified
+  protected before any deletion, and untagged versions are kept (their digest
+  can't be verified against the pin).
 - **tofu is decoupled** on its own `infra/**` paths (apply/destroy/ recreate
   workflows); `deploy.yml` only runs the harmless state-settle refresh.
+
+### OMP_PAT secret (one-time, user-added)
+
+`release.yml` needs a fine-grained personal access token named `OMP_PAT`:
+
+1. GitHub → Settings → Developer settings → Personal access tokens →
+   **Fine-grained tokens** → Generate new token.
+2. Repository access: **Only select repositories** →
+   `vreid/idol-appreciation.club`.
+3. Permissions: **Contents: Read and write** — nothing else.
+4. Expiration: at most 1 year.
+5. Repo → Settings → Secrets and variables → **Actions** → New repository secret
+   → name `OMP_PAT`, value = the token.
+
+Without it, releases still work via the explicit-dispatch fallback; with it, the
+tag push triggers the image build directly on the tag event.
 
 ## Destroy / recreate runbook
 

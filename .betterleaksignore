@@ -59,3 +59,11 @@ backend/tests/integration.rs:generic-password:565
 # password) — working-tree entries required again. Regenerate per
 # .betterleaks.toml.
 web/test/contract/contract.test.ts:generic-password:163
+
+# Bulk-image-import branch (791cc80) carries deploy/reseed-job.yaml — a
+# k8s Secret TEMPLATE for the reseed Job whose values are self-labeled
+# placeholders ("pw-reseed-admin-user" / "pw-reseed-admin-pw-replace-
+# before-apply"); the real credential is injected at apply time. Verified
+# fixture, not a leak. Git fingerprint is commit-pinned (immutable);
+# regenerate per .betterleaks.toml if the placeholder ever changes.
+791cc80b6cc1cd83446ec7b0828846866a9958c0:deploy/reseed-job.yaml:generic-password:60

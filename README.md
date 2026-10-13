@@ -11,5 +11,7 @@ front of a Kubernetes LoadBalancer.
 - `web/` — Vite + Svelte frontend
 - `tofu/` — OpenTofu infrastructure (cluster, PostgreSQL, object storage)
 - `deploy/` — Kubernetes manifests for the `idol` namespace
+- `scripts/` — operational helpers (DNS sync, admin bootstrap, credential
+  retrieval)
 - `.github/workflows/` — CI, infra apply/destroy/recreate, deploy
 - `docs/infra.md` — infrastructure runbook, costs, destroy/recreate guide

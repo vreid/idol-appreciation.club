@@ -63,7 +63,10 @@ data:
       "$API/kubernetes/$UUID/node-groups/$GROUP" >/dev/null; }
 
     C=$(count)
-    PENDING=$(kubectl get pods -A --field-selector=status.phase=Pending -o json 2>/dev/null \
+    # Only app-namespace pendingness justifies a node: kube-system pods
+    # (coredns topology spread, cilium hostPorts) park Pending on a 1-node
+    # cluster permanently and would pin the group at max forever.
+    PENDING=$(kubectl get pods -n idol --field-selector=status.phase=Pending -o json 2>/dev/null \
       | jq '[.items[] | select(.status.conditions[]? | select(.reason=="Unschedulable"))] | length')
     NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
 

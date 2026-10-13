@@ -6,7 +6,7 @@ use crate::state::App;
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
@@ -17,6 +17,17 @@ use uuid::Uuid;
 /// GET /api/health
 pub async fn health() -> Json<serde_json::Value> {
     Json(json!({ "ok": true }))
+}
+
+/// Prometheus text exposition (format 0.0.4). Public: aggregates only.
+pub async fn metrics(State(state): State<App>) -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        crate::metrics::render(&state.pool),
+    )
 }
 
 fn parse_param<T: std::str::FromStr>(params: &HashMap<String, String>, name: &str) -> AppResult<T> {

@@ -279,17 +279,35 @@ jobs:
           # UpCloud may rotate managed-DB user passwords after the provider
           # creates them, so trust the API, not tofu state, for the app user's
           # password. Host/port stay from tofu output.
-          dbuuid="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" https://api.upcloud.com/1.3/database | jq -r '([.database_services[]?] // .) | map(select(.name == "idol-canvas-db")) | .[0].uuid')"
+          dbuuid="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" https://api.upcloud.com/1.3/database | jq -r 'if type == "array" then . else [.database_services[]?] end | map(select(.name == "idol-canvas-db")) | .[0].uuid')"
+          test -n "$dbuuid" || { echo "database service not found via API" >&2; exit 1; }
           apppw="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/database/$dbuuid/users" | jq -r '(.users // .)[] | select(.username == "app") | .password')"
           test -n "$apppw" || { echo "app user password not found via API" >&2; exit 1; }
           db="$(printf '%s' "$db" | sed -E "s|//[^@]+@|//app:$apppw@|")"
+          # Object storage: trust the UpCloud API, not tofu state. The
+          # provider can record a different endpoint or user key than the
+          # service actually gets (seen on recreate), so fetch both from the
+          # API, rotate the app user's access key, and refuse to ship an
+          # endpoint that does not resolve.
+          osuuid="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" https://api.upcloud.com/1.3/object-storage-2 | jq -r 'if type == "array" then . else [.object_storages[]?] end | map(select(.name == "idol-canvas-objsto")) | .[0].uuid')"
+          test -n "$osuuid" || { echo "object storage not found via API" >&2; exit 1; }
+          oshost="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/object-storage-2/$osuuid" | jq -r '.endpoints[0].domain_name')"
+          test -n "$oshost" || { echo "objsto endpoint missing from API" >&2; exit 1; }
+          dig +short "$oshost" | grep -qE '^[0-9]+\.' || { echo "objsto endpoint $oshost does not resolve" >&2; exit 1; }
+          newkey="$(curl -sfc -X POST -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys")"
+          sak="$(printf '%s' "$newkey" | jq -r .access_key_id)"
+          ssk="$(printf '%s' "$newkey" | jq -r .secret_access_key)"
+          test -n "$ssk" || { echo "access key creation failed" >&2; exit 1; }
+          curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" | jq -r '.[] | select(.access_key_id != "'"$sak"'") | .access_key_id' | while read -r old; do
+            curl -sfc -X DELETE -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" >/dev/null
+          done
           # prod registration closed until an admin approves the account
           kubectl -n idol create secret generic app-env \
             --from-literal="DATABASE_URL=$db" \
-            --from-literal="S3_ENDPOINT=$ep" \
+            --from-literal="S3_ENDPOINT=https://$oshost" \
             --from-literal="S3_BUCKET=$(tofu output -raw s3_bucket)" \
-            --from-literal="S3_ACCESS_KEY_ID=$(tofu output -raw s3_access_key_id)" \
-            --from-literal="S3_SECRET_ACCESS_KEY=$(tofu output -raw s3_secret_access_key)" \
+            --from-literal="S3_ACCESS_KEY_ID=$sak" \
+            --from-literal="S3_SECRET_ACCESS_KEY=$ssk" \
             --from-literal="REGISTRATION_APPROVAL_REQUIRED=true" \
             --dry-run=client -o yaml | kubectl apply -f -
           # secret-only changes do not restart pods; the S3 key rotation

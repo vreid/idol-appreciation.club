@@ -69,6 +69,17 @@ resource "upcloud_managed_database_postgresql" "this" {
   zone  = var.zone
   title = "idol-appreciation.club PostgreSQL"
 
+  # Attach the DB to the cluster's private network: worker nodes reach it via
+  # 100.125.x/SDN+private routing. The public service address (10.33.x service
+  # space) stopped being reachable after the first node replacement, so the
+  # attachment is declared here and must stay.
+  network {
+    name   = upcloud_network.k8s.name
+    uuid   = upcloud_network.k8s.id
+    family = "IPv4"
+    type   = "private"
+  }
+
   # plan is deprecated for PostgreSQL; plan_compute takes the new
   # rdb.* shape names. Smallest development shape = 1 vCPU / 1 GiB,
   # single node, 10 GiB storage, "mini" backup tier.

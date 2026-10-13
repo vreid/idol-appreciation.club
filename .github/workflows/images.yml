@@ -1,0 +1,149 @@
+name: images
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: images
+  cancel-in-progress: false
+
+# Builds only what changed since a component's last recorded build, then
+# records component -> {digest, mergeSha} into images.lock.json via an
+# auto-merge PR. deploy.yml consumes that file; it builds nothing.
+# Repo semver (vX.Y.Z tags/releases) remains the release audit trail;
+# digests stay the deploy source of truth.
+jobs:
+  images:
+    name: build changed images
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      backend: ${{ steps.backend.outputs.digest }}
+      web: ${{ steps.web.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          # full history: the plan step diffs each component against its
+          # last recorded build commit
+          fetch-depth: 0
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+
+      - name: plan (which components changed since their last build)
+        id: plan
+        run: |
+          set -euo pipefail
+          b_sha="$(jq -r '.backend.mergeSha // empty' images.lock.json)"
+          w_sha="$(jq -r '.web.mergeSha // empty' images.lock.json)"
+          backend=false
+          web=false
+          if [ -z "$b_sha" ] || [ -n "$(git diff --name-only "$b_sha" HEAD -- backend)" ]; then
+            backend=true
+          fi
+          if [ -z "$w_sha" ] || [ -n "$(git diff --name-only "$w_sha" HEAD -- web)" ]; then
+            web=true
+          fi
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          echo "backend changed: $backend; web changed: $web"
+
+      - name: docker login ghcr.io
+        if: steps.plan.outputs.backend == 'true' || steps.plan.outputs.web == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+        with:
+          cache-binary: false
+        if: steps.plan.outputs.backend == 'true' || steps.plan.outputs.web == 'true'
+
+      - name: build and push backend image
+        id: backend
+        if: steps.plan.outputs.backend == 'true'
+        run: echo "digest=$(task image:backend | tail -1)" >> "$GITHUB_OUTPUT"
+        env:
+          BACKEND_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:main
+
+      - name: build and push web image
+        id: web
+        if: steps.plan.outputs.web == 'true'
+        run: echo "digest=$(task image:web | tail -1)" >> "$GITHUB_OUTPUT"
+        env:
+          WEB_IMAGE: ghcr.io/vreid/idol-appreciation.club-web:main
+
+  lock:
+    name: record digests (auto-merge PR)
+    needs: images
+    if: >-
+      always() && !failure() && !cancelled() &&
+      (needs.images.outputs.backend != '' || needs.images.outputs.web != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # the bot pushes its branch with the job-scoped GITHUB_TOKEN
+          persist-credentials: true
+      - name: update images.lock.json
+        run: |
+          set -euo pipefail
+          b="${{ needs.images.outputs.backend }}"
+          w="${{ needs.images.outputs.web }}"
+          sha="${{ github.sha }}"
+          tmp="$(mktemp)"
+          jq --arg b "$b" --arg w "$w" --arg sha "$sha" '
+            if $b != "" then .backend.digest = $b | .backend.mergeSha = $sha else . end
+            | if $w != "" then .web.digest = $w | .web.mergeSha = $sha else . end
+          ' images.lock.json > "$tmp"
+          # never write a lock missing either digest
+          jq -e '(.backend.digest | type == "string" and startswith("sha256:")) and (.web.digest | type == "string" and startswith("sha256:"))' "$tmp" > /dev/null
+          mv "$tmp" images.lock.json
+          if git diff --quiet -- images.lock.json; then
+            echo "lock unchanged; nothing to record"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git --no-pager diff -- images.lock.json
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+        id: lockfile
+      - name: push branch and open/update auto-merge PR
+        if: steps.lockfile.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "idol-images-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B bot/image-versions
+          git add images.lock.json
+          git commit -m "chore(images): update digests"
+          git push --force origin HEAD:refs/heads/bot/image-versions
+          body="$(mktemp)"
+          {
+            echo "Automated image digest update from run ${{ github.run_id }}."
+            echo
+            echo '```'
+            jq -r '"backend  \(.backend.digest)  \(.backend.mergeSha[0:7])", "web      \(.web.digest)  \(.web.mergeSha[0:7])"' images.lock.json
+            echo '```'
+            echo
+            echo "Squash-merges automatically once checks are green; the merge triggers deploy (images.lock.json consumer)."
+          } > "$body"
+          gh pr create --head bot/image-versions --base main \
+            --title "chore(images): update digests" \
+            --body-file "$body" --squash --auto \
+            || echo "PR for bot/image-versions already open; branch updated in place"
+        env:
+          GH_TOKEN: ${{ github.token }}

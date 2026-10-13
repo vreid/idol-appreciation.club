@@ -4,7 +4,14 @@
 # main ref (never a PR ref), and consumes no artifacts or event payload
 # from the triggering run, so the dangerous-triggers heuristic does not
 # apply here.
+#
+# images.yml uses the same pattern (workflow_run as a CI-success gate for
+# image builds on main): default-branch context, trusted main ref only,
+# no artifacts or payload consumed.
 paths:
   ".github/workflows/release.yml":
+    ignore:
+      - dangerous-triggers
+  ".github/workflows/images.yml":
     ignore:
       - dangerous-triggers

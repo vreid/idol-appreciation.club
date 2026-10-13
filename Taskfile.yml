@@ -96,64 +96,34 @@ tasks:
       - |
         set -euo pipefail
         test -n "$GH_TOKEN" || { echo "GH_TOKEN required" >&2; exit 1; }
+        echo "$GH_TOKEN" | crane auth login ghcr.io -u "${GITHUB_ACTOR:-vreid}" --password-stdin > /dev/null
         keep_ver=10
-        api="https://api.github.com"
-        reg="https://ghcr.io/v2"
         for pkg in backend web; do
+          repo="ghcr.io/vreid/idol-appreciation.club-$pkg"
           lock_digest="$(jq -r ".${pkg}.digest" images.lock.json)"
-          : > "/tmp/prune-$pkg.jsonl"
-          page=1
-          while :; do
-            resp="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-              "$api/user/packages/container/idol-appreciation.club-$pkg/versions?per_page=100&page=$page")"
-            n="$(jq 'length' <<< "$resp")"
-            [ "$n" -gt 0 ] || break
-            jq -c '.[]' <<< "$resp" >> "/tmp/prune-$pkg.jsonl"
-            [ "$n" -eq 100 ] || break
-            page=$((page + 1))
-          done
-          keep_tags="$(jq -r '.metadata.container.tags[]' "/tmp/prune-$pkg.jsonl" \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -uV | tail -n "$keep_ver")"
+          # Registry API via crane: the /user/packages management REST API
+          # 403s for user-owned packages under GITHUB_TOKEN, but the
+          # registry endpoints work with packages:write. Deletions are by
+          # DIGEST (removes every tag on that manifest), so the keep-set
+          # is computed on digests — an old version tag sharing a digest
+          # with a kept tag survives with it.
+          mapfile -t tags < <(crane ls "$repo" | sort -uV)
+          declare -A digests=()
+          for t in "${tags[@]}"; do digests["$t"]="$(crane digest "$repo:$t")"; done
+          mapfile -t keep_ver_tags < <(printf '%s\n' "${tags[@]}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n "$keep_ver")
+          declare -A keep=()
+          for t in main "${keep_ver_tags[@]}"; do keep["${digests[$t]}"]=1; done
+          keep["$lock_digest"]=1
           kept=0; pruned=0
-          while IFS= read -r row; do
-            vid="$(jq -r .id <<< "$row")"
-            tags="$(jq -r 'if (.metadata.container.tags | length) > 0 then (.metadata.container.tags | join(",")) else "(untagged)" end' <<< "$row")"
-            # Never prune: the main rolling tag, the newest 10 version
-            # tags, untagged versions (their digest cannot be verified
-            # against the lock pin via a tag reference — keep and count
-            # them), and — asserted, not assumed — any version whose
-            # manifest digest is the one images.lock.json pins (deploy pin).
-            keep=false
-            case ",$tags," in
-              *,main,*) keep=true ;;
-            esac
-            if [ "$tags" = "(untagged)" ]; then
-              keep=true
-              untagged=$((untagged + 1))
-            fi
-            for t in $keep_tags; do
-              case ",$tags," in *,"$t",*) keep=true ;; esac
-            done
-            if ! $keep; then
-              d="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-                -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
-                "$reg/vreid/idol-appreciation.club-$pkg/manifests/$(echo "$tags" | cut -d, -f1)" \
-                -o /dev/null -D - | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}')"
-              [ "$d" = "$lock_digest" ] && keep=true
-            fi
-            if $keep; then
+          for t in "${tags[@]}"; do
+            if [ -n "${keep[${digests[$t]}]:-}" ]; then
               kept=$((kept + 1))
             else
-              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                "$api/user/packages/container/idol-appreciation.club-$pkg/versions/$vid")"
-              case "$code" in
-                204) pruned=$((pruned + 1)); echo "$pkg: pruned version $vid ($tags)" ;;
-                *) echo "$pkg: prune of version $vid ($tags) returned HTTP $code; failing" >&2; exit 1 ;;
-              esac
+              crane delete "$repo:${digests[$t]}" \
+                && pruned=$((pruned + 1)) && echo "$pkg: pruned $t (${digests[$t]:0:19})"
             fi
-          done < "/tmp/prune-$pkg.jsonl"
-          echo "$pkg: kept $kept, pruned $pruned (lock pin $lock_digest protected)"
+          done
+          echo "$pkg: kept $kept, pruned $pruned (lock pin ${lock_digest:0:19} protected)"
         done
 
   lint:workflows:

@@ -26,6 +26,10 @@ pub fn router(state: App) -> Router {
             "/api/admin/accounts/{username}/approve",
             post(api::admin_approve),
         )
+        .route(
+            "/api/admin/accounts/{username}/cooldown-exempt",
+            post(api::admin_cooldown_exempt),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(max_body))
         .with_state(state.clone());
     api.fallback(|req: axum::http::Request<axum::body::Body>| async move {

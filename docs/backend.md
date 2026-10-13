@@ -171,6 +171,13 @@ admin; a partial unique index makes "exactly one admin" race-free (loser retries
 as a normal account). Trade-off: logout can only clear the cookie — a presented
 token stays valid until expiry (no session store).
 
+Admins can also grant a per-account **cooldown exemption**
+(`POST /api/admin/accounts/{username}/cooldown-exempt` with `{"exempt": bool}`,
+`204` idempotent, `404` unknown, `403` non-admin; the flag shows in
+`GET /api/admin/accounts` as `cooldown_exempt`): exempt accounts skip both
+cooldowns entirely (no `429` path) — intended for seeding/service accounts,
+everyone else unchanged.
+
 Registration approval gate (external signups only; local development is
 unaffected): when `REGISTRATION_APPROVAL_REQUIRED=true`, new accounts start
 unapproved — register answers `201 {username, pending: true}` with NO session

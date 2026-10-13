@@ -113,3 +113,43 @@ test("@full place flow: place, near, cooldown 429, center shape", async ({
     "all_time must be an array",
   ).toBe(true);
 });
+
+test("@full center tile serves real content, not the empty placeholder", async ({
+  page,
+}) => {
+  test.skip(!healthy, SKIP_UNHEALTHY);
+  // Collect every tile response the map makes while booting (the initial
+  // view is z16 centered on 0/0) and after the explicit jump.
+  const tiles: { url: string; etag: string; length: number }[] = [];
+  page.on("response", (res) => {
+    const url = res.url();
+    if (!url.includes("/api/tiles/16/")) return;
+    tiles.push({
+      url,
+      etag: res.headers()["etag"] ?? "",
+      length: Number(res.headers()["content-length"] ?? "-1"),
+    });
+  });
+  await page.goto("/");
+  await page.waitForSelector(".leaflet-container");
+  await page.getByRole("button", { name: "⌖ Jump to 0/0" }).click();
+  await page.waitForTimeout(2000);
+
+  // Server formula: the z16 centre tile index for worldPx 134217728 is
+  // floor(134217728 / (256 * 2^4)) = 32768 — the 2x2 around it covers
+  // 32767..32768 per axis.
+  const requested = tiles.filter((t) =>
+    /\/api\/tiles\/16\/3276[78]\/3276[78]\.webp$/u.test(t.url),
+  );
+  expect(
+    requested.length,
+    "the map must request the z16 centre tiles per the server formula",
+  ).toBeGreaterThan(0);
+  const placeholder = requested.find(
+    (t) => t.etag.replaceAll('"', "") === "0" || t.length === 394,
+  );
+  expect(
+    placeholder,
+    "centre tiles must carry real image content, not the 394B etag-0 placeholder",
+  ).toBeUndefined();
+});

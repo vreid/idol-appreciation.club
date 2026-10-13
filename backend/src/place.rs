@@ -109,6 +109,7 @@ pub async fn place(
     Authed(account_id): Authed,
     mp: Multipart,
 ) -> AppResult<Response> {
+    let t0 = std::time::Instant::now();
     let (image_bytes, x, y, size, rot) = read_multipart(&app, mp).await?;
     if image_bytes.is_empty() {
         return Err(AppError::BadRequest("empty image"));
@@ -237,6 +238,7 @@ pub async fn place(
     // Paint chunks before the row commits: tiles/ETags advance only when
     // the rasters already show the placement.
     crate::chunks::composite_placement(&app, aabb, rot, derivative_bytes).await?;
+    crate::metrics::chunk_composited();
 
     let duplicate_count: (i64,) = sqlx::query_as(
         "SELECT count(*) FROM placements
@@ -286,6 +288,7 @@ pub async fn place(
         .await?;
     tx.commit().await?;
 
+    crate::metrics::place_done(t0.elapsed());
     let resp = (
         axum::http::StatusCode::CREATED,
         Json(json!({

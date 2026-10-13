@@ -139,17 +139,22 @@ fn tile_bytes<'a>(
     Box::pin(tile_bytes_inner(app, z, x, y))
 }
 
+// Records its resolution path (hit_mem / hit_s3 / render / empty) into
+// metrics on every success return, including recursive child resolutions.
 async fn tile_bytes_inner(app: &App, z: i64, x: i64, y: i64) -> AppResult<(Bytes, i64)> {
+    let t0 = std::time::Instant::now();
     let seq = max_seq_covering(app, tile_bounds(z, x, y)).await?;
     // Empty region: constant paper tile, no recursion, no storage writes.
     if seq == 0 {
         let bytes = tokio::task::spawn_blocking(empty_tile_bytes)
             .await
             .map_err(internal)??;
+        crate::metrics::tile_done(crate::metrics::tile_outcome("empty"), t0.elapsed());
         return Ok((Bytes::from(bytes), 0));
     }
     let key: CacheKey = (z, x, y, seq);
     if let Some(bytes) = app.tile_cache.get(z, key) {
+        crate::metrics::tile_done(crate::metrics::tile_outcome("hit_mem"), t0.elapsed());
         return Ok((bytes, seq));
     }
     // Serialize renders per tile so concurrent misses don't duplicate work.
@@ -157,6 +162,7 @@ async fn tile_bytes_inner(app: &App, z: i64, x: i64, y: i64) -> AppResult<(Bytes
     let _guard = app.tile_locks.lock_sorted(&[lock_key]).await;
     // Another request may have rendered this exact seq while we waited.
     if let Some(bytes) = app.tile_cache.get(z, key) {
+        crate::metrics::tile_done(crate::metrics::tile_outcome("hit_mem"), t0.elapsed());
         return Ok((bytes, seq));
     }
     let object_key = tile_key(z, x, y);
@@ -171,6 +177,7 @@ async fn tile_bytes_inner(app: &App, z: i64, x: i64, y: i64) -> AppResult<(Bytes
         if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
             let bytes = Bytes::from(bytes);
             app.tile_cache.put(z, key, bytes.clone());
+            crate::metrics::tile_done(crate::metrics::tile_outcome("hit_s3"), t0.elapsed());
             return Ok((bytes, seq));
         }
     }

@@ -188,6 +188,27 @@ tokio broadcast channel; SSE handlers subscribe. Payloads:
 `{"type":"place","seq":N,"bbox":[x,y,w,h]}` and
 `{"type":"remove","id":"…","bbox":[x,y,w,h]}`. Keepalive comments every 15 s.
 
+## Metrics
+
+`GET /api/metrics` serves Prometheus text format (version 0.0.4), public,
+aggregates only. Hand-rolled (`src/metrics.rs`) instead of the
+`metrics`/`prometheus` crates: the series set is small and fixed, so every
+series is a pre-created atomic (no registry, no locks on the hot path) and
+`render` is a pure formatting walk. Series:
+
+- `place_requests_total`, `place_duration_seconds` histogram — full placement
+  pipeline (multipart through NOTIFY), 201s only.
+- `tile_requests_total{outcome=hit_mem|hit_s3|render|empty}` +
+  `tile_duration_seconds{outcome}` histograms — counts every tile resolution
+  including parent-tile child fetches, not just HTTP GETs.
+- `s3_ops_total{op=get|put,ok=true|false}` + `s3_duration_seconds{op}`.
+- `chunk_composites_total` — chunk alpha-composites while placing.
+- `db_pool_connections{state=idle|in_use}` gauges from sqlx (`num_idle()` /
+  `size()`).
+
+The exposition format is unit-tested by parsing it back (TYPE lines, label
+syntax, ascending `le` buckets, `+Inf` == `_count`).
+
 ## Auth
 
 Stateless HMAC-SHA256 cookie `session=<b64(payload)>.<b64(sig)>`, payload

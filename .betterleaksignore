@@ -52,7 +52,7 @@ backend/tests/integration.rs:generic-password:51
 backend/tests/integration.rs:generic-password:63
 backend/tests/integration.rs:generic-password:574
 backend/tests/integration.rs:generic-password:585
-backend/tests/integration.rs:generic-password:1080
+backend/tests/integration.rs:generic-password:1197
 
 # 3700663 (Solid frontend rewrite, since replaced) briefly carried
 # AuthPopover.tsx + web/test/contract/contract.test.ts: one finding is UI
@@ -95,4 +95,4 @@ web/test/contract/contract.test.ts:generic-password:163
 # (asserts 401/429); CI's fetch-depth:0 pulls every branch ref, so its
 # fingerprint trips the git scan from ANY PR. Both verified non-secrets.
 d0da54d0ad5ad5da42ea4e9713fc9c338a901532:deploy/reseed-job.yaml:generic-password:60
-18dffef80fb98dc31cd2086768ed7d3b6c91dfea:backend/tests/integration.rs:generic-password:1080
+18dffef80fb98dc31cd2086768ed7d3b6c91dfea:backend/tests/integration.rs:generic-password:1197

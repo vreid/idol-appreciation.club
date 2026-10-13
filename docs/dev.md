@@ -19,6 +19,9 @@ once per shell so those tools (and the right node/pnpm) resolve:
 eval "$(mise activate bash)"  # or zsh/fish equivalents
 ```
 
+GitHub Actions workflows run these same tasks via `jdx/mise-action` — CI and
+local share one entrypoint set.
+
 ## Who owns which version
 
 | Tool                                  | Pinned in                                   |

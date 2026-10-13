@@ -327,6 +327,7 @@ jobs:
             --from-literal="S3_ACCESS_KEY_ID=$sak" \
             --from-literal="S3_SECRET_ACCESS_KEY=$ssk" \
             --from-literal="REGISTRATION_APPROVAL_REQUIRED=true" \
+            --from-literal="SESSION_SECRET=$SESSION_SECRET" \
             --dry-run=client -o yaml | kubectl apply -f -
           # secret-only changes do not restart pods; the S3 key rotation
           # above would leave running backends on a deleted key

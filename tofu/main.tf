@@ -62,13 +62,16 @@ resource "upcloud_kubernetes_node_group" "this" {
   # meta-argument — it CLONES this resource once per integer and rolls
   # every node. The provider attribute is node_count; never write count.
   #
-  # DRIFT: once the Cluster Autoscaler is enabled, the live count varies
-  # within the bounds and a real `tofu apply` would snap it back to
-  # var.node_count (destroying the extra node). infra-apply only runs
-  # on tofu/** pushes and deploy.yml only refreshes state; before
-  # flipping the chart flag, either raise var.node_count or add
-  # `lifecycle { ignore_changes = [node_count] }`. See docs/infra.md.
+  # DRIFT: the Cluster Autoscaler owns the live count (chart/
+  # clusterAutoscaler), so a real `tofu apply` must never snap it back
+  # to var.node_count — that destroys the scaled-up node. ignore_changes
+  # stays for CA's lifetime; raise capacity via the bounds in
+  # chart/values.yaml, not here. See docs/infra.md "Scaling".
   node_count = var.node_count
+
+  lifecycle {
+    ignore_changes = [node_count]
+  }
 
   labels = {
     project    = "idol-appreciation.club"

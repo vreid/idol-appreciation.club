@@ -85,4 +85,7 @@ clusterAutoscaler:
   minSize: 1
   maxSize: 2
   scaleDownEnabled: true
-  image: ghcr.io/upcloudltd/autoscaler:v1.29.5
+  # Digest pins tag v1.29.5 (verified anonymously pullable from GHCR,
+  # 2026-10-13); a mutable tag is not acceptable for a component that
+  # adds and removes nodes.
+  image: ghcr.io/upcloudltd/autoscaler@sha256:54aa2662c57e58961080436bb27e70c3a9670ec582001ffd36a6573649de35c5

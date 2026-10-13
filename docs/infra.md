@@ -226,18 +226,18 @@ cluster uuid on every deploy, so flipping is a values-only change. Flip notes:
   2026-10-13 node-roll outage: bare `count` in tofu is the meta-argument — it
   clones the node-group resource and rolls every node; the attribute is
   `node_count`.
-- DRIFT: once CA is enabled the live count varies 1..2; a real `tofu apply`
-  (infra-apply) would snap it back to `var.node_count` and destroy the extra
-  node. deploy.yml only refreshes state (`-refresh-only`), so the routine path
-  is safe; before flipping the chart flag, either raise `var.node_count` or add
-  `lifecycle { ignore_changes = [node_count] }`.
+- DRIFT: CA owns the live count, so the node group carries
+  `lifecycle { ignore_changes = [node_count] }` in tofu — a real `tofu apply`
+  (infra-apply) can no longer destroy a scaled-up node. deploy.yml only
+  refreshes state (`-refresh-only`); raise capacity via the CA bounds in
+  `chart/values.yaml`, not `var.node_count`.
 - The `dev-md` control-plane plan caps the cluster at 30 nodes — not a binding
   constraint at max 2.
 
-**Cost**: the worker plan `STARTER-4xCPU-8GB` is ~€14/mo per node
-(hourly-billed), so the autoscaling ceiling adds at most ~€14/mo (2 nodes) over
-today's single node; HPA replicas cost nothing extra until a second node is
-actually needed.
+**Cost**: the worker plan `STARTER-4xCPU-8GB` is €20/mo per node (hourly-billed,
+~€0.03/h; billed hours cap at a 28-day month), so the autoscaling ceiling adds
+at most €20/mo (2 nodes) over today's single node; HPA replicas cost nothing
+extra until a second node is actually needed.
 
 ## Marker removal checklist (do not forget)
 

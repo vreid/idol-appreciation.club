@@ -25,7 +25,9 @@ pub struct Config {
     /// Max decoded pixel count accepted for a placement source image.
     /// Enforced on the image HEADER before any full decode, so tiny but
     /// hugely-dimensioned uploads (decompression bombs) are rejected
-    /// without materializing their pixels.
+    /// without materializing their pixels. Default 64 MPx (256 MiB RGBA):
+    /// 33% headroom over an 8000×6000 (48 MPx) camera source, which must
+    /// keep placing.
     pub max_decode_pixels: u64,
     pub min_size: i64,
     pub max_size: i64,
@@ -92,7 +94,7 @@ impl Config {
             max_upload_bytes: env_or("MAX_UPLOAD_BYTES", "10485760")
                 .parse()
                 .expect("invalid MAX_UPLOAD_BYTES"),
-            max_decode_pixels: env_or("MAX_DECODE_PIXELS", "16777216")
+            max_decode_pixels: env_or("MAX_DECODE_PIXELS", "67108864")
                 .parse()
                 .expect("invalid MAX_DECODE_PIXELS"),
             min_size: env_or("MIN_SIZE", "16").parse().expect("invalid MIN_SIZE"),

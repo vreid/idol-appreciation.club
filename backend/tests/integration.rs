@@ -148,7 +148,10 @@ async fn place_validation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn place_and_cooldowns() {
-    let server = start_server(2, 1, 10 * 1024 * 1024).await;
+    // 8s paint window: strict enough that the early 429 asserts are
+    // deterministic, long enough to survive full-suite CPU load (a 2s
+    // window could lapse while a 48 MPx decode runs next door).
+    let server = start_server(8, 1, 10 * 1024 * 1024).await;
     let img = png(32, 32);
     let cookie = register(&server, "painter").await;
     let x = 1 << 20; // 1048576, 256- and 1024-aligned
@@ -1027,6 +1030,18 @@ async fn max_long_edge_is_4096() {
 // -------------------------------------------------------------------------
 // Hardening: decoded-pixel budget and login throttling
 
+/// An 8000x6000 (48 MPx) camera source keeps placing under the default
+/// budget (64 MPx): the bomb cap must not reject real large photos.
+#[tokio::test]
+async fn place_admits_large_camera_sources() {
+    let server = start_server(0, 0, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "photographer").await;
+    let img = png(8000, 6000);
+    let resp = place(&server, &cookie, &img, 0, 0, 4096).await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+    assert_eq!(resp.json()["w"], 4096);
+}
+
 /// A tiny PNG whose header declares 32768×32768 (1 Gpx, ~4 GiB of RGBA)
 /// must be rejected 413 by the decoded-pixel budget BEFORE any pixel work:
 /// the wire bytes are ~100 bytes, so only the header probe could have
@@ -1046,7 +1061,9 @@ async fn place_decode_budget_rejects_bomb() {
 /// without spending the serialized libvips stage on a doomed decode.
 #[tokio::test]
 async fn place_cooldown_precheck_rejects_before_decode() {
-    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    // 60s empty cooldown: the 429 is deterministic even under full-suite
+    // load (a 1s window can lapse when a 48 MPx decode runs next door).
+    let server = start_server(300, 60, 10 * 1024 * 1024).await;
     let cookie = register(&server, "rapid").await;
     let img = png(32, 32);
     let resp = place_rot(&server, &cookie, &img, 0, 0, 64, None).await;
@@ -1178,7 +1195,8 @@ async fn two_instance_composite_no_lost_update() {
         cooldown_paint_secs: 300,
         cooldown_empty_secs: 1,
         max_upload_bytes: 10 * 1024 * 1024,
-        max_decode_pixels: idol_appreciation_club_backend::img::DEFAULT_MAX_DECODE_PIXELS,
+        // Production default (MAX_DECODE_PIXELS env default): 64 MPx.
+        max_decode_pixels: 67_108_864,
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
@@ -1269,7 +1287,8 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
         cooldown_paint_secs: 300,
         cooldown_empty_secs: 1,
         max_upload_bytes: 10 * 1024 * 1024,
-        max_decode_pixels: idol_appreciation_club_backend::img::DEFAULT_MAX_DECODE_PIXELS,
+        // Production default (MAX_DECODE_PIXELS env default): 64 MPx.
+        max_decode_pixels: 67_108_864,
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,

@@ -20,13 +20,16 @@ domain: idol-appreciation.club
 backend:
   registrationApprovalRequired: true
   replicaCount: 1
+  # Limits raised after OOMKilled (exit 137) under concurrent placement
+  # load: libvips tile decoding spikes well past 1.5Gi with 6 placements
+  # in flight.
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 500m
+      memory: 512Mi
     limits:
-      cpu: 1500m
-      memory: 1536Mi
+      cpu: 4
+      memory: 2Gi
 
 web:
   # false = bootstrap: placeholder Deployment+Service become a plain-HTTP

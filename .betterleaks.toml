@@ -1,0 +1,35 @@
+title = "idol-appreciation.club secret scan"
+description = """
+Hard-gate secret scanning config (git history + filesystem scan).
+Passed explicitly with --config .betterleaks.toml (v1 would also
+auto-discover this file at the scan root).
+"""
+
+# Inherit the built-in detection rules; add repo-specific path exclusions on
+# top (global prefilters are additive when extending).
+[extend]
+useDefault = true
+
+# Skip generated fixtures, dependency and build trees before regex matching.
+# Applies to both filesystem and git-history scans; paths are relative to the
+# scan root.
+prefilter = '''
+matchesAny(attributes["path"] ?? "", [
+    `(^|/)\.git/`,
+    `(^|/)node_modules/`,
+    `(^|/)target/`,
+    `(^|/)dist/`,
+    `^test-assets/idols/`,
+])
+'''
+
+# Known test fixtures that appear in this public repo by design (unit/e2e/
+# smoke bot-account passwords and a localhost example URI in docs) are
+# allowlisted in .betterleaksignore by finding fingerprint — the values never
+# appear in any config file. Regenerate after intentional fixture changes:
+#   betterleaks git . -c .betterleaks.toml --report-format json \
+#     --report-path - | jq -r '.[].Fingerprint' >> .betterleaksignore
+#   betterleaks dir . -c .betterleaks.toml --report-format json \
+#     --report-path - | jq -r '.[].Fingerprint' >> .betterleaksignore
+# Only ever fingerprint-allowlist values you have confirmed are fixtures —
+# never real credentials (those require rotation, not allowlisting).

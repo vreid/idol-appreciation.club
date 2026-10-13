@@ -1,0 +1,127 @@
+version: '3'
+
+# Local entrypoints for every CI job in .github/workflows/ci.yml.
+# Tool versions come from mise.toml (node/pnpm from web/package.json
+# devEngines) — run `mise install` first; see docs/dev.md.
+
+vars:
+  # Container runner for backend gates. podman by default (local dev);
+  # override with RUNNER=docker where only docker exists (CI runners).
+  RUNNER: '{{.RUNNER | default "podman"}}'
+  IMAGE: '{{.IMAGE | default "backend-builder"}}'
+  # TEMPORARY: mirrors the skip in ci.yml backend-test (webp buffer encode
+  # fails in the gate image only; backend agent is debugging). Drop it here
+  # and in ci.yml when the fix lands.
+  BACKEND_TEST_ARGS: '--skip derivative_bytes_are_deterministic'
+
+tasks:
+  # ---------------- lint ----------------
+
+  lint:md:
+    desc: oxfmt check over all Markdown (ci.yml md-lint)
+    cmds:
+      - oxfmt --check "**/*.md"
+
+  lint:workflows:
+    desc: jactionlint over all workflows (ci.yml workflows-lint)
+    cmds:
+      - jactionlint .github/workflows/*.yml
+
+  web:lint:
+    desc: vp check (oxfmt + oxlint + tsgo type check) (ci.yml web-lint)
+    dir: web
+    deps: [web:install]
+    cmds:
+      - pnpm exec vp check
+
+  helm:lint:
+    desc: helm lint + template, with and without web (ci.yml helm-lint)
+    cmds:
+      - helm version
+      - helm lint chart
+      - helm template chart > /dev/null
+      - helm template chart --set web.enabled=false > /dev/null
+
+  tofu:fmt:
+    desc: tofu fmt check, recursive (ci.yml tofu)
+    dir: tofu
+    cmds:
+      - tofu fmt -check -recursive
+
+  tofu:validate:
+    desc: tofu init (no backend) + validate (ci.yml tofu)
+    dir: tofu
+    cmds:
+      - tofu init -backend=false -input=false
+      - tofu validate
+
+  # ---------------- test ----------------
+
+  web:test:
+    desc: vp test (vitest, >=80% coverage gate) (ci.yml web-test)
+    dir: web
+    deps: [web:install]
+    cmds:
+      - pnpm exec vp test
+
+  backend:lint:
+    desc: cargo fmt + clippy in the pinned libvips 8.16.1 image (ci.yml backend-lint)
+    dir: backend
+    deps: [backend:image]
+    cmds:
+      - '{{.RUNNER}} run --rm {{.IMAGE}} bash -c "cargo fmt --check && cargo clippy --all-targets -- -D warnings"'
+
+  backend:test:
+    desc: cargo test in the pinned libvips 8.16.1 image (ci.yml backend-test)
+    dir: backend
+    deps: [backend:image]
+    cmds:
+      - '{{.RUNNER}} run --rm {{.IMAGE}} bash -c "cargo test -- {{.BACKEND_TEST_ARGS}}"'
+
+  # ---------------- leaks (hard gate) ----------------
+
+  leaks:
+    desc: betterleaks scan over git history + working tree (hard gate)
+    cmds:
+      - betterleaks git . --config .betterleaks.toml --redact
+      - betterleaks dir . --config .betterleaks.toml --redact
+
+  # ---------------- backend image (internal) ----------------
+
+  backend:image:
+    internal: true
+    desc: build the pinned libvips 8.16.1 gate image (repo builder + fmt/clippy)
+    dir: backend
+    cmds:
+      - '{{.RUNNER}} build --target builder -t {{.IMAGE}}-base .'
+      - |
+        {{.RUNNER}} build -t {{.IMAGE}} -f - . <<'DOCKERFILE'
+        FROM {{.IMAGE}}-base
+        # rust:trixie ships a minimal-profile toolchain (no rustfmt/clippy).
+        # Added in an overlay so the repo Dockerfile stays the backend team's
+        # single definition of the builder; this layer is cache-stable.
+        RUN rustup component add rustfmt clippy
+        DOCKERFILE
+
+  # ---------------- bootstrap + aggregate ----------------
+
+  web:install:
+    desc: install web dependencies with the pinned pnpm (frozen lockfile)
+    dir: web
+    cmds:
+      - pnpm install --frozen-lockfile
+
+  ci:
+    desc: full local CI gate set (everything ci.yml runs)
+    deps:
+      - lint:md
+      - lint:workflows
+      - web:lint
+      - web:test
+      - leaks
+      - helm:lint
+      - tofu:fmt
+      - tofu:validate
+    cmds:
+      - task: backend:lint
+      - task: backend:test

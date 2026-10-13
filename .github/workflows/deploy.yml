@@ -5,10 +5,14 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/workflows/deploy.yml
+      - .github/actions/tofu-setup/**
       - backend/**
+      - chart/**
       - web/**
       - deploy/**
       - scripts/sync-dns.sh
+      - scripts/bootstrap-admin.sh
 
 concurrency:
   group: idol-stack
@@ -194,6 +198,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
+    permissions:
+      contents: read
+      actions: write
     env:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -237,7 +244,7 @@ jobs:
             ARGS+=(--set web.enabled=false)
           fi
           helm upgrade --install idol chart/ \
-            --namespace idol --atomic --wait --timeout 15m \
+            --namespace idol --create-namespace --atomic --wait --timeout 15m \
             --take-ownership \
             --set-string images.backend.digest="${{ needs.backend-build.outputs.digest }}" \
             --set-string images.web.digest="${{ needs.web-build.outputs.digest }}" \
@@ -269,13 +276,14 @@ jobs:
           fi
           db="$(tofu output -raw app_database_uri)"
           test -n "$db" || { echo "app_database_uri missing" >&2; exit 1; }
+          # prod registration closed until an admin approves the account
           kubectl -n idol create secret generic app-env \
             --from-literal="DATABASE_URL=$db" \
             --from-literal="S3_ENDPOINT=$ep" \
             --from-literal="S3_BUCKET=$(tofu output -raw s3_bucket)" \
             --from-literal="S3_ACCESS_KEY_ID=$(tofu output -raw s3_access_key_id)" \
             --from-literal="S3_SECRET_ACCESS_KEY=$(tofu output -raw s3_secret_access_key)" \
-            --from-literal="SESSION_SECRET=${SESSION_SECRET}" \
+            --from-literal="REGISTRATION_APPROVAL_REQUIRED=true" \
             --dry-run=client -o yaml | kubectl apply -f -
         env:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}

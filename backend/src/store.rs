@@ -5,6 +5,7 @@ use crate::config::Config;
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, PutMode, PutPayload};
 use std::sync::Arc;
+use std::time::Instant;
 
 pub type Store = Arc<dyn ObjectStore>;
 
@@ -65,14 +66,17 @@ pub async fn get_bytes(
     store: &Store,
     raw_key: &str,
 ) -> Result<Option<Vec<u8>>, crate::error::AppError> {
-    match store.get(&key(raw_key)).await {
+    let t0 = Instant::now();
+    let res = match store.get(&key(raw_key)).await {
         Ok(resp) => {
             let bytes = resp.bytes().await.map_err(crate::error::internal)?;
             Ok(Some(bytes.to_vec()))
         }
         Err(object_store::Error::NotFound { .. }) => Ok(None),
         Err(e) => Err(e.into()),
-    }
+    };
+    crate::metrics::s3_done(0, res.is_ok(), t0.elapsed());
+    res
 }
 
 pub async fn put(
@@ -80,9 +84,12 @@ pub async fn put(
     raw_key: &str,
     bytes: Vec<u8>,
 ) -> Result<(), crate::error::AppError> {
-    store
+    let t0 = Instant::now();
+    let res: Result<(), crate::error::AppError> = store
         .put(&key(raw_key), PutPayload::from(bytes))
         .await
         .map(|_| ())
-        .map_err(Into::into)
+        .map_err(Into::into);
+    crate::metrics::s3_done(1, res.is_ok(), t0.elapsed());
+    res
 }

@@ -10,6 +10,7 @@ pub mod error;
 pub mod events;
 pub mod handlers;
 pub mod img;
+pub mod metrics;
 pub mod place;
 pub mod router;
 pub mod state;

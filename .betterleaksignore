@@ -34,4 +34,12 @@ docs/backend.md:generic-credential-uri:216
 web/e2e/helpers.ts:generic-password:14
 web/src/lib/api.test.ts:generic-password:76
 web/src/lib/components/AuthPopover.tsx:generic-password:89
-web/test/contract/contract.test.ts:generic-password:126
+
+# feat(web)! PR: fixture passwords verified non-secret — "hunter2hunter2"
+# is the repo's load-test bot password (50684f2), contract.test.ts:161 is
+# the contract-suite bot password. Regenerate per .betterleaks.toml.
+50684f22ed07898f11dadf214caede9e2cfc5efa:backend/tests/common/mod.rs:generic-password:251
+50684f22ed07898f11dadf214caede9e2cfc5efa:backend/scripts/load_tile_swr.sh:generic-password:69
+50684f22ed07898f11dadf214caede9e2cfc5efa:backend/scripts/load_tile_swr.sh:generic-password:71
+3700663d1f7b383325c67d6bf9cece37d41f2d1a:web/test/contract/contract.test.ts:generic-password:161
+web/test/contract/contract.test.ts:generic-password:161

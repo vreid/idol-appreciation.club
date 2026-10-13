@@ -8,11 +8,13 @@
  *   screenX = lng * 256 * 2^zoom
  *   screenY = -lat * 256 * 2^zoom   (lat grows UP)
  *
- * To render native world px one-to-one at zoom 20 we map:
- *   lng = x / 2^28, lat = -y / 2^28
- * which makes screenX = x * 2^(z-20) and screenY = y * 2^(z-20). The y-flip
- * lives entirely in these two helpers; all other app math stays in native
- * world px.
+ * CRS.Simple projects one lat/lng unit to 2^zoom screen px, so the world must
+ * span 256 units for Leaflet's 256px tile grid to line up with the server:
+ *   lng = x / 2^20, lat = -y / 2^20   (world = 2^20 units = 256 units/side)
+ * gives screenX = x * 2^(z-20), tiles/side = 2^z and therefore
+ *   tileIndex(z) = floor(worldPx / (256 * 2^(20-z)))  — the server formula.
+ * The y-flip lives entirely in these two helpers; all other app math stays in
+ * native world px.
  */
 
 export const WORLD_SIZE = 2 ** 28;
@@ -21,10 +23,13 @@ export const TILE_SIZE = 256;
 export const MIN_ZOOM = 0;
 export const MAX_ZOOM = 20;
 
-/** World extent in LatLng space, y-flip aware: SW [-1, 0], NE [0, 1]. */
+/** The world spans 256 CRS.Simple units: 1 unit = one tile edge at z0. */
+export const WORLD_UNITS = WORLD_SIZE / TILE_SIZE;
+
+/** World extent in LatLng space, y-flip aware: SW [-256, 0], NE [0, 256]. */
 export const WORLD_LAT_LNG_BOUNDS: [[number, number], [number, number]] = [
-  [-1, 0],
-  [0, 1],
+  [-TILE_SIZE, 0],
+  [0, TILE_SIZE],
 ];
 
 /** Screen size (CSS px) of the full world at a given zoom. */
@@ -61,11 +66,20 @@ export interface LatLng {
 
 export function worldToLatLng(x: number, y: number): LatLng {
   // Normalize -0 at the top edge so the exported bounds compare cleanly.
-  return { lat: y === 0 ? 0 : -y / WORLD_SIZE, lng: x / WORLD_SIZE };
+  return { lat: y === 0 ? 0 : -y / WORLD_UNITS, lng: x / WORLD_UNITS };
 }
 
 export function latLngToWorld(lat: number, lng: number): WorldPoint {
-  return { x: lng * WORLD_SIZE, y: lat === 0 ? 0 : -lat * WORLD_SIZE };
+  return { x: lng * WORLD_UNITS, y: lat === 0 ? 0 : -lat * WORLD_UNITS };
+}
+
+/**
+ * Server tile formula: the index of the tile covering native worldPx at the
+ * given zoom — floor(worldPx / (256 * 2^(20-z))). Keep in sync with
+ * GET /api/tiles/{z}/{x}/{y}.webp.
+ */
+export function tileIndexAt(zoom: number, worldPx: number): number {
+  return Math.floor(worldPx / (TILE_SIZE * 2 ** (MAX_ZOOM - zoom)));
 }
 
 /** Screen px per native world px at a given zoom. */

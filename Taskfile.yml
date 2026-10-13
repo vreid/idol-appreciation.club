@@ -273,6 +273,10 @@ tasks:
           || { echo "backend digest missing or empty in $IMAGES_LOCK; refusing to deploy" >&2; exit 1; }
         [ -n "$WEB_DIGEST" ] \
           || { echo "web digest missing or empty in $IMAGES_LOCK; refusing to deploy" >&2; exit 1; }
+        # task runs each cmd in its own shell — hand the digests to the
+        # helm cmd via state files (same pattern as the rotation flag).
+        printf '%s\n' "$BACKEND_DIGEST" > /tmp/deploy-backend-digest
+        printf '%s\n' "$WEB_DIGEST" > /tmp/deploy-web-digest
         # Release deploys stamp the recorded digests with the semver tag in
         # GHCR (audit trail; the digest stays what actually runs).
         if [ -n "$RELEASE_TAG" ]; then
@@ -352,11 +356,22 @@ tasks:
         # every pod up on a live key. There is no window where pods hold
         # deleted keys. Anything other than 200/403 aborts untouched.
         rotate=true
+        # Probe the creds the RUNNING PODS hold (deployment exec), not the
+        # secret: the 38433144837 incident minted fresh creds into the
+        # secret but died before any pod rolled — secret-valid/pod-dead is
+        # exactly the state that must rotate. Fall back to the secret when
+        # no pod is up yet (fresh installs).
         if kubectl -n idol get secret app-env > /dev/null 2>&1; then
-          ak="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ACCESS_KEY_ID}' | base64 -d)"
-          sk="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_SECRET_ACCESS_KEY}' | base64 -d)"
-          pep="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' | base64 -d)"
-          pbucket="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_BUCKET}' | base64 -d)"
+          ak="$(kubectl -n idol exec deployment/backend -- printenv S3_ACCESS_KEY_ID 2>/dev/null || true)"
+          sk="$(kubectl -n idol exec deployment/backend -- printenv S3_SECRET_ACCESS_KEY 2>/dev/null || true)"
+          pep="$(kubectl -n idol exec deployment/backend -- printenv S3_ENDPOINT 2>/dev/null || true)"
+          pbucket="$(kubectl -n idol exec deployment/backend -- printenv S3_BUCKET 2>/dev/null || true)"
+          if [ -z "$ak" ] || [ -z "$sk" ] || [ -z "$pep" ] || [ -z "$pbucket" ]; then
+            ak="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ACCESS_KEY_ID}' | base64 -d)"
+            sk="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_SECRET_ACCESS_KEY}' | base64 -d)"
+            pep="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' | base64 -d)"
+            pbucket="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_BUCKET}' | base64 -d)"
+          fi
           if [ -n "$ak" ] && [ -n "$sk" ] && [ -n "$pep" ] && [ -n "$pbucket" ]; then
             code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
               --aws-sigv4 'aws:amz:us-east-1:s3' -u "$ak:$sk" \
@@ -382,6 +397,13 @@ tasks:
           sak="$(jq -r .access_key_id /tmp/uc5.json)"
           ssk="$(jq -r .secret_access_key /tmp/uc5.json)"
           test -n "$ssk" || { echo "access key creation failed" >&2; exit 1; }
+          # 2-key cap sanity: after delete-all + mint exactly ONE key must
+          # exist — an orphan here means a mint whose value was lost.
+          sleep 3
+          uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc8.json
+          nkeys="$(jq 'length' /tmp/uc8.json)"
+          [ "$nkeys" = "1" ] \
+            || { echo "orphaned access keys after rotation ($nkeys remain): $(jq -r '.[].access_key_id' /tmp/uc8.json | head -3)" >&2; exit 1; }
         else
           sak="$ak"
           ssk="$sk"
@@ -401,6 +423,10 @@ tasks:
       - |
         set -euo pipefail
         cp web/Caddyfile chart/caddy/Caddyfile
+        # Digests were derived and guarded in the first cmd; each task cmd
+        # is its own shell, so read them back from the state files.
+        BACKEND_DIGEST="$(cat /tmp/deploy-backend-digest)"
+        WEB_DIGEST="$(cat /tmp/deploy-web-digest)"
         # Cluster Autoscaler credential — the chart reads it only when
         # clusterAutoscaler.enabled; provisioning it on every deploy
         # keeps that flip a values-only change.

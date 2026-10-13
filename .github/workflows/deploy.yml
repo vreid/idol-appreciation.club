@@ -294,6 +294,7 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
         env:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          UPCLOUD_API_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
 
       - name: Sync DNS to LoadBalancer IP
         run: |

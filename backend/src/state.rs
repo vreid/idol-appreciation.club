@@ -64,6 +64,9 @@ pub struct AppState {
     pub tile_locks: KeyLocks,
     /// Encoded tile bytes keyed by (z, x, y, seq).
     pub tile_cache: crate::tiles::TileCache,
+    /// Bounded background re-render queue (single worker; see
+    /// `tiles::RenderQueue`).
+    pub render_queue: crate::tiles::RenderQueue,
 }
 
 pub type App = Arc<AppState>;

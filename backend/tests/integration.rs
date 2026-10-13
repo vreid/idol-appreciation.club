@@ -529,6 +529,21 @@ async fn near_center_reports() {
     assert_eq!(arr.len(), 2);
     assert_eq!(arr[0]["username"], "holder2");
     assert_eq!(arr[1]["username"], "holder1");
+    // Contract: every row carries its global seq as a positive integer,
+    // descending (newest first).
+    let seqs: Vec<i64> = arr
+        .iter()
+        .map(|row| {
+            let s = row["seq"].as_i64().expect("seq is an integer");
+            assert!(s > 0, "seq must be positive, got {s}");
+            s
+        })
+        .collect();
+    assert_eq!(seqs.len(), 2);
+    assert!(
+        seqs[0] > seqs[1],
+        "seq must be monotonic newest-first: {seqs:?}"
+    );
     // r capped at 65536; garbage → 400.
     assert_eq!(
         request(

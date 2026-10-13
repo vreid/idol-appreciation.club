@@ -183,8 +183,61 @@ Decision record — the committed scale path, in order, when traffic justifies
    Valkey/Redis distributed locks: no second consistency domain, no lock-TTL/tx
    mismatch, no write-path SPOF).
 2. Then validate `backend.replicaCount = 2`.
-3. Managed Valkey (1C/1GB) ONLY if the metrics endpoint shows tile-read p95
+3. Flip the backend HPA (`backend.autoscaling.enabled`, below).
+4. CDN when read traffic dominates (tile GETs are immutable and
+   content-addressed — ideal cache candidates) — before any further compute.
+5. Managed Valkey (1C/1GB) ONLY if the metrics endpoint shows tile-read p95
    dominated by S3-GET latency (role: shared tile LRU across replicas).
+
+### Autoscaling, staged (HPA + node group)
+
+Both halves are wired but **disabled by default**; the flags are values-only
+flips once their gates pass.
+
+**Backend HPA** — `chart/templates/backend-hpa.yaml` behind
+`backend.autoscaling.enabled` (default `false`): min 1 / max 3 replicas, CPU
+target 65%, 5-minute scale-down stabilization (scale-up stays immediate). When
+enabled, the Deployment omits `replicas` so the HPA owns the count. Hard gate:
+the backend is a single writer — PG advisory locks on the chunk path are not
+validated at >1 replica, and auto-scaling a single-writer to 3 replicas is a
+data-ordering bug factory. Flip only AFTER: locks merged (order step 1) →
+`backend.replicaCount = 2` soak-validated (step 2).
+
+Scale-on-noise caveat: cold tile renders and prewarm bursts spike CPU (libvips
+webp decode/encode) for a couple of minutes. A utilization-based HPA will read
+those bursts as load; the 5m stabilization window stops them driving
+down-scales, but scale-UPS fire immediately — expect an occasional replica added
+for a prewarm and judge the 65% target from `/api/metrics`, not the first noisy
+hour.
+
+**Node group** — UpCloud managed Kubernetes has NO native node-group min/max
+autoscaling: the 1.3 API and provider v5.47.0 schema expose only a fixed count
+(`node_count`; API JSON field `count`), so "set max>min" in tofu is impossible.
+Autoscaling is the Kubernetes Cluster Autoscaler (UpCloud's cloud-provider
+build, `ghcr.io/upcloudltd/autoscaler`) running in-cluster: it PATCHes the
+node-group count within `--nodes=<min>:<max>:<nodeGroup>` when pods are pending,
+and scales down idle nodes (~10–15 min default). Shipped as
+`chart/templates/cluster-autoscaler.yaml` behind `clusterAutoscaler.enabled`
+(default `false`), bounds 1..2 on the `default` group. The deploy workflow
+provisions the `upcloud-autoscaler` secret (account token) and passes the
+cluster uuid on every deploy, so flipping is a values-only change. Flip notes:
+
+- tofu's `node_count` stays the floor (1). FIELD-NAME TRAP that caused the
+  2026-10-13 node-roll outage: bare `count` in tofu is the meta-argument — it
+  clones the node-group resource and rolls every node; the attribute is
+  `node_count`.
+- DRIFT: once CA is enabled the live count varies 1..2; a real `tofu apply`
+  (infra-apply) would snap it back to `var.node_count` and destroy the extra
+  node. deploy.yml only refreshes state (`-refresh-only`), so the routine path
+  is safe; before flipping the chart flag, either raise `var.node_count` or add
+  `lifecycle { ignore_changes = [node_count] }`.
+- The `dev-md` control-plane plan caps the cluster at 30 nodes — not a binding
+  constraint at max 2.
+
+**Cost**: the worker plan `STARTER-4xCPU-8GB` is ~€14/mo per node
+(hourly-billed), so the autoscaling ceiling adds at most ~€14/mo (2 nodes) over
+today's single node; HPA replicas cost nothing extra until a second node is
+actually needed.
 
 ## Marker removal checklist (do not forget)
 

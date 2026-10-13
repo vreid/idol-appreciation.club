@@ -52,7 +52,13 @@ variable "node_plan" {
 }
 
 variable "node_count" {
-  description = "Worker node count (budget guardrail: exactly one)."
+  description = <<-EOT
+    Worker node count — the autoscaling FLOOR (budget guardrail: 1).
+    UpCloud node groups have no min/max autoscaling fields (provider
+    v5.47.0 / API 1.3: a fixed count only); while the Cluster Autoscaler
+    is disabled this is the exact count, once enabled CA scales between
+    this floor and 2 (chart/ values clusterAutoscaler.maxSize).
+  EOT
   type        = number
   default     = 1
 }

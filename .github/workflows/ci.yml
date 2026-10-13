@@ -91,6 +91,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
       - run: task lint:workflows
+      - run: task lint:action-pins
 
   md-lint:
     name: md-lint (oxfmt)
@@ -234,21 +235,22 @@ jobs:
       - run: task web:test
 
   tofu-plan:
-    name: tofu plan (PRs only, tofu paths)
+    name: tofu validate (PRs, tofu paths, credential-less)
     needs: [changed, tier1]
     if: github.event_name == 'pull_request' && needs.changed.outputs.tofu == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: production
-    env:
-      UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - run: task tofu:plan
+      # Stateless by construction: `init -backend=false` + `validate`. No
+      # `environment:`, no cloud secrets, no state — PR-authored recipes
+      # must never be able to reach production credentials or state
+      # (issues #87/#88). Credentialed plan/apply happens only in
+      # main-trusted flows (deploy.yml, infra-*.yml).
+      - run: task tofu:validate
 
   web-contract:
     name: web-contract (real-backend contract suite)

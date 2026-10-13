@@ -1,0 +1,32 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+# Single source of truth for tool versions that are not package.json-managed.
+# node + pnpm are intentionally NOT pinned here: mise reads them from
+# web/package.json `devEngines` (see [settings] below), which is also what
+# plain pnpm users enforce via `onFail: download`. pnpm-provided tooling
+# (vite-plus/vp, tsgo, vitest, Playwright) stays managed by
+# package.json — do not duplicate it in this file. libvips is not a dev tool;
+# backend gates run inside the pinned libvips container instead (Taskfile.yml).
+
+[settings]
+# Idiomatic version files (web/package.json devEngines) resolve node and pnpm
+# only; scoping it keeps stray .nvmrc/.tool-versions files from hijacking the
+# explicitly pinned tools below.
+idiomatic_version_file_enable_tools = ["node", "pnpm"]
+
+[tools]
+# rustup is retired as a version source: mise provisions the toolchain, and
+# the version matches the rust:trixie gate image used by backend gates.
+rust = "1.99.0"
+# taskfile.dev runner — see Taskfile.yml for per-CI-job entrypoints.
+task = "3.54.0"
+# Secret scanner (hard gate); config: .betterleaks.toml
+betterleaks = "1.9.0"
+# GitHub Actions linter; same pin as the workflows-lint CI job.
+jactionlint = "2.1.0"
+# Markdown formatter (repo-wide, config in .oxfmtrc.json). Called directly
+# from Taskfile — never via npx, which trips npm's devEngines enforcement.
+oxfmt = "0.72.0"
+opentofu = "1.13.1"
+helm = "4.3.0"
+kubectl = "1.37.1"

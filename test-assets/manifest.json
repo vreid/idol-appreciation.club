@@ -1,5 +1,1005 @@
 [
   {
+    "file": "idols-food/01-ramyeon-convenience-store.jpg",
+    "category": "ramyeon-convenience-store",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 125947,
+    "prompt": "Female fictional idol in a hoodie slurping steaming cup ramyeon at a convenience-store window counter at night, neon city lights reflecting on the glass, chopsticks mid-air, cozy candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/02-tteokbokki-street-stall.jpg",
+    "category": "tteokbokki-street-stall",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 328503,
+    "prompt": "Female fictional idol blowing on a forkful of spicy rice cakes from a foil tray at a glowing street food stall, evening steam and string lights, red sauce on her thumb, candid street photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/03-korean-bbq-grill.jpg",
+    "category": "korean-bbq-grill",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 545171,
+    "prompt": "Five-member coed group of fictional idols gathered around a tabletop charcoal grill, one member flipping marinated pork belly with tongs while another fans the coals, smoke and warm brazier light, lively restaurant scene, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/04-fried-chicken-relay.jpg",
+    "category": "fried-chicken-relay",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 368870,
+    "prompt": "Girl group of fictional idols in sweatshirts passing a bucket of fried chicken across a practice-room sofa, delivery boxes and soda bottles on the table, late-night candid documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/05-bingsu-cafe-date.jpg",
+    "category": "bingsu-cafe-date",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 325282,
+    "prompt": "Female fictional idol leaning over a towering strawberry shaved-ice dessert crowned with fresh berries, pastel cafe interior, spoon raised in delight, bright dessert photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/06-hotteok-winter-street.jpg",
+    "category": "hotteok-winter-street",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 324313,
+    "prompt": "Female fictional idol in a puffer coat and beanie biting into a hot syrup-filled cinnamon pancake from a paper sleeve, winter street steam rising around a market stall, cozy evening tones, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/07-dalgona-challenge.jpg",
+    "category": "dalgona-challenge",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 157334,
+    "prompt": "Male fictional idol squinting in deep concentration while carving a honeycomb candy shape with a needle on a variety-show set, giant timer graphic behind him, bright studio lighting, playful broadcast photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/08-late-night-cup-noodles.jpg",
+    "category": "late-night-cup-noodles",
+    "aspect_ratio": "9:16",
+    "width": 1536,
+    "height": 2730,
+    "bytes": 257131,
+    "prompt": "Female fictional idol with her hair in a claw clip eating cup noodles standing at a dorm kitchen counter at 2 a.m., fridge light glow, oversized t-shirt, quiet candid lifestyle photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/09-ssam-wrap-offer.jpg",
+    "category": "ssam-wrap-offer",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 107568,
+    "prompt": "Female fictional idol holding a crisp lettuce wrap toward the camera with both hands at a barbecue table, sizzling grill bokeh behind her, playful expression, warm restaurant lighting, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/10-naengmyeon-summer.jpg",
+    "category": "naengmyeon-summer",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 406317,
+    "prompt": "Male fictional idol pausing mid-slurp of icy cold buckwheat noodles at an outdoor summer table, shaved ice melting in the broth, sweat and sunshine, candid editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/100-finale-feast-confetti.jpg",
+    "category": "finale-feast-confetti",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 606580,
+    "prompt": "Wide finale shot of a large cast of fictional idols around a banquet-length table piled with festival foods, confetti cannons bursting, members standing on chairs toasting with soda cups, arena celebration lighting, cinematic wide photography, 24mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/11-mukbang-live.jpg",
+    "category": "mukbang-live",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 263177,
+    "prompt": "Female fictional idol hosting a live mukbang stream from a studio table covered with spaced dishes, softbox ring light glow, waving at the camera between bites, bright streaming setup, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/12-strawberry-milk-twirl.jpg",
+    "category": "strawberry-milk-twirl",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 240311,
+    "prompt": "Female fictional idol in a pink cardigan holding a glass bottle of strawberry milk up beside her cheek in a pastel cafe, whipped-cream drink beside her, soft window light, photocard-style photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/13-bubble-tea-taste-test.jpg",
+    "category": "bubble-tea-taste-test",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 132569,
+    "prompt": "Two female fictional idols comparing giant bubble tea cups with wide straws on a mall bench, one frowning thoughtfully and one nodding approval, shopping bags at their feet, candid street photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/14-airport-lounge-snack.jpg",
+    "category": "airport-lounge-snack",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 334710,
+    "prompt": "Female fictional idol with her mask pulled down eating a fruit cup in an airline lounge, boarding pass and passport in hand, rolling suitcase beside the armchair, natural terminal light, editorial travel photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/15-rooftop-bbq-party.jpg",
+    "category": "rooftop-bbq-party",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 456247,
+    "prompt": "Group of fictional idols at a rooftop barbecue at sunset, one member grilling corn while others hold paper plates and soda cups, city skyline and string lights behind, golden hour documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/16-corn-dog-cheese-pull.jpg",
+    "category": "corn-dog-cheese-pull",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 336250,
+    "prompt": "Female fictional idol stretching a long mozzarella pull from a crispy corn dog at a night market, breadcrumbs on her sleeve, warm stall lights bokeh, appetizing street food photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/17-hanriver-gimbap-picnic.jpg",
+    "category": "hanriver-gimbap-picnic",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 157758,
+    "prompt": "Group of fictional idols on a picnic mat by the river sharing a basket of gimbap rolls and fruit, one member mid-laugh holding a rice roll, park trees and bike path behind, sunny candid photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/18-spicy-noodle-challenge.jpg",
+    "category": "spicy-noodle-challenge",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 370031,
+    "prompt": "Male fictional idol with teary eyes and flushed cheeks holding up a fork of extra-spicy noodles on a variety-show set, co-hosts laughing beside him, bright studio lighting, comedic broadcast photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/19-birthday-cake-selfie.jpg",
+    "category": "birthday-cake-selfie",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 324794,
+    "prompt": "Female fictional idol taking a selfie with a slice of cream cake at a birthday cafe decorated with pastel banners and a star-symbol photo wall, frosting on her fingertip, warm cafe light, photocard-style photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/20-mandu-steamer-basket.jpg",
+    "category": "mandu-steamer-basket",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 114059,
+    "prompt": "Female fictional idol lifting the bamboo lid off a steaming basket of dumplings on a wooden hanok table, steam curling upward, side dishes arranged around, warm natural light, food editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/21-soft-serve-race.jpg",
+    "category": "soft-serve-race",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 401204,
+    "prompt": "Two fictional idols racing to eat towering soft-serve cones before they melt at a beach boardwalk, one with cream on her nose, sea and umbrellas behind, playful summer candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/22-dorm-pizza-night.jpg",
+    "category": "dorm-pizza-night",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 409174,
+    "prompt": "Group of fictional idols in pajamas sitting on a dorm floor around open pizza boxes, one member holding a slice like a microphone while singing, fairy lights on the wall, cozy candid photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/23-kimchi-stew-stirring.jpg",
+    "category": "kimchi-stew-stirring",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 115175,
+    "prompt": "Female fictional idol in an apron stirring a bubbling kimchi stew pot in a dorm kitchen, wooden spoon raised, steam and warm stove light, homey lifestyle photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/24-churros-festival-night.jpg",
+    "category": "churros-festival-night",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 403922,
+    "prompt": "Female fictional idol holding a paper sleeve of cinnamon-sugar churros at a night festival, ferris wheel lights and lanterns behind her, sugar dust on her smile, evening street photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/25-tangerine-orchard.jpg",
+    "category": "tangerine-orchard",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 409312,
+    "prompt": "Female fictional idol in a straw hat picking tangerines in a sunlit orchard, wicker basket of fruit on her arm, photobook concept photography, warm backlit daylight, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/26-watermelon-split.jpg",
+    "category": "watermelon-split",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 169235,
+    "prompt": "Male fictional idol cracking a watermelon open on a picnic table at a summer poolside, juice spraying, friends cheering in swimwear behind, dynamic candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/27-donut-bakery-decision.jpg",
+    "category": "donut-bakery-decision",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 341321,
+    "prompt": "Female fictional idol pressing a finger to her chin in front of a bakery case full of colorful donuts, holding a pink box already half full, warm bakery lighting, candid lifestyle photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/28-practice-room-ramyeon.jpg",
+    "category": "practice-room-ramyeon",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 423311,
+    "prompt": "Girl group of fictional idols sitting on a practice-room floor against the mirror wall eating cup noodles from a cardboard box, choreography notes and water bottles scattered, fluorescent evening light, documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/29-backstage-catering.jpg",
+    "category": "backstage-catering",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 360661,
+    "prompt": "Male fictional idol with a towel around his neck filling a plate at a backstage catering table between rehearsals, stage crew silhouettes behind, warm tent lighting, candid backstage photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/30-macaron-tea-tower.jpg",
+    "category": "macaron-tea-tower",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 103215,
+    "prompt": "Female fictional idol in an elegant dress at an afternoon tea table with a pastel macaron tower, holding a teacup with her pinky raised, soft hotel cafe light, refined editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/31-bungeoppang-winter.jpg",
+    "category": "bungeoppang-winter",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 320357,
+    "prompt": "Female fictional idol holding two fish-shaped pastries in a paper bag, steam rising in cold winter air, cheerful winter market stall lights, cozy street photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/32-soda-can-cheers.jpg",
+    "category": "soda-can-cheers",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 382054,
+    "prompt": "Group of fictional idols clinking soda cans over a wooden picnic table piled with fried chicken and fries, golden hour park light, laughter and raised arms, candid celebration photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/33-tteok-making-courtyard.jpg",
+    "category": "tteok-making-courtyard",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 152539,
+    "prompt": "Fictional idol duo in matching headbands pounding rice cake dough with a wooden mallet in a traditional courtyard, flour dust in the air, bright cultural festival setting, documentary photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/34-noodle-slurp-contest.jpg",
+    "category": "noodle-slurp-contest",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 425605,
+    "prompt": "Two fictional idols competing in a noodle-slurping contest at attached tables on a variety-show set, cheeks puffed, scoreboard behind them, bright studio lighting, energetic broadcast photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/35-honey-toast-brunch.jpg",
+    "category": "honey-toast-brunch",
+    "aspect_ratio": "4:3",
+    "width": 2364,
+    "height": 1773,
+    "bytes": 297300,
+    "prompt": "Female fictional idol admiring a cube of honey toast crowned with ice cream and drizzled caramel at a sunlit cafe window seat, spoon in hand, airy brunch photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/36-street-toast-cart.jpg",
+    "category": "street-toast-cart",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 131864,
+    "prompt": "Female fictional idol taking a big bite of a street toast stacked with egg and vegetables in front of a food cart, cabbage shreds falling, morning market bustle behind, candid street photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/37-tteokbokki-pot-party.jpg",
+    "category": "tteokbokki-pot-party",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 422568,
+    "prompt": "Girl group of fictional idols leaning over a bubbling red rice cake pot on a portable stove, cheeks flushed and laughing, cheese stretching from a fork, cozy restaurant booth, appetizing documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/38-camping-ramyeon-pot.jpg",
+    "category": "camping-ramyeon-pot",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 318150,
+    "prompt": "Male fictional idol in a hiking jacket tending a bubbling ramyeon pot on a portable stove at a pine campsite, enamel mugs and a lantern on the log table, dusk blue tones, outdoor lifestyle photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/39-caramel-pudding-poke.jpg",
+    "category": "caramel-pudding-poke",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 88760,
+    "prompt": "Close-up of a female fictional idol poking a wobbly caramel pudding with a spoon in a pastel diner booth, glossy syrup, playful expression, soft dessert photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/40-chimaek-picnic.jpg",
+    "category": "chimaek-picnic",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 451382,
+    "prompt": "Group of fictional idols at an evening riverside picnic with a spread of fried chicken and soda bottles, LED city lights twinkling across the water, picnic mat and lawn chairs, warm candid photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/41-jokbal-feast-table.jpg",
+    "category": "jokbal-feast-table",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 143605,
+    "prompt": "Group of fictional idols around a celebration table with a sliced braised pork trotter platter and wrap condiments, one member wrapping a bite with peppers, warm restaurant lighting, lively feast photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/42-strawberry-greenhouse.jpg",
+    "category": "strawberry-greenhouse",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 380324,
+    "prompt": "Female fictional idol crouching between rows of strawberry plants in a greenhouse, holding a freshly picked berry up to the light, winter photobook concept, soft diffused daylight, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/43-eomuk-skewer-night.jpg",
+    "category": "eomuk-skewer-night",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 275034,
+    "prompt": "Female fictional idol cupping a warm paper cup of fish cake skewers at a winter street stall, breath fogging in the cold, orange broth steam, cozy night street photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/44-halloween-candy-bowl.jpg",
+    "category": "halloween-candy-bowl",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 126059,
+    "prompt": "Female fictional idol in a playful witch costume grabbing a fistful of candy from a party bowl at a Halloween dorm party, pumpkin lights and fake cobwebs behind, festive candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/45-christmas-cake-decorating.jpg",
+    "category": "christmas-cake-decorating",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 388297,
+    "prompt": "Group of fictional idols in Santa hats decorating a cream cake with strawberries in a dorm kitchen, one member stealing a strawberry, tinsel and string lights behind, warm holiday candid photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/46-hotel-breakfast-tray.jpg",
+    "category": "hotel-breakfast-tray",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 286657,
+    "prompt": "Male fictional idol in a robe cross-legged on a hotel bed with a room-service breakfast tray of pastries and fruit, city morning view through the window, tour-life lifestyle photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/47-kimbap-rolling-class.jpg",
+    "category": "kimbap-rolling-class",
+    "aspect_ratio": "4:3",
+    "width": 2364,
+    "height": 1773,
+    "bytes": 274316,
+    "prompt": "Female fictional idol in a cooking-show apron rolling gimbap with a bamboo mat on a studio kitchen counter, ingredient bowls lined up, instructor smiling behind, bright broadcast lighting, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/48-sundubu-egg-crack.jpg",
+    "category": "sundubu-egg-crack",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 357678,
+    "prompt": "Female fictional idol cracking an egg into a violently bubbling stone pot of soft tofu stew, riser of steam, side dishes and rice around, rustic restaurant lighting, appetizing editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/49-snack-aisle-basket.jpg",
+    "category": "snack-aisle-basket",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 606381,
+    "prompt": "Fictional idol duo loading a convenience store basket with colorful snack bags in the chip aisle, one reading a package upside down, fluorescent store light, candid lifestyle photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/50-melon-soda-float.jpg",
+    "category": "melon-soda-float",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 399664,
+    "prompt": "Female fictional idol with a straw in a bright green melon soda float in a retro diner booth, checkered floor and jukebox tones, cherry on top, playful vintage photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/51-galbi-grill-master.jpg",
+    "category": "galbi-grill-master",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 355984,
+    "prompt": "Male fictional idol in a chef hat confidently wielding tongs over a charcoal grill of marinated short ribs at a restaurant table, smoke and embers, admiring group members beside, warm tabletop lighting, lively documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/52-patbingsu-two-spoons.jpg",
+    "category": "patbingsu-two-spoons",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 129010,
+    "prompt": "Duo of fictional idols sharing a mountain of red-bean shaved ice with two spoons colliding mid-bite, condensed milk drizzle, summer cafe window light, sweet candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/53-chicken-wing-huddle.jpg",
+    "category": "chicken-wing-huddle",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 455888,
+    "prompt": "Fictional idol group huddled shoulder to shoulder over a platter of glazed chicken wings on a variety-show set, hands reaching from every side, scoreboard lights behind, comedic broadcast photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/54-cotton-candy-cloud.jpg",
+    "category": "cotton-candy-cloud",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 300243,
+    "prompt": "Female fictional idol peeking over a giant pink cotton candy cloud at an amusement park, carousel lights blurred behind, strands of sugar catching the sun, dreamy photocard-style photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/55-noodle-lift-hero.jpg",
+    "category": "noodle-lift-hero",
+    "aspect_ratio": "2:3",
+    "width": 1672,
+    "height": 2508,
+    "bytes": 281483,
+    "prompt": "Dramatic beauty close-up of a female fictional idol lifting glossy noodle strands high with chopsticks, steam catching a single spotlight against a dark moody background, glossy lips and flawless makeup, cinematic food editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/56-jjimdak-cheese-feast.jpg",
+    "category": "jjimdak-cheese-feast",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 199075,
+    "prompt": "Group of fictional idols stretching cheese with chopsticks over a bubbling braised-chicken platter in a lively restaurant, side dishes crowding the table, warm lighting, appetizing feast photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/57-tteok-galbi-charcoal.jpg",
+    "category": "tteok-galbi-charcoal",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 413309,
+    "prompt": "Close-up of a female fictional idol's hand turning minced short-rib patties on a charcoal grill with golden tongs, ember glow and smoke, banchan bowls blurred behind, tactile food photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/58-smoothie-bowl-morning.jpg",
+    "category": "smoothie-bowl-morning",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 118755,
+    "prompt": "Female fictional idol in morning sunlight arranging banana slices on a berry smoothie bowl in a dorm kitchen, blender still humming, plants on the windowsill, fresh lifestyle photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/59-dosirak-judgment.jpg",
+    "category": "dosirak-judgment",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 472554,
+    "prompt": "Fictional idols lined up behind homemade lunchbox trays on a variety-show set, one member wiping a proud tear, judge raising a spoon, bright studio lighting, comedic broadcast photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/60-cream-pasta-twirl.jpg",
+    "category": "cream-pasta-twirl",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 265026,
+    "prompt": "Female fictional idol twirling a perfect forkful of cream pasta at a candlelit Italian bistro table, glass of sparkling water beside, warm intimate lighting, editorial dining photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/61-mochi-ice-bite.jpg",
+    "category": "mochi-ice-bite",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 135446,
+    "prompt": "Male fictional idol biting into a chewy mochi ice cream ball with puffed cheeks on a park bench, flavor boxes open beside him, spring blossoms behind, playful candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/62-takoyaki-hot-panic.jpg",
+    "category": "takoyaki-hot-panic",
+    "aspect_ratio": "3:2",
+    "width": 2508,
+    "height": 1672,
+    "bytes": 508779,
+    "prompt": "Fictional idol group fanning their open mouths after biting molten takoyaki balls at a festival stall, sauce and bonito flakes on paper trays, lantern light, comedic candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/63-roasted-chestnuts-autumn.jpg",
+    "category": "roasted-chestnuts-autumn",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 363937,
+    "prompt": "Female fictional idol in a trench coat holding a paper cone of roasted chestnuts on an autumn street, fallen maple leaves on the pavement, warm afternoon light, seasonal street photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/64-chocolate-milk-mustache.jpg",
+    "category": "chocolate-milk-mustache",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 111865,
+    "prompt": "Female fictional idol in a practice room with a chocolate milk mustache holding an empty carton, cheeks pink, members giggling behind her, fluorescent candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/65-dakgangjeong-market-cup.jpg",
+    "category": "dakgangjeong-market-cup",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 368724,
+    "prompt": "Female fictional idol holding a paper cup of glossy sweet-and-spicy crispy chicken at a market alley stall, chopsticks poised, red lantern glow, appetizing street photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/66-camping-army-stew.jpg",
+    "category": "camping-army-stew",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 358574,
+    "prompt": "Group of fictional idols crowded around a bubbling army-base stew pot on a campsite table at night, ramyeon blocks and sausages crowding the pot, headlamps and lantern glow, cozy outdoor documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/67-dango-cherry-blossoms.jpg",
+    "category": "dango-cherry-blossoms",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 338814,
+    "prompt": "Female fictional idol holding a skewer of tri-color dango under drifting cherry blossom petals in a spring park, picnic blanket and bento behind, soft pastel daylight, photocard-style photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/68-bibimbap-mix-studio.jpg",
+    "category": "bibimbap-mix-studio",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 125511,
+    "prompt": "Female fictional idol vigorously mixing a stone-pot bibimbap with chili paste on a bright cooking-studio counter, sleeves rolled, steam rising, sunny broadcast lighting, appetizing studio photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/69-blue-slushie-tongues.jpg",
+    "category": "blue-slushie-tongues",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 458279,
+    "prompt": "Duo of fictional idols sticking out bright blue tongues at the camera after a giant blue raspberry slushie, convenience store forecourt in summer, playful candid photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/70-steak-award-dinner.jpg",
+    "category": "steak-award-dinner",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 338556,
+    "prompt": "Group of fictional idols in evening wear raising forks over a celebratory steak dinner at a long restaurant table after an award show, candlelight and glasses of sparkling cider, elegant event photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/71-gyeran-ppang-morning.jpg",
+    "category": "gyeran-ppang-morning",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 117644,
+    "prompt": "Female fictional idol holding a golden egg-bread with a whole baked egg at a morning market, steam wisps and seed topping, school-run street behind, warm breakfast photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/72-food-truck-charity.jpg",
+    "category": "food-truck-charity",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 342108,
+    "prompt": "Fictional idol group in matching aprons serving snacks from a brightly painted food truck window at a charity event, paper bags handed to blurred crowd silhouettes, no readable logos, sunny community photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/73-sashimi-market-morning.jpg",
+    "category": "sashimi-market-morning",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 118366,
+    "prompt": "Male fictional idol in a beanie savoring a fresh sashimi plate at a wooden counter in a morning fish market, ice displays and lanterns behind, documentary travel photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/74-cheese-fondue-chalet.jpg",
+    "category": "cheese-fondue-chalet",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 364966,
+    "prompt": "Duo of fictional idols dipping bread cubes into a bubbling cheese fondue pot at a snowy chalet window, wool sweaters and rosy cheeks, mountain view behind, cozy winter vlog photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/75-yuzu-tea-hanok.jpg",
+    "category": "yuzu-tea-hanok",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 102583,
+    "prompt": "Female fictional idol in modern hanbok cradling a glass of yuzu tea on a wooden hanok veranda, tray of traditional sweets beside, paper lantern glow, serene cultural photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/76-popcorn-movie-night.jpg",
+    "category": "popcorn-movie-night",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 319318,
+    "prompt": "Group of fictional idols buried under blankets in a home cinema room with a giant popcorn tub balanced among them, one member guarding the bowl, screen glow on their faces, cozy candid photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/77-hodugwaja-rest-stop.jpg",
+    "category": "hodugwaja-rest-stop",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 331771,
+    "prompt": "Female fictional idol holding a warm bag of walnut-shaped cakes at a highway rest stop bench, road trip suitcase and camera beside her, evening bus loop light, travel vlog photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/78-noodle-bite-beauty-hero.jpg",
+    "category": "noodle-bite-beauty-hero",
+    "aspect_ratio": "2:3",
+    "width": 1672,
+    "height": 2508,
+    "bytes": 289335,
+    "prompt": "Extreme beauty close-up of a female fictional idol about to bite a single noodle strand lifted by chopsticks, prism light scattering rainbow tones across her cheek, dark background, dewy idol makeup, cinematic editorial photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/79-oyster-grill-winter-village.jpg",
+    "category": "oyster-grill-winter-village",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 416980,
+    "prompt": "Group of fictional idols grilling oysters and scallops on a drum-can grill in a snowy village courtyard, mittens and scarves, smoke drifting through string lights, winter trip vlog photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/80-fruit-sandwich-pastel.jpg",
+    "category": "fruit-sandwich-pastel",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 99196,
+    "prompt": "Female fictional idol holding a cross-section of a fruit sandwich loaded with strawberries and kiwi at a pastel cafe table, glass bottle of milk beside, soft daylight, photocard-style photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/81-kimchijeon-rainy-window.jpg",
+    "category": "kimchijeon-rainy-window",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 332334,
+    "prompt": "Female fictional idol enjoying crispy kimchi pancake bites at a cafe window with rain streaking the glass, umbrella dripping in the stand, moody cozy tones, lifestyle editorial photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/82-beach-corn-bbq.jpg",
+    "category": "beach-corn-bbq",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 444766,
+    "prompt": "Group of fictional idols grilling corn and skewers at a beach shack barbecue at sunset, one member fanning the coals, surfboards and tide pools behind, golden documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/83-barista-latte-art.jpg",
+    "category": "barista-latte-art",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 309367,
+    "prompt": "Female fictional idol in an apron pouring latte art behind a cafe counter, tongue tip peeking in concentration, foam pitcher mid-pour, warm morning cafe light, slice-of-life photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/84-spicy-stew-sweat.jpg",
+    "category": "spicy-stew-sweat",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 136814,
+    "prompt": "Male fictional idol with sweat beading on his forehead giving a thumbs-up over a violently red spicy stew on a variety-show close-up set, exaggerated suffering expression, bright studio lighting, comedic photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/85-cotton-candy-photocard-hero.jpg",
+    "category": "cotton-candy-photocard-hero",
+    "aspect_ratio": "2:3",
+    "width": 1672,
+    "height": 2508,
+    "bytes": 269859,
+    "prompt": "Photocard-style portrait of a female fictional idol holding a swirl of pink cotton candy against a pastel gradient studio background, sugar strands drifting, dreamy soft lighting, flawless idol makeup, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/86-hotpot-round-table.jpg",
+    "category": "hotpot-round-table",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 377365,
+    "prompt": "Group of fictional idols around a divided hotpot at a round restaurant table, plates of mushrooms and greens fanned out, chopsticks crossing over the simmering broth, warm overhead lighting, feast documentary photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/87-snack-tower-jenga.jpg",
+    "category": "snack-tower-jenga",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 172237,
+    "prompt": "Fictional idols stacking snack bags into a wobbly tower on a variety-show table, one member biting her knuckles as it sways, teammates gripping their heads, bright studio lighting, comedic broadcast photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/88-campsite-dawn-ramyeon.jpg",
+    "category": "campsite-dawn-ramyeon",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 256858,
+    "prompt": "Solo female fictional idol cradling a steaming ramyeon pot at a misty campsite at dawn, blanket over her shoulders, sunrise breaking over pine ridges, serene outdoor photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/89-chocolate-fountain-fanmeet.jpg",
+    "category": "chocolate-fountain-fanmeet",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 438253,
+    "prompt": "Group of fictional idols dipping strawberries at a cascading chocolate fountain table at a fanmeeting event, pastel decorations and star-symbol banners behind, warm event lighting, candid celebration photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/90-jumeokbap-train-window.jpg",
+    "category": "jumeokbap-train-window",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 115212,
+    "prompt": "Female fictional idol eating a hand-rolled rice ball by a train window, rice grains on her fingertips, countryside blurring past, lunchbox on the tray table, travel vlog photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/91-grill-master-apron.jpg",
+    "category": "grill-master-apron",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 388084,
+    "prompt": "Male fictional idol in a cartoon-print apron raising tongs triumphantly over a smoking tabletop grill, victorious grin, restaurant staff laughing behind, warm lighting, lively documentary photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/92-bingsu-volcano-challenge.jpg",
+    "category": "bingsu-volcano-challenge",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 521457,
+    "prompt": "Girl group of fictional idols armed with long spoons facing a tower-sized shaved ice dessert on a variety-show table, whipped cream avalanche mid-slide, scoreboard and studio lights behind, comedic broadcast photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/93-croquette-school-run.jpg",
+    "category": "croquette-school-run",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 376062,
+    "prompt": "Female fictional idol in a school uniform biting a hot croquette outside a bakery, paper bag of bread rolls under her arm, afternoon alley light, nostalgic street photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/94-naengmyeon-broth-pour.jpg",
+    "category": "naengmyeon-broth-pour",
+    "aspect_ratio": "3:2",
+    "width": 2508,
+    "height": 1672,
+    "bytes": 251891,
+    "prompt": "Slow-motion style close-up of icy broth pouring over cold noodles in a steel bowl on a bright kitchen-studio counter, ice cubes and pear slices mid-tumble, droplets frozen in air, high-speed food photography, 85mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/95-mandu-soup-snowy-window.jpg",
+    "category": "mandu-soup-snowy-window",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 120133,
+    "prompt": "Female fictional idol cradling a hot stone bowl of dumpling soup beside a snow-frosted window, scarf still on, steam fogging the glass, warm winter cafe tones, cozy lifestyle photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/96-milkshake-two-straws.jpg",
+    "category": "milkshake-two-straws",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 431887,
+    "prompt": "Duo of fictional idols sharing a towering malted milkshake with two straws in a chrome diner booth, whipped cream mountain with a cherry, neon window sign glow, retro youth photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/97-feast-table-overhead.jpg",
+    "category": "feast-table-overhead",
+    "aspect_ratio": "16:9",
+    "width": 2730,
+    "height": 1536,
+    "bytes": 725253,
+    "prompt": "Overhead shot of a long Korean feast table crowded with stews, grills and side dishes, fictional idols' hands reaching in with chopsticks and tongs from every edge, editorial flat-lay feast photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
+    "file": "idols-food/98-parfait-glass-morning.jpg",
+    "category": "parfait-glass-morning",
+    "aspect_ratio": "1:1",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 100948,
+    "prompt": "Female fictional idol in a sunlit kitchen spooning the bottom of a tall yogurt and fruit parfait glass, berries on the counter, sleep shirt and claw clip, fresh morning lifestyle photography, 50mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.042749999999999996
+  },
+  {
+    "file": "idols-food/99-spicy-ramyeon-selfie.jpg",
+    "category": "spicy-ramyeon-selfie",
+    "aspect_ratio": "3:4",
+    "width": 1773,
+    "height": 2364,
+    "bytes": 381562,
+    "prompt": "Female fictional idol taking a front-camera selfie with a bowl of fiery red ramyeon, glossy lips and a brave grin, thumbs-up in frame, dorm room string lights behind, playful selfie photography, 35mm lens, professional photography, editorial quality, sharp focus, high detail, fictional idol, AI-generated fictional character, no real person",
+    "cost_if_known": 0.08549999999999999
+  },
+  {
     "file": "idols/01-solo-female-closeup.jpg",
     "category": "solo-female-closeup",
     "aspect_ratio": "3:4",

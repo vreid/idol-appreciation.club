@@ -81,67 +81,75 @@ export default function PlaceDetail(props: {
     });
   });
 
+  // Non-keyed on purpose: the panel must survive the selection changing
+  // underneath it (wheel flips read through the reactive store getters).
   return (
-    <Show when={store.selectedPlace} keyed>
-      {(placement) => (
-        <div
-          ref={panel}
-          class={`place-detail card side-${position().side}`}
-          style={{
-            left: `${position().left}px`,
-            top: `${position().top}px`,
-          }}
-        >
-          <div class="pd-head">
-            <strong class="pd-user">@{placement.username}</strong>
-            <button
-              class="pd-close"
-              type="button"
-              aria-label="Close details"
-              onClick={() => {
-                props.actions.onDeselect();
-              }}
-            >
-              ✕
-            </button>
-          </div>
-          <div class="pd-meta">
-            {placement.w}×{placement.h} px · {placement.rot}°
-          </div>
-          <div class="pd-actions">
-            <button
-              class="pd-btn"
-              type="button"
-              onClick={() => {
-                if (props.actions.isLoggedIn()) {
-                  props.actions.onReport(placement.id);
-                  props.actions.onDeselect();
-                } else {
-                  props.actions.onAuthPrompt();
-                }
-              }}
-            >
-              Report
-            </button>
-            <Show when={props.actions.isAdmin()}>
-              <button
-                class="pd-btn pd-danger"
-                type="button"
-                onClick={() => {
-                  props.actions.onRemove(placement.id, {
-                    x: placement.x,
-                    y: placement.y,
-                    w: placement.w,
-                    h: placement.h,
-                  });
-                }}
-              >
-                Remove
-              </button>
-            </Show>
-          </div>
+    <Show when={store.selectedPlace}>
+      <div
+        ref={panel}
+        class={`place-detail card side-${position().side}`}
+        style={{
+          left: `${position().left}px`,
+          top: `${position().top}px`,
+        }}
+      >
+        <div class="pd-head">
+          <strong class="pd-user">@{store.selectedPlace?.username}</strong>
+          <Show when={store.digTotal > 1 && store.digIndex >= 0}>
+            <span class="pd-depth" title="Wheel flips through the pile">
+              {store.digIndex + 1} of {store.digTotal}
+            </span>
+          </Show>
+          <button
+            class="pd-close"
+            type="button"
+            aria-label="Close details"
+            onClick={() => {
+              props.actions.onDeselect();
+            }}
+          >
+            ✕
+          </button>
         </div>
-      )}
+        <div class="pd-meta">
+          {store.selectedPlace?.w}×{store.selectedPlace?.h} px ·{" "}
+          {store.selectedPlace?.rot}°
+        </div>
+        <div class="pd-actions">
+          <button
+            class="pd-btn"
+            type="button"
+            onClick={() => {
+              if (props.actions.isLoggedIn()) {
+                props.actions.onReport(store.selectedPlace?.id ?? "");
+                props.actions.onDeselect();
+              } else {
+                props.actions.onAuthPrompt();
+              }
+            }}
+          >
+            Report
+          </button>
+          <Show when={props.actions.isAdmin()}>
+            <button
+              class="pd-btn pd-danger"
+              type="button"
+              onClick={() => {
+                const sel = store.selectedPlace;
+                if (sel === null) return;
+                props.actions.onRemove(sel.id, {
+                  x: sel.x,
+                  y: sel.y,
+                  w: sel.w,
+                  h: sel.h,
+                });
+              }}
+            >
+              Remove
+            </button>
+          </Show>
+        </div>
+      </div>
     </Show>
   );
 }

@@ -28,6 +28,14 @@ interface MapHandle {
   el: HTMLDivElement | undefined;
 }
 
+/** One deselect path: clears the store selection, the map highlight,
+   and hands the wheel back to zoom. */
+function releaseSelection(map: MapHandle, store: AppStore): void {
+  store.deselectPlace();
+  map.current?.clearSelection();
+  map.current?.setDigMode(false);
+}
+
 async function onMapClick(
   map: MapHandle,
   store: AppStore,
@@ -50,14 +58,18 @@ async function onMapClick(
   const near = await store.refreshNear(x, y, queryRadiusForZoom(zoom));
   const top = near[0];
   // Empty spots are a silent no-op — no toast spam on bare canvas — but
-  // they deselect (clicking away closes the detail panel).
+  // they deselect (clicking away closes the detail panel and restores
+  // wheel-zoom).
   if (top === undefined) {
-    store.deselectPlace();
-    controller.clearSelection();
+    releaseSelection(map, store);
     return;
   }
-  store.selectPlace(top);
+  store.selectPlace(top, { x, y });
   controller.showSelection(top);
+  // Wheel now peels the stack under the click point instead of zooming.
+  controller.setDigMode(true, (deltaY) => {
+    store.flipDig(deltaY > 0 ? 1 : -1);
+  });
 }
 
 async function onRemove(
@@ -72,8 +84,7 @@ async function onRemove(
   if (removed) {
     // Optimistic: drop the pixels right away; SSE confirms later.
     controller.invalidateBBox(bbox);
-    store.deselectPlace();
-    controller.clearSelection();
+    releaseSelection(map, store);
   }
 }
 
@@ -116,6 +127,17 @@ function wireGhostSync(map: MapHandle, store: AppStore): void {
       controller.setGhost(null);
       controller.setPlacing(false);
     }
+  });
+}
+
+/** Tracks the selected placement (including wheel-flipped strata) so the
+   highlight always wraps the pixels the panel describes. */
+function wireSelectionSync(map: MapHandle, store: AppStore): void {
+  createEffect(() => {
+    const controller = map.current;
+    if (controller === null) return;
+    const selected = store.selectedPlace;
+    if (selected !== null) controller.showSelection(selected);
   });
 }
 
@@ -168,8 +190,7 @@ function placeDetailActions(
       store.promptAuth();
     },
     onDeselect: () => {
-      store.deselectPlace();
-      map.current?.clearSelection();
+      releaseSelection(map, store);
     },
   };
 }
@@ -185,6 +206,11 @@ export default function App() {
     onEvent: (event) => {
       const [x, y, w, h] = event.bbox;
       const bbox: BBox = { x, y, w, h };
+      // The selected stratum vanished under someone else: close the
+      // panel and hand the wheel back to the map.
+      if (event.type === "remove" && store.selectedPlace?.id === event.id) {
+        releaseSelection(map, store);
+      }
       // Coalesced: place AND remove events refresh the affected visible
       // tiles at most once per ~500ms window, deduped by tile coord.
       map.current?.queueTileRefresh(bbox);
@@ -199,6 +225,7 @@ export default function App() {
 
   // Keep the ghost image in sync with the placing flow.
   wireGhostSync(map, store);
+  wireSelectionSync(map, store);
   const detailActions = placeDetailActions(map, store);
 
   // Bumped on every pan/zoom so anchored overlays reposition.

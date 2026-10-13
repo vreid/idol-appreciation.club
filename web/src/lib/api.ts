@@ -11,6 +11,7 @@
 
 import type {
   CenterInfo,
+  DigStack,
   Me,
   PendingAccount,
   Placement,
@@ -19,6 +20,7 @@ import type {
 } from "@contract";
 import {
   centerInfoSchema,
+  digStackSchema,
   meSchema,
   pendingAccountsSchema,
   placementsNearSchema,
@@ -29,6 +31,8 @@ import {
 export type {
   CenterHolder,
   CenterInfo,
+  DigEntry,
+  DigStack,
   Me,
   PendingAccount,
   Placement,
@@ -75,6 +79,9 @@ export interface ApiClient {
   me: () => Promise<Me | null>;
   place: (req: PlaceRequest) => Promise<PlacedPlacement>;
   near: (x: number, y: number, r: number) => Promise<Placement[]>;
+  /** All placements whose rotated pixels contain the world point,
+   * newest-first with 1-based depths. */
+  dig: (x: number, y: number) => Promise<DigStack>;
   center: () => Promise<CenterInfo>;
   report: (placementId: string) => Promise<void>;
   removePlacement: (placementId: string) => Promise<void>;
@@ -233,6 +240,10 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         await request(`/api/placements/near?${query}`),
         "placements/near",
       );
+    },
+    dig: async (x, y) => {
+      const query = new URLSearchParams({ x: String(x), y: String(y) });
+      return parseOk(digStackSchema, await request(`/api/dig?${query}`), "dig");
     },
     center: async () =>
       parseOk(centerInfoSchema, await request("/api/center"), "center"),

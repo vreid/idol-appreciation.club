@@ -1,5 +1,6 @@
 import type {
   CenterInfo,
+  DigEntry,
   Me,
   PendingAccount,
   Placement,
@@ -76,8 +77,18 @@ export interface AppStore {
   removePlacement(placementId: string): Promise<boolean>;
   /** The placement whose anchored detail panel is open, if any. */
   get selectedPlace(): Placement | null;
-  selectPlace(placement: Placement): void;
+  /** Selects and queries the strata under the click point (async; the
+   * depth cue fills in when the dig resolves). */
+  selectPlace(placement: Placement, point: { x: number; y: number }): void;
   deselectPlace(): void;
+  /** Strata under the selection point, newest-first (depth = index + 1). */
+  get digStack(): DigEntry[];
+  /** Full stack size at the selection point (may exceed the 64 cap). */
+  get digTotal(): number;
+  /** Which stratum the panel currently shows (0-based; -1 = not in stack). */
+  get digIndex(): number;
+  /** Wheel-flip: delta +1 peels deeper (older), -1 back toward the top. */
+  flipDig(delta: number): void;
 }
 
 export interface AppStoreDeps {

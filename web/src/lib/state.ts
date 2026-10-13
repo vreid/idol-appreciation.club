@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import type {
   ApiClient,
   CenterInfo,
+  DigEntry,
   Me,
   PendingAccount,
   Placement,
@@ -60,7 +61,9 @@ export function createAppStore(
   const [selectedPlace, setSelectedPlace] = createSignal<Placement | null>(
     null,
   );
-
+  const [digStack, setDigStack] = createSignal<DigEntry[]>([]);
+  const [digTotal, setDigTotal] = createSignal(0);
+  const [digIndex, setDigIndex] = createSignal(-1);
   const toastHub = createToastHub(deps);
   const { push: pushToast, dismiss: dismissToast } = toastHub;
 
@@ -179,11 +182,41 @@ export function createAppStore(
     get selectedPlace() {
       return selectedPlace();
     },
-    selectPlace(placement: Placement): void {
+    get digStack() {
+      return digStack();
+    },
+    get digTotal() {
+      return digTotal();
+    },
+    get digIndex() {
+      return digIndex();
+    },
+    selectPlace(placement: Placement, point: { x: number; y: number }): void {
       setSelectedPlace(placement);
+      setDigStack([]);
+      setDigTotal(0);
+      setDigIndex(-1);
+      // A failed dig degrades silently — the panel works without it.
+      void client.dig(point.x, point.y).then((stack) => {
+        if (selectedPlace()?.id !== placement.id) return; // superseded
+        setDigStack(stack.stack);
+        setDigTotal(stack.total);
+        setDigIndex(stack.stack.findIndex((e) => e.id === placement.id));
+      });
+    },
+    flipDig(delta: number): void {
+      const stack = digStack();
+      if (stack.length === 0) return;
+      const next = Math.min(Math.max(digIndex() + delta, 0), stack.length - 1);
+      if (next === digIndex()) return;
+      setDigIndex(next);
+      setSelectedPlace(stack[next] ?? null);
     },
     deselectPlace(): void {
       setSelectedPlace(null);
+      setDigStack([]);
+      setDigTotal(0);
+      setDigIndex(-1);
     },
     get prepared() {
       return prepared();

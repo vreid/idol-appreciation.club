@@ -308,15 +308,17 @@ jobs:
           oshost="$(jq -r '.endpoints[0].domain_name' /tmp/uc4.json)"
           test -n "$oshost" || { echo "objsto endpoint missing from API" >&2; exit 1; }
           dig +short "$oshost" | grep -qE '^[0-9]+\.' || { echo "objsto endpoint $oshost does not resolve" >&2; exit 1; }
+                    # key limit is 2 per user: delete every existing key BEFORE
+          # creating the fresh one (old keys are dead-by-drift by design)
+          uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc6.json
+          jq -r '.[].access_key_id' /tmp/uc6.json | while read -r old; do
+            uc key-del DELETE "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" /tmp/uc7.json
+          done
           uc key-create POST "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc5.json
           newkey="$(cat /tmp/uc5.json)"
           sak="$(printf '%s' "$newkey" | jq -r .access_key_id)"
           ssk="$(printf '%s' "$newkey" | jq -r .secret_access_key)"
           test -n "$ssk" || { echo "access key creation failed" >&2; exit 1; }
-          uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc6.json
-          jq -r '.[] | select(.access_key_id != "'"$sak"'") | .access_key_id' /tmp/uc6.json | while read -r old; do
-            uc key-del DELETE "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" /tmp/uc7.json
-          done
           # prod registration closed until an admin approves the account
           kubectl -n idol create secret generic app-env \
             --from-literal="DATABASE_URL=$db" \

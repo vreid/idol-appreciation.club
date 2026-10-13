@@ -119,7 +119,7 @@ tasks:
             if [ -n "${keep[${digests[$t]}]:-}" ]; then
               kept=$((kept + 1))
             else
-              crane delete "$repo:${digests[$t]}" \
+              crane delete "$repo@${digests[$t]}" \
                 && pruned=$((pruned + 1)) && echo "$pkg: pruned $t (${digests[$t]:0:19})"
             fi
           done

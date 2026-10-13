@@ -145,11 +145,11 @@ place_cell() { # place_cell ACCOUNT_IDX FILE X Y CELL_TAG
     -w '\n%{http_code} %{time_total}') || {
     echo "NON-201 cell $tag: connection error" >&2; return 1; }
   t1=$(date +%s.%N)
-  code=${body##*$'\n'}; body=${body%$'\n'*}
+  code_line=${body##*$'\n'}; body=${body%$'\n'*}
+  code=${code_line%% *}; ttotal=${code_line#* }
   tsum=$(python3 -c "print(f'{$t1 - $t0:.2f}')")
   if [[ $code == 2* ]]; then
-    LAT_SUM=$(python3 -c "print($LAT_SUM + ${body##* } + 0)")
-    : "${body%%$'\n'*}"
+    LAT_SUM=$(python3 -c "print($LAT_SUM + $ttotal + 0)")
     printf 'OK  cell %s (%s) %.2fs\n' "$tag" "$(basename "$file")" "$tsum"
     mkdir -p "$SEED_STATE_DIR"
     : > "$SEED_STATE_DIR/cell-$tag.done"
@@ -197,7 +197,7 @@ if [ "$SEED_COUNT" -gt 0 ]; then
     python3 - "$c" <<'PYEOF'
 import json, sys
 try:
-    cur = json.load(sys.stdin)["current"]
+    cur = json.loads(sys.argv[1])["current"]
     p = cur["placement"]
     cx = cy = 134217728
     print("1" if p["x"] <= cx < p["x"] + p["w"] and p["y"] <= cy < p["y"] + p["h"] else "0")
@@ -213,7 +213,7 @@ PYEOF
   else
     echo "==> Center not covered — placing 01-solo on 0/0 from the seed account"
     dims=$(scaled_size "$F01"); pw=${dims%x*}; ph=${dims#*x}
-    place_cell 0 "$F01" $(( CX - pw / 2 )) $(( CY - ph / 2 )) "center"
+    place_cell 0 "$F01" $(( CX - pw / 2 )) $(( CY - ph / 2 )) "center" || true
     [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || { echo "ABORT: $FAIL_LIMIT consecutive failures" >&2; exit 1; }
   fi
 
@@ -238,7 +238,7 @@ PYEOF
       else
         ai=0
       fi
-      place_cell "$ai" "$f" "$x" "$y" "$tag"
+      place_cell "$ai" "$f" "$x" "$y" "$tag" || true # failures counted, not fatal (see abort below)
       [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || {
         echo "ABORT: $FAIL_LIMIT consecutive non-201s (resume with the same command)" >&2; exit 1; }
       [ "$DRY_RUN" = "1" ] || sleep "$SEED_SLEEP"

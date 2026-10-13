@@ -87,8 +87,11 @@ are `!Send`, so no image ever crosses an `.await`):
    of **those bytes** is the content address: `originals/{sha256}.{ext}`. Raw
    uploads never touch storage; no EXIF (GPS) survives.
 3. Derivative: re-decode the stripped bytes, `resize_exact` to the derived `w×h`
-   (long edge = requested `size`, short edge rounds to nearest, min 1), encode
-   webp q85. Those bytes are deterministic for identical inputs and are hashed
+   (long edge = requested `size`, 16..4096, short edge rounds to nearest, min
+   1), encode webp q85. The optional multipart `rot` (float degrees, CLOCKWISE,
+   y-down, default 0, normalized mod 360 on write) does NOT enter the derivative
+   — rotation is composite-time only, so content-addressed dedupe is unaffected
+   by angle. Those bytes are deterministic for identical inputs and are hashed
    to `derivatives/{sha256}.webp`. Manifest
    `image_key`/`original_sha`/`derivative_sha` point at content keys; uploads
    use put-if-absent so repeats cost nothing.
@@ -105,12 +108,31 @@ resolving. The deployment pins libvips to Debian trixie's `8.16.1-1+deb13u2` in
 both Dockerfile stages so prod behavior matches one known build (CI gates run
 Ubuntu 24.04's libvips 8.15.1 and never assert cross-version byte determinism).
 
+Three hardening rules came out of rotation work, all load-bearing against
+libvips-rs 2.3 + libvips 8.15/8.16 — do not "simplify" them away:
+
+- `img.rs` holds a process-wide **reentrant mutex around every libvips entry
+  point**, and eval runs with `concurrency_set(1)`. Concurrent pipelines hit
+  GObject double-free SIGSEGVs deep in `g_object_unref`.
+- **Never `.clone()` a `VipsImage`**: the crate derives `Clone` as a raw pointer
+  copy with no refcount — a cloned handle double-unrefs at drop. `ops::copy`
+  makes a safe alias node.
+- `SimilarityOptions::default()` wraps `vips_interpolate_nearest_static()` — a
+  process-lifetime STATIC GObject — whose refcount the options' `Drop`
+  decrements. `rotate_centered` therefore `mem::forget`s its options (a bounded
+  ~100-byte leak per rotation).
+
 ## Placement, cooldown, ordering
 
 Pipeline (all inside chunk-key locks, acquired sorted — deadlock-free, and paint
 order always matches `seq` order):
 
-1. Validate `size` bounds and world bounds; build derivative + hashes.
+1. Validate `size` bounds and world bounds (checked on the AABB of the rotated
+   rect); build derivative + hashes. `bbox` (GiST) stores the AABB of the
+   rotated rect — computed once by `world::rotated_aabb` (floor/ceil outward,
+   quarter turns snapped exact) and written explicitly by the INSERT (the column
+   was a generated box of the unrotated rect; migration 0004 dropped the
+   expression when rotation landed).
 2. Open tx: intersect test (GiST) → threshold = 300 s (paint) or 1 s (empty);
    single guarded UPDATE — zero rows ⇒ rollback + `429` with `Retry-After`:
 
@@ -122,8 +144,12 @@ order always matches `seq` order):
 
 3. `seq = nextval('placement_seq')` inside the tx (burned seqs on rollback are
    fine — monotonic, not gapless).
-4. Composite the derivative onto every intersecting chunk (fetch, vips composite
-   with pixel offset, put back).
+4. Composite the derivative, rotated about its own center by `rot` (libvips
+   `similarity`, clockwise-positive, transparent background, output pinned to
+   the AABB), onto every chunk the AABB touches (fetch, vips composite at the
+   AABB offset, put back). Hit-tests ("covers point") inverse-rotate the point
+   and test the unrotated half-open rect (`world::rotated_contains`); cooldown
+   overlap stays AABB-vs-AABB via the GiST index.
 5. Insert the manifest row, `pg_notify('events', …)`, commit.
 
 Both cooldown knobs (`COOLDOWN_PAINT_SECS`, `COOLDOWN_EMPTY_SECS`) are env-
@@ -196,7 +222,7 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `S3_SECRET_ACCESS_KEY`, `SESSION_SECRET` (≥ 32 bytes). Optional with defaults:
 `LISTEN_ADDR=0.0.0.0:8080`, `PUBLIC_BASE_URL`, `STATIC_DIR=../web/dist`,
 `COOLDOWN_PAINT_SECS=300`, `COOLDOWN_EMPTY_SECS=1`, `MAX_UPLOAD_BYTES=10485760`,
-`MIN_SIZE=16`, `MAX_SIZE=2048`, `TILE_CACHE_ENTRIES=2048`, `RUST_LOG=info`,
+`MIN_SIZE=16`, `MAX_SIZE=4096`, `TILE_CACHE_ENTRIES=2048`, `RUST_LOG=info`,
 `REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
 signups behind admin approval).
 
@@ -212,10 +238,11 @@ separate web pod.
 ```sh
 sudo apt install libvips-dev postgresql        # build + test deps
 sudo service postgresql start
-sudo -u postgres createuser -d idol && sudo -u postgres createdb -O idol idol
-export DATABASE_URL=postgres://idol:idol@localhost:5432/idol
+sudo -u postgres createuser -d -s idol   # local trust auth, no password
+sudo -u postgres createdb -O idol idol
+export DATABASE_URL=postgres://localhost/idol
 export S3_ENDPOINT=file:///tmp/idol-s3 S3_BUCKET=dev
-export SESSION_SECRET=0123456789abcdef0123456789abcdef
+export SESSION_SECRET=$(head -c 32 /dev/urandom | xxd -p -c 64)
 cargo run                                       # API on :8080
 ```
 

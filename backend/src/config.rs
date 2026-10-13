@@ -78,7 +78,7 @@ impl Config {
                 .parse()
                 .expect("invalid MAX_UPLOAD_BYTES"),
             min_size: env_or("MIN_SIZE", "16").parse().expect("invalid MIN_SIZE"),
-            max_size: env_or("MAX_SIZE", "2048")
+            max_size: env_or("MAX_SIZE", "4096")
                 .parse()
                 .expect("invalid MAX_SIZE"),
             tile_cache_entries: env_or("TILE_CACHE_ENTRIES", "2048")

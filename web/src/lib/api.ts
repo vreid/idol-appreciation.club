@@ -30,6 +30,7 @@ export interface Placement {
   y: number;
   w: number;
   h: number;
+  rot: number;
   created_at: string;
 }
 
@@ -39,13 +40,21 @@ export interface PlacedPlacement {
   y: number;
   w: number;
   h: number;
+  rot: number;
   seq: number;
 }
 
 export interface CenterHolder {
   username: string;
   since: string;
-  placement: { id: string; x: number; y: number; w: number; h: number };
+  placement: {
+    id: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    rot: number;
+  };
 }
 
 export interface CenterInfo {
@@ -75,11 +84,13 @@ export class ApiError extends Error {
 export interface PlaceRequest {
   image: Blob;
   fileName: string;
-  /** Top-left corner in native world px. */
+  /** Top-left corner of the unrotated rect in native world px. */
   x: number;
   y: number;
-  /** Long edge in px, 16..2048. */
+  /** Long edge in px, 16..4096. */
   size: number;
+  /** Clockwise rotation in degrees (free angle, default 0). */
+  rot: number;
 }
 
 export interface ApiClient {
@@ -183,6 +194,7 @@ function placementOf(body: unknown): PlacedPlacement {
     y: num(obj, "y"),
     w: num(obj, "w"),
     h: num(obj, "h"),
+    rot: num(obj, "rot"),
     seq: num(obj, "seq"),
   };
 }
@@ -195,6 +207,7 @@ function placementFields(obj: Record<string, unknown>): Placement {
     y: num(obj, "y"),
     w: num(obj, "w"),
     h: num(obj, "h"),
+    rot: num(obj, "rot"),
     created_at: str(obj, "created_at"),
   };
 }
@@ -253,6 +266,7 @@ function centerOf(body: unknown): CenterInfo {
         y: num(placement, "y"),
         w: num(placement, "w"),
         h: num(placement, "h"),
+        rot: num(placement, "rot"),
       },
     };
   }
@@ -342,6 +356,7 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       form.append("x", String(req.x));
       form.append("y", String(req.y));
       form.append("size", String(req.size));
+      form.append("rot", String(req.rot));
       return placementOf(
         await request("/api/place", { method: "POST", body: form }),
       );

@@ -63,6 +63,7 @@
         url: prepared.previewUrl,
         w: size.w,
         h: size.h,
+        rot: store.rotation,
       });
       controller.setPlacing(true);
     } else {

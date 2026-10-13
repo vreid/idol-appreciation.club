@@ -132,6 +132,9 @@ pub async fn start_server_full(
         tile_render_max_delay_secs: tiles_cfg.max_delay_secs,
         tile_render_queue_cap: tiles_cfg.cap,
         registration_approval_required: approval_required,
+        import_block_entries: 500,
+        import_group_concurrency: 2,
+        import_derivative_long_edge: 1024,
     };
     let (state, app): (App, _) = build_app(cfg).await.expect("build app (pool + migrations)");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

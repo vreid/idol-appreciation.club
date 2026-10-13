@@ -1,0 +1,153 @@
+# Post-wipe reseed job — kubectl apply, deliberately NOT chart-templated.
+#
+#   # 1. edit SOURCE_SHA (pinned repo commit) + the reseed-admin Secret
+#   kubectl apply -f deploy/reseed-job.yaml
+#   kubectl -n idol logs -f job/reseed      # progress: one line per chunk
+#   kubectl -n idol delete job reseed       # when done inspecting
+#
+# Why not in the chart: this is a one-shot ops action tied to a specific
+# wipe, not desired state — routine `helm upgrade` must never re-fire it,
+# and the pinned-SHA knob is a per-run edit, not a per-release value.
+# (So no reseed.enabled chart gate either: keeping it out of the release
+# path entirely is the guard.)
+#
+# Flow: initContainer clones the PUBLIC repo at SOURCE_SHA (test-assets
+# AND the import scripts come from that one pinned commit — the manifest
+# rng discipline is sha-pinned too, so a resumed run reproduces byte-
+# identical entries) → main container runs import-bulk.sh via the small
+# ConfigMap runner below against the in-cluster service URL. The import
+# endpoint is idempotent (chunk batch ids derive from RESEED_TAG), so
+# re-firing the Job resumes without double-placing — re-fire it for
+# future themed reseeds as well (the food batch is already in
+# test-assets). Progress: kubectl logs / k9s :jobs.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reseed-runner
+  namespace: idol
+  labels:
+    app: reseed
+data:
+  # Thin env→args adapter; the actual import logic runs from the pinned
+  # clone (/src/scripts/import-bulk.sh), keeping rng/resume behavior tied
+  # to SOURCE_SHA exactly.
+  runner.sh: |
+    #!/bin/sh -eu
+    apk add -q --no-cache bash curl python3
+    exec bash /src/scripts/import-bulk.sh \
+      "$BASE_URL" "$ADMIN_USER" "$ADMIN_PASS" \
+      --count "$RESEED_COUNT" \
+      --chunk "$RESEED_CHUNK" \
+      --tag "$RESEED_TAG" \
+      --radius "$RESEED_RADIUS" \
+      --idols-dir /assets \
+      ${RESEED_PREWARM:+--prewarm}
+---
+# Post-wipe credential for the reseed admin. PLACEHOLDER VALUES — replace
+# before applying (or `kubectl create secret generic reseed-admin ...`
+# instead of applying this block).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: reseed-admin
+  namespace: idol
+  labels:
+    app: reseed
+type: Opaque
+stringData:
+  username: "pw-reseed-admin-user"
+  password: "pw-reseed-admin-pw-replace-before-apply"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reseed
+  namespace: idol
+  labels:
+    app: reseed
+spec:
+  # Resume is idempotent (chunk batch ids derive from RESEED_TAG), so a
+  # node-eviction retry is safe; a second failure wants eyes on it.
+  backoffLimit: 1
+  # No ttlSecondsAfterFinished: the Job stays for inspection; delete it
+  # explicitly when done.
+  template:
+    metadata:
+      labels:
+        app: reseed
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: clone-assets
+          image: alpine:3.20
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              apk add -q --no-cache git ca-certificates
+              # Fetch the pinned commit directly; GitHub allows
+              # reachable-SHA fetches on public repos.
+              git init -q /src
+              git -C /src remote add origin https://github.com/vreid/idol-appreciation.club.git
+              git -C /src fetch -q --depth 1 origin "$SOURCE_SHA"
+              git -C /src checkout -q FETCH_HEAD
+              cp -r /src/test-assets/idols /assets
+              echo "assets: $(ls /assets | wc -l) idols from $SOURCE_SHA"
+          env:
+            # PIN THIS per run: the repo commit the reseed reproduces.
+            - name: SOURCE_SHA
+              value: "0000000000000000000000000000000000000000" # REPLACE
+          volumeMounts:
+            - name: src
+              mountPath: /src
+            - name: assets
+              mountPath: /assets
+      containers:
+        - name: import
+          image: alpine:3.20
+          command: ["/bin/sh", "/scripts/runner.sh"]
+          env:
+            - name: BASE_URL
+              value: "http://backend.idol.svc" # in-cluster backend service
+            - name: ADMIN_USER
+              valueFrom:
+                secretKeyRef: { name: reseed-admin, key: username }
+            - name: ADMIN_PASS
+              valueFrom:
+                secretKeyRef: { name: reseed-admin, key: password }
+            - name: RESEED_COUNT
+              value: "100000"
+            - name: RESEED_CHUNK
+              value: "2500"
+            - name: RESEED_TAG
+              value: "reseed-postwipe" # reuse the same tag to resume
+            - name: RESEED_RADIUS
+              value: "100000"
+            - name: RESEED_PREWARM
+              value: "1"
+          volumeMounts:
+            - name: src
+              mountPath: /src
+              readOnly: true
+            - name: assets
+              mountPath: /assets
+              readOnly: true
+            - name: runner
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 512Mi
+      volumes:
+        - name: src
+          emptyDir: {}
+        - name: assets
+          emptyDir: {}
+        - name: runner
+          configMap:
+            name: reseed-runner
+            defaultMode: 0755

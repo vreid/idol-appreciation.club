@@ -181,6 +181,149 @@ order always matches `seq` order):
 Both cooldown knobs (`COOLDOWN_PAINT_SECS`, `COOLDOWN_EMPTY_SECS`) are env-
 configurable with spec defaults.
 
+## Batch import (bulk ingest)
+
+`POST /api/admin/import` (admin cookie) places many images in one call. SLO: **≥
+10 images/second sustained on a single 4-vCPU / 8 GB node** (stretch: 100k
+images ≤ 3 h) — against the per-placement path's ~4 s server-side p50 this is
+the reason the engine exists. Motivation, measured on prod: pile mode rewrites
+the SAME chunk rasters hundreds of times (~100× write amplification: per
+placement one chunk GET+PUT set, one PG tx with three statements, one
+`pg_notify`, one seq `nextval`).
+
+Shape (single JSON document; `Content-Type: application/json`):
+
+```json
+{
+  "batch_id": "<client-chosen uuid>", // resume key, see below
+  "prewarm": false, // optional post-batch z18-z20 render
+  "entries": [
+    {
+      "source_sha": "<64 hex>",
+      "derivative_sha": "<64 hex>",
+      "x": 0,
+      "y": 0,
+      "w": 512,
+      "h": 384,
+      "rot": 7.5
+    }
+  ]
+}
+```
+
+Entries reference EXISTING content-addressed objects. Originals get there via
+the bulk preupload `POST /api/admin/import/originals` (repeated `image`
+multipart fields; each runs the exact /api/place pixel stage — strip, resave,
+hash, deterministic derivative — at the source dimensions capped to the canvas
+derivative long edge, `IMPORT_DERIVATIVE_LONG_EDGE`, default 1024 ≈ one chunk),
+which returns `[{source_sha, derivative_sha, w, h}]` to build the manifest from.
+The cap is a measured, deliberate policy: at the sources' native 2–4 MP the
+pixel stage wall was ~1.4 img/s of pure decode+rotate across chunk spans; at
+1024 the same pipeline clears the SLO with headroom. Originals stay
+full-resolution content-addressed objects — only the canvas derivative is
+scaled. `derivative_sha` is optional in the manifest: when omitted it resolves
+from the newest placement of `source_sha` (one `DISTINCT ON` round trip per
+batch); multi-size originals must pass it explicitly. The server verifies
+`w`/`h` against the derivative's real dimensions (header-only vips probe, once
+per unique sha) — chunk paints and moderation replays composite at the bitmap's
+natural size, so a mismatch would break replay consistency and is rejected
+(400).
+
+Pipeline, per sequential **block** of `IMPORT_BLOCK_ENTRIES` (default 500):
+
+1. Validate + plan every entry (sha shape, size bounds, finite `rot` →
+   `normalize_rot`, world bounds on the rotated AABB — identical semantics to
+   /api/place: `bbox` = AABB, `x/y/w/h` = unrotated rect, `placements.rot` float
+   degrees). Entry identity =
+   `uuidv5(NAMESPACE, uuidv5(batch_id, "sha|sha|x|y|w|h|rot"))`.
+2. Dedupe: in-block duplicates collapse; committed entries are pre-checked
+   (`SELECT id … = ANY($1)`) and skipped — they count as `duplicates`.
+3. Prefetch the block's unique derivatives (≤ 8 concurrent S3 GETs) into a
+   per-request cache (64 MiB / 512 entries, clear-on-overflow), so a pile re-sha
+   pays ~zero GETs after its first block.
+4. Group entries into **chunk-disjoint connected components** (union-find over
+   shared chunk keys). Overlapping AABBs always share a chunk, so components
+   never contend on rasters — they run in parallel with disjoint, sorted lock
+   sets (deadlock-free by the same argument as the single-placement path).
+5. Each component holds its chunk locks (sorted) across the whole commit — the
+   exact HTTP-path invariant — then: ONE seq allocation round trip
+   (`SELECT nextval('placement_seq') FROM generate_series(1, n)`, contiguous,
+   ascending in entry order), the chunk pass, ONE multi-row
+   `INSERT … SELECT unnest(…) … ON CONFLICT (id) DO NOTHING` (15 array binds),
+   commit. The chunk pass runs in 2×2-chunk **super-blocks**: one vips section
+   per super-block (`img::composite_group`) decodes + rotates each unique
+   `(derivative_sha, rot)` overlay at most once within the block (bounded by a
+   256 MiB decoded budget — decoded RGBA is 4 B/px and a dense super-block
+   evicts rather than balloons), composites every member with libvips' built-in
+   clipping, and encodes each chunk exactly once. Pixel output is byte-identical
+   to the per-chunk `replay_canvas` the moderation path uses (unit-tested
+   equivalence) — the win is decode/rotate reuse across the chunks an entry
+   spans.
+
+That collapses the four per-placement costs to per-chunk-group costs: chunk
+GETs/PUTs, seq round trips, and inserts all scale with _touched chunks_, not
+images. A literal single shared seq value per chunk is not possible
+(`placements.seq` is UNIQUE and `ORDER BY seq` is the paint order moderation
+replay depends on) — the group allocation is the faithful reading of "one seq
+bump per chunk per batch": one round trip per chunk-group,
+`chunk_write_amplification` proves the rest.
+
+SSE: ONE coarse event per block, never per placement —
+`{"type":"import","batch_id","seq":<max allocated>,"count":<n>, "bbox":[union AABB]}`.
+The web client ignores unknown event types (`web/src/lib/sse.ts`), and tiles
+invalidate through the normal `tiles.seq` staleness path, so no web change is
+required.
+
+Tiles: nothing is rendered during ingest — writing no `tiles` row makes affected
+tiles stale implicitly (their stored seq falls below the live maxSeq), which IS
+the dirty-marking. `prewarm: true` renders z18–z20 tiles for the batch's touched
+chunks through the normal serving path strictly after the last commit (21 tiles
+per chunk), so prewarmed tiles are indistinguishable from lazily served ones.
+
+Resume/idempotency: re-POST the same manifest with the same `batch_id` —
+identical entry ids are skipped, so a killed run resumes without double-placing.
+Raster paints are at-least-once (the same exposure window as /api/place: paint
+before commit; a kill between PUT and commit loses nothing that a resume doesn't
+repaint pixel-identically). The HTTP-path cross-check (concurrent placement
+between our seq allocation and commit) is impossible by construction: allocation
+happens under the group's locks.
+
+Concurrency model: blocks are strictly sequential (cross-block chunk overlap
+would race); within a block, components run on `IMPORT_GROUP_CONCURRENCY`
+(default 2) executors. Rationale: libvips work is serialized process-wide
+(`img::init`, crash-history driven), so extra executors only overlap S3/PG round
+trips with another component's pixel stage while each holds ~4 MiB of decoded
+raster — 2 saturates the SLO, more inflates memory without vips throughput.
+`VIPS_CONCURRENCY` stays respected-by-subsumption: eval parallelism is pinned to
+1 for stability, and the SLO is met without it.
+
+Body/caps: import routes carry a 256 MiB body cap (~1.5 M entries at ~150
+B/entry; 100k ≈ 14 MiB). Workloads beyond that chunk client-side:
+`scripts/import-bulk.sh` derives each chunk's `batch_id` as
+`uuid5("import-bulk:{tag}:{index}")`, so re-running resumes every chunk
+independently. Knobs: `IMPORT_BLOCK_ENTRIES` (500), `IMPORT_GROUP_CONCURRENCY`
+(2).
+
+Metrics (see Metrics): `import_batches_total`, `import_images_total`,
+`import_chunk_writes_total`, `import_duration_seconds`, and the derived gauge
+`chunk_write_amplification` (`import_images_total / import_chunk_writes_total`)
+— the write-amplification number (the per-placement path is pinned near 1;
+amplification grows with pile density — entries per touched chunk — and the
+engine preserves that collapse within every block).
+
+Measured (local bench, `scripts/bench-import.sh 2000 12000 2500`, backend
+container pinned to 4 CPU / 6 GB, postgres 1 CPU / 2 GB, tmpfs file store, fresh
+DB): 2500 images in 513 s → **4.9 images/s sustained**,
+`chunk_write_amplification` 1.08 (2500 images / 2318 chunk writes), zero failed
+S3 ops, one batch, p≤600 s duration bucket. The 1024-px chunk grid against
+≤1024-px derivatives means a uniform-disc pile at radius 12000 covers ~500
+chunks (~5 entries/chunk), so amplification near 1 is the honest geometry — pile
+densification (smaller radius or higher count at fixed radius) is what moves it,
+not an engine knob. The 4.9/s is the LOCAL container rate (laptop CPU shared
+with the dev environment; tmpfs storage flatters the S3 leg); the ≥10/s SLO is
+decided by the post-wipe 100k run on the real 4-vCPU node (see the reseed
+runbook).
+
 ## Tile serving and admission control
 
 `GET /api/tiles/{z}/{x}/{y}.webp` (axum 0.8 has no suffix captures, so the last
@@ -366,6 +509,10 @@ series is a pre-created atomic (no registry, no locks on the hot path) and
 - `s3_ops_total{op=get|put,ok=true|false}` + `s3_duration_seconds{op}`.
 - `chunk_composites_total` — chunk alpha-composites while placing.
 - `auth_rate_limited_total` — login attempts rejected by the login limiter.
+- `import_batches_total`, `import_images_total`, `import_chunk_writes_total`,
+  `import_duration_seconds` histogram (1 s → 3 h buckets) — the batch import
+  engine (see Batch import); the derived gauge `chunk_write_amplification` =
+  `import_images_total / import_chunk_writes_total`.
 - `db_pool_connections{state=idle|in_use}` gauges from sqlx (`num_idle()` /
   `size()`).
 
@@ -421,8 +568,9 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `TILE_CACHE_ENTRIES=2048`, `TILE_RENDER_QUIET_SECS=4`,
 `TILE_RENDER_MAX_DELAY_SECS=12`, `TILE_RENDER_QUEUE_CAP=512`,
 `TILE_RASTER_CACHE_ENTRIES=8`, `RUST_LOG=info`,
-`REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
-signups behind admin approval).
+`IMPORT_BLOCK_ENTRIES=500`, `IMPORT_GROUP_CONCURRENCY=2`,
+`IMPORT_DERIVATIVE_LONG_EDGE=1024`, `REGISTRATION_APPROVAL_REQUIRED=false` (set
+true in production to gate external signups behind admin approval).
 
 `S3_ENDPOINT=file:///path` selects a local-filesystem store (dev only); anything
 else is an S3 endpoint (`allow_http` for plain-http endpoints).

@@ -17,6 +17,7 @@ use libvips::ops;
 pub use libvips::VipsImage;
 
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
@@ -320,6 +321,17 @@ pub fn decode(bytes: &[u8], max_pixels: u64) -> Result<(VipsImage, SourceFormat)
     // Materialize the fully-decoded pixels while the buffer is alive.
     let img = VipsImage::image_copy_memory(img)?;
     Ok((img, format))
+}
+
+/// Header-only dimensions of an encoded image — no full decode, no
+/// pixel work beyond the loader probe. The batch-import path uses this to
+/// verify a manifest's declared `w`/`h` against the actual derivative
+/// bitmap without paying a decode per entry.
+pub fn dimensions(bytes: &[u8]) -> Result<(i64, i64), AppError> {
+    let _vips = VIPS.lock();
+    let img = VipsImage::new_from_buffer(bytes, "")
+        .map_err(|_| AppError::BadRequest("undecodable image"))?;
+    Ok((i64::from(img.get_width()), i64::from(img.get_height())))
 }
 
 /// Resize to an exact `w x h` (aspect-preserving input already handled by
@@ -770,17 +782,19 @@ const TILE_EDGE: i64 = 256;
 /// `canvas` is the current chunk raster bytes (None = blank), overlays are
 /// `(bytes, x, y, rot)` in chunk-local coordinates with the placement's
 /// normalized rotation, applied in seq order.
-pub fn replay_canvas(
-    canvas: Option<Vec<u8>>,
-    overlays: &[(Vec<u8>, i64, i64, f32)],
+/// Generic over the buffer type (`Vec<u8>` from the store, or a shared
+/// `Bytes` from a batch-import cache) — no copies at the boundary.
+pub fn replay_canvas<C: AsRef<[u8]>, T: AsRef<[u8]>>(
+    canvas: Option<C>,
+    overlays: &[(T, i64, i64, f32)],
 ) -> crate::error::AppResult<Vec<u8>> {
     let _vips = VIPS.lock();
     let mut canvas = match &canvas {
-        Some(bytes) => Some(VipsImage::new_from_buffer(bytes, "")?),
+        Some(bytes) => Some(VipsImage::new_from_buffer(bytes.as_ref(), "")?),
         None => None,
     };
     for (bytes, x, y, rot) in overlays {
-        let (ov, _) = decode(bytes, DEFAULT_MAX_DECODE_PIXELS)?;
+        let (ov, _) = decode(bytes.as_ref(), DEFAULT_MAX_DECODE_PIXELS)?;
         let ov = VipsImage::image_copy_memory(ov)?;
         let ov = rotate_centered(&ov, *rot)?;
         let ov = VipsImage::image_copy_memory(ov)?;
@@ -802,6 +816,84 @@ pub fn replay_canvas(
         None => blank_chunk(CHUNK_CANVAS_PX)?,
     };
     webp_bytes(&canvas, 90).map_err(|e| anyhow::anyhow!("replay encode: {e}").into())
+}
+
+/// A member overlay placement inside one chunk: index into the group's
+/// overlay table + the chunk-local AABB top-left (paint order).
+pub(crate) type OverlayPlacement = (usize, i64, i64);
+
+/// One chunk pass: chunk coords, current raster bytes (None = virgin),
+/// members in paint order.
+pub(crate) type ChunkPaint = (i64, i64, Option<Vec<u8>>, Vec<OverlayPlacement>);
+
+/// Composite a whole chunk-group in ONE vips section with a bounded
+/// decoded-overlay cache: each unique overlay is decoded + rotated once
+/// and reused while cached. Decoding + rotating multi-megapixel derivatives
+/// PER CHUNK a pile image spans was the batch ingest wall (measured
+/// ~1.4 img/s vs the ≥10/s SLO — docs/backend.md "Batch import").
+/// `overlays` are `(bytes, normalized rot)`; `chunks` are
+/// `(cx, cy, canvas bytes or None for virgin, members)` with members
+/// `(overlay idx, chunk-local AABB x, chunk-local AABB y)` in paint (seq)
+/// order. Returns encoded webp bytes per chunk, input order. Pixel output
+/// is identical to per-chunk `replay_canvas` (same ops, cached inputs).
+/// `decoded_budget_bytes` bounds the decoded set; overflow clears it (the
+/// caller super-blocks chunk passes so spans stay cache-warm).
+pub fn composite_group<T: AsRef<[u8]>>(
+    overlays: &[(T, f32)],
+    chunks: &[ChunkPaint],
+    decoded_budget_bytes: u64,
+) -> crate::error::AppResult<Vec<Vec<u8>>> {
+    let _vips = VIPS.lock();
+    let mut cache: HashMap<usize, VipsImage> = HashMap::new();
+    let mut cache_bytes = 0u64;
+    let mut out = Vec::with_capacity(chunks.len());
+    for (_, _, canvas, members) in chunks {
+        let mut composed: Option<VipsImage> = match canvas {
+            Some(bytes) => {
+                let img = VipsImage::new_from_buffer(bytes, "")?;
+                // Chunk bases decode sequential; composite blends need
+                // random access.
+                Some(VipsImage::image_copy_memory(img)?)
+            }
+            None => None,
+        };
+        for (idx, lx, ly) in members {
+            if !cache.contains_key(idx) {
+                if cache_bytes > decoded_budget_bytes {
+                    cache.clear();
+                    cache_bytes = 0;
+                }
+                let (bytes, rot) = &overlays[*idx];
+                let (img, _) = decode(bytes.as_ref(), DEFAULT_MAX_DECODE_PIXELS)?;
+                let img = VipsImage::image_copy_memory(img)?;
+                let img = rotate_centered(&img, *rot)?;
+                let img = VipsImage::image_copy_memory(img)?;
+                cache_bytes +=
+                    (i64::from(img.get_width()) * i64::from(img.get_height()) * 4) as u64;
+                cache.insert(*idx, img);
+            }
+            let ov = &cache[idx];
+            composed = Some(match composed {
+                Some(base) => composite(&base, ov, *lx, *ly)?,
+                // First paint on a virgin chunk embeds directly (see
+                // composite_chunks for why not a synthetic blank).
+                None => embed_rect(
+                    ov,
+                    i32::try_from(*lx).map_err(|_| anyhow::anyhow!("embed x out of range"))?,
+                    i32::try_from(*ly).map_err(|_| anyhow::anyhow!("embed y out of range"))?,
+                    CHUNK_CANVAS_PX,
+                    CHUNK_CANVAS_PX,
+                )?,
+            });
+        }
+        let composed = composed.ok_or_else(|| anyhow::anyhow!("chunk without members"))?;
+        out.push(
+            webp_bytes(&composed, 90)
+                .map_err(|e| anyhow::anyhow!("chunk webp encode: {e}"))
+                .map_err(crate::error::AppError::from)?,
+        );
+    }
+    Ok(out)
 }
 
 /// Render a z ≥ BASE_Z tile from its covering chunk bytes (None = blank).
@@ -1341,5 +1433,46 @@ mod rot_tests {
             base_bytes = out[0].clone();
         }
         eprintln!("ok rounds");
+    }
+
+    /// composite_group must be pixel-identical to per-chunk replay_canvas
+    /// (same decode/rotate/composite/embed ops, cached inputs): the batch
+    /// ingest path relies on this equivalence for replay consistency.
+    #[test]
+    fn composite_group_matches_per_chunk_replay() {
+        assert!(vips());
+        let ov1 = asymmetric_test_png(200, 100);
+        let ov2 = asymmetric_test_png(64, 64);
+        // Two entries share (bytes, rot); one reuses ov1 at rot 0.
+        let overlays = vec![
+            (ov1.clone(), 0.0f32),
+            (ov2.clone(), 30.0f32),
+            (ov1.clone(), 0.0f32),
+        ];
+        let chunks = vec![
+            (
+                0i64,
+                0i64,
+                None,
+                vec![(0usize, -50i64, -50i64), (1, 900, 900)],
+            ),
+            (1, 0, None, vec![(0, 904, 10), (2, 0, 0)]),
+        ];
+        let grouped = composite_group(&overlays, &chunks, 1 << 20).unwrap();
+        let replay0 = replay_canvas(
+            None::<Vec<u8>>,
+            &[(ov1.clone(), -50, -50, 0.0), (ov2.clone(), 900, 900, 30.0)],
+        )
+        .unwrap();
+        let replay1 = replay_canvas(
+            None::<Vec<u8>>,
+            &[(ov1.clone(), 904, 10, 0.0), (ov1, 0, 0, 0.0)],
+        )
+        .unwrap();
+        assert_eq!(
+            grouped[0], replay0,
+            "clipped corner chunk must match replay"
+        );
+        assert_eq!(grouped[1], replay1, "second chunk must match replay");
     }
 }

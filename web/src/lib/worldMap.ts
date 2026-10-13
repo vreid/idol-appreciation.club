@@ -17,7 +17,6 @@ import {
   affectedRenderedTiles,
   createTileRefresher,
   type TileRefreshSource,
-  type TileRefresher,
 } from "./tileRefresh";
 import { refetchTiles, renderedTileMap, viewWorldBBox } from "./tileDom";
 import { wireUrlViewState } from "./urlViewState";
@@ -59,6 +58,8 @@ export interface WorldMapController {
   clearSelection(): void;
   /** Fires on every pan/zoom so anchored overlays can reposition. */
   onViewportChange(cb: () => void): void;
+  /** Selection-held wheel mode: zoom disabled, wheel flips the stack. */
+  setDigMode(on: boolean, onWheel?: (deltaY: number) => void): void;
   destroy(): void;
 }
 
@@ -181,6 +182,62 @@ function wireWorldCentering(map: L.Map): () => void {
   };
 }
 
+// Wheel-dig channel: while a selection is held (a callback is set), wheel
+// events on the container flip through the stack instead of zooming.
+// Non-passive so the browser's scroll-zoom is suppressed.
+function createDigWheelChannel(container: HTMLElement): {
+  set: (cb: ((deltaY: number) => void) | null) => void;
+} {
+  let cb: ((deltaY: number) => void) | null = null;
+  container.addEventListener(
+    "wheel",
+    (event) => {
+      if (cb === null) return;
+      event.preventDefault();
+      cb(event.deltaY);
+    },
+    { passive: false },
+  );
+  return { set: (next) => void (cb = next) };
+}
+
+function addTileLayer(map: L.Map): L.TileLayer {
+  return L.tileLayer("/api/tiles/{z}/{x}/{y}.webp", {
+    tileSize: TILE_SIZE,
+    minZoom: MIN_ZOOM,
+    maxZoom: MAX_ZOOM,
+    bounds: L.latLngBounds(...WORLD_LAT_LNG_BOUNDS),
+  }).addTo(map);
+}
+
+function createRefreshLoop(
+  map: L.Map,
+  tileLayer: L.TileLayer,
+): {
+  queue: (bbox: BBox) => void;
+  invalidate: (bbox: BBox) => void;
+  dispose: () => void;
+} {
+  const source: TileRefreshSource = {
+    renderedTileKeys: () => Object.keys(renderedTileMap(tileLayer)),
+    viewport: () => viewWorldBBox(map),
+  };
+  const refresher = createTileRefresher(source, (keys) => {
+    refetchTiles(tileLayer, keys);
+  });
+  return {
+    queue: (bbox) => {
+      refresher.queue(bbox);
+    },
+    invalidate: (bbox) => {
+      refetchTiles(tileLayer, affectedRenderedTiles(source, [bbox]));
+    },
+    dispose: () => {
+      refresher.dispose();
+    },
+  };
+}
+
 export function createWorldMap(
   container: HTMLElement,
   callbacks: MapCallbacks,
@@ -207,27 +264,14 @@ export function createWorldMap(
   map.on("move", () => {
     if (viewportCb !== null) viewportCb();
   });
+  const digWheel = createDigWheelChannel(container);
 
-  const tileLayer = L.tileLayer("/api/tiles/{z}/{x}/{y}.webp", {
-    tileSize: TILE_SIZE,
-    minZoom: MIN_ZOOM,
-    maxZoom: MAX_ZOOM,
-    bounds: L.latLngBounds(...WORLD_LAT_LNG_BOUNDS),
-  }).addTo(map);
+  const tileLayer = addTileLayer(map);
 
   const stopCentering = wireWorldCentering(map);
   const stopUrlView = wireUrlViewState(map);
 
-  const refreshSource: TileRefreshSource = {
-    renderedTileKeys: () => Object.keys(renderedTileMap(tileLayer)),
-    viewport: () => viewWorldBBox(map),
-  };
-  const refresher: TileRefresher = createTileRefresher(
-    refreshSource,
-    (keys) => {
-      refetchTiles(tileLayer, keys);
-    },
-  );
+  const refresh = createRefreshLoop(map, tileLayer);
 
   const internal: MapInternals = {
     map,
@@ -241,11 +285,11 @@ export function createWorldMap(
 
   return {
     invalidateBBox(bbox: BBox): void {
-      refetchTiles(tileLayer, affectedRenderedTiles(refreshSource, [bbox]));
+      refresh.invalidate(bbox);
     },
 
     queueTileRefresh(bbox: BBox): void {
-      refresher.queue(bbox);
+      refresh.queue(bbox);
     },
 
     pulse(bbox: BBox): void {
@@ -291,8 +335,20 @@ export function createWorldMap(
       viewportCb = cb;
     },
 
+    /** While a selection is held: map zoom yields to wheel-dig, and the
+     * container's wheel events route to the flip callback. */
+    setDigMode(on: boolean, onWheel?: (deltaY: number) => void): void {
+      if (on) {
+        map.scrollWheelZoom.disable();
+        digWheel.set(onWheel ?? null);
+      } else {
+        digWheel.set(null);
+        map.scrollWheelZoom.enable();
+      }
+    },
+
     destroy(): void {
-      refresher.dispose();
+      refresh.dispose();
       stopCentering();
       stopUrlView();
       ghost.el?.remove();

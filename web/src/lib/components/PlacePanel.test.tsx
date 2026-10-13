@@ -35,6 +35,9 @@ function makeClient(): ApiClient {
     removePlacement: vi.fn(() => Promise.resolve()),
     pendingAccounts: vi.fn(() => Promise.resolve([])),
     approveAccount: vi.fn(() => Promise.resolve()),
+    dig: vi.fn(() =>
+      Promise.resolve({ stack: [], total: 0, truncated: false }),
+    ),
   };
 }
 

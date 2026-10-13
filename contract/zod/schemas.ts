@@ -111,6 +111,7 @@ export const digStackSchema = z.object({
   truncated: z.boolean(),
 });
 
+
 /** 201 response of POST /api/place. */
 export const placedPlacementSchema = z.object({
   id: z.string(),

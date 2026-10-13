@@ -186,15 +186,33 @@ happy-dom via a `// @vitest-environment happy-dom` docblock.
 - This replaced the old Leaflet popup (`world-popup`), which rendered on top of
   the image it described.
 
+### Dig: wheeling through the pile
+
+Selecting a placement also queries `GET /api/dig?x=&y=` at the click point
+(`DigEntry[]`/`DigStack` schemas, parsed at the boundary like every other
+response). While a selection is held:
+
+- Leaflet's scroll-wheel zoom is disabled; wheel events route to `store.flipDig`
+  instead (`WorldMapController.setDigMode`). Wheel down peels deeper (older
+  strata), wheel up returns toward the newest; the flip clamps at both ends.
+- The panel's depth cue (`3 of 12`) tracks the visible stratum (`digIndex + 1`
+  of `digTotal`; hidden for single-stratum selections), and the panel content +
+  AABB highlight follow the flipped placement (`wireSelectionSync`).
+- Deselecting (any path) restores normal wheel-zoom.
+- The stack is a snapshot: a `place` mid-session doesn't refresh it, and an SSE
+  `remove` of the visible entry deselects via the existing selection watcher.
+
 ## API usage map
 
 Cookie auth, same-origin. `src/lib/api.ts` is the only fetch site (fetch +
 optional `base` injectable; the contract suite passes the booted backend's
 origin). Endpoints: auth register/login/logout/me, place (multipart
-x/y/size/rot), placements/near, center, events (SSE), reports, admin placements
-delete, admin accounts list/approve. UX rules live in `state.ts`: 429 → cooldown
-toast with Retry-After; 401/403 → login popover; `/api/center` polls every 30 s
-and refreshes early when an SSE bbox covers the center.
+x/y/size/rot), placements/near, dig (stack under a point, newest-first with
+1-based depths; zod-parsed `digStackSchema`), center, events (SSE), reports,
+admin placements delete, admin accounts list/approve. UX rules live in
+`state.ts`: 429 → cooldown toast with Retry-After; 401/403 → login popover;
+`/api/center` polls every 30 s and refreshes early when an SSE bbox covers the
+center.
 
 ## Design tokens (Chota)
 

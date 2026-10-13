@@ -49,10 +49,29 @@ resource "upcloud_kubernetes_cluster" "this" {
 }
 
 resource "upcloud_kubernetes_node_group" "this" {
-  cluster    = upcloud_kubernetes_cluster.this.id
-  name       = var.node_group_name
-  plan       = var.node_plan
+  cluster = upcloud_kubernetes_cluster.this.id
+  name    = var.node_group_name
+  plan    = var.node_plan
+  # node_count is the autoscaling FLOOR (see var.node_count). There are
+  # no min/max autoscaling fields on this resource — the provider
+  # v5.47.0 schema and the 1.3 API expose only a fixed count (API JSON
+  # field: "count"). Scaling 1..2 is done by the in-cluster Cluster
+  # Autoscaler (chart/, gated off) PATCHing this count.
+  #
+  # FIELD-NAME TRAP (2026-10-13 outage): a bare `count` here is tofu's
+  # meta-argument — it CLONES this resource once per integer and rolls
+  # every node. The provider attribute is node_count; never write count.
+  #
+  # DRIFT: the Cluster Autoscaler owns the live count (chart/
+  # clusterAutoscaler), so a real `tofu apply` must never snap it back
+  # to var.node_count — that destroys the scaled-up node. ignore_changes
+  # stays for CA's lifetime; raise capacity via the bounds in
+  # chart/values.yaml, not here. See docs/infra.md "Scaling".
   node_count = var.node_count
+
+  lifecycle {
+    ignore_changes = [node_count]
+  }
 
   labels = {
     project    = "idol-appreciation.club"

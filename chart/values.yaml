@@ -20,6 +20,17 @@ domain: idol-appreciation.club
 backend:
   registrationApprovalRequired: true
   replicaCount: 1
+  # HPA support, STAGED OFF behind a hard gate: the backend is a single
+  # writer (PG advisory locks unvalidated at >1 replica) — flip only
+  # after the advisory-lock PR lands and replicas=2 is soak-validated.
+  # Order and caveats: docs/infra.md "Scaling".
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 65
+    # 5m scale-down stabilization; upscale is immediate.
+    stabilizationWindowSeconds: 300
   # Requests sized for HPA math + scheduling; limits generous so parallel
   # chunk composites (libvips) never throttle: 6-way placement bursts
   # OOMKilled at the old 1536Mi limit (2026-10-13 soak).
@@ -54,3 +65,27 @@ edgeLoadBalancer:
     interval: 10
     fall: 3
     rise: 3
+
+# Cluster Autoscaler, UpCloud cloud-provider build. UpCloud managed
+# Kubernetes has NO native node-group min/max autoscaling — the 1.3 API
+# and provider v5.47.0 expose only a fixed count (`node_count`) — so
+# scaling is done by CA in-cluster PATCHing the node-group count within
+# the --nodes=min:max bounds. Rationale and flip order:
+# docs/infra.md "Scaling".
+clusterAutoscaler:
+  # staged: flip only together with (after) the backend HPA gate. The
+  # deploy workflow provisions the upcloud-autoscaler secret and passes
+  # clusterId on every deploy, so enabling this is a values-only change.
+  enabled: false
+  # Cluster uuid; injected by deploy.yml (--set-string). Unused while
+  # enabled is false.
+  clusterId: ""
+  # worker node group managed by tofu (tofu/ var.node_group_name).
+  nodeGroup: default
+  minSize: 1
+  maxSize: 2
+  scaleDownEnabled: true
+  # Digest pins tag v1.29.5 (verified anonymously pullable from GHCR,
+  # 2026-10-13); a mutable tag is not acceptable for a component that
+  # adds and removes nodes.
+  image: ghcr.io/upcloudltd/autoscaler@sha256:54aa2662c57e58961080436bb27e70c3a9670ec582001ffd36a6573649de35c5

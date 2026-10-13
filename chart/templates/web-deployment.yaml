@@ -7,6 +7,7 @@ metadata:
   labels:
     app: web
 spec:
+  # fixed at 1: /data is an RWO PVC (Caddy TLS state) — replicas cannot share it
   replicas: 1
   # Explicit zero-downtime roll: maxSurge 1 / maxUnavailable 0 means the
   # replacement pod must pass readiness before the old one terminates.

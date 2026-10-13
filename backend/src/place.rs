@@ -303,7 +303,9 @@ pub async fn place(
     .map_err(internal)??;
     let (stripped, format, (w, h), derivative_bytes) = pipeline;
     let rect = Rect::new(x, y, w, h);
+    let original_sha = img::sha256_hex(&stripped);
     let original_key = format!("originals/{original_sha}.{}", format.ext());
+    let derivative_sha = img::sha256_hex(&derivative_bytes);
     let image_key = format!("derivatives/{derivative_sha}.webp");
 
     // Upload derivative first (dedup); original second.

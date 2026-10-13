@@ -675,7 +675,7 @@ pub fn replay_canvas<C: AsRef<[u8]>, T: AsRef<[u8]>>(
         None => None,
     };
     for (bytes, x, y, rot) in overlays {
-        let (ov, _) = decode(bytes, DEFAULT_MAX_DECODE_PIXELS)?;
+        let (ov, _) = decode(bytes.as_ref(), DEFAULT_MAX_DECODE_PIXELS)?;
         let ov = VipsImage::image_copy_memory(ov)?;
         let ov = rotate_centered(&ov, *rot)?;
         let ov = VipsImage::image_copy_memory(ov)?;
@@ -745,7 +745,7 @@ pub fn composite_group<T: AsRef<[u8]>>(
                     cache_bytes = 0;
                 }
                 let (bytes, rot) = &overlays[*idx];
-                let (img, _) = decode(bytes.as_ref())?;
+                let (img, _) = decode(bytes.as_ref(), DEFAULT_MAX_DECODE_PIXELS)?;
                 let img = VipsImage::image_copy_memory(img)?;
                 let img = rotate_centered(&img, *rot)?;
                 let img = VipsImage::image_copy_memory(img)?;

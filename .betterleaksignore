@@ -98,3 +98,15 @@ web/test/contract/contract.test.ts:generic-password:163
 d0da54d0ad5ad5da42ea4e9713fc9c338a901532:deploy/reseed-job.yaml:generic-password:60
 18dffef80fb98dc31cd2086768ed7d3b6c91dfea:backend/tests/integration.rs:generic-password:1080
 c9a0d42946a22082947257a8f2aa5d4a5580b6c8:backend/tests/integration.rs:generic-password:1080
+# filesystem (dir scan) — batch-import PR fixtures (PR #89): pw-style
+# reseed placeholder + hunter2hunter2/wrong-password test passwords
+# (line numbers shift on every rebase — regenerate per .betterleaks.toml
+# if the gate trips again; verified fixtures, not leaks)
+backend/tests/common/mod.rs:generic-password:256
+backend/tests/integration.rs:generic-password:43
+backend/tests/integration.rs:generic-password:52
+backend/tests/integration.rs:generic-password:64
+backend/tests/integration.rs:generic-password:578
+backend/tests/integration.rs:generic-password:589
+backend/tests/integration.rs:generic-password:1215
+deploy/reseed-job.yaml:generic-password:60

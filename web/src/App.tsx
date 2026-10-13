@@ -5,7 +5,17 @@ import { burstConfetti } from "./lib/confetti";
 import { readNaturalSize } from "./lib/images";
 import { SseClient, eventTouchesCenter } from "./lib/sse";
 import { createWorldMap, type WorldMapController } from "./lib/worldMap";
-import { queryRadiusForZoom, type BBox } from "./lib/world";
+import {
+  queryRadiusForZoom,
+  rotAABB,
+  worldScale,
+  type BBox,
+} from "./lib/world";
+import type { Placement } from "./lib/api";
+import PlaceDetail, {
+  type PlaceDetailActions,
+  type SelectionGeometry,
+} from "./lib/components/PlaceDetail";
 import TopBar from "./lib/components/TopBar";
 import PlacePanel from "./lib/components/PlacePanel";
 import Toasts from "./lib/components/Toasts";
@@ -39,9 +49,15 @@ async function onMapClick(
   const zoom = controller.currentZoom();
   const near = await store.refreshNear(x, y, queryRadiusForZoom(zoom));
   const top = near[0];
-  // Empty spots are a silent no-op — no toast spam on bare canvas.
-  if (top === undefined) return;
-  controller.showPlacement(top);
+  // Empty spots are a silent no-op — no toast spam on bare canvas — but
+  // they deselect (clicking away closes the detail panel).
+  if (top === undefined) {
+    store.deselectPlace();
+    controller.clearSelection();
+    return;
+  }
+  store.selectPlace(top);
+  controller.showSelection(top);
 }
 
 async function onRemove(
@@ -56,7 +72,8 @@ async function onRemove(
   if (removed) {
     // Optimistic: drop the pixels right away; SSE confirms later.
     controller.invalidateBBox(bbox);
-    controller.closePopup();
+    store.deselectPlace();
+    controller.clearSelection();
   }
 }
 
@@ -102,6 +119,61 @@ function wireGhostSync(map: MapHandle, store: AppStore): void {
   });
 }
 
+/** Screen-space anchor geometry for the selected placement. Deliberately
+   non-reactive: reflects the map state at the moment the viewport signal
+   bumps (PlaceDetail re-runs its layout effect on that signal). */
+function selectionGeometry(
+  map: MapHandle,
+  placement: Placement,
+): SelectionGeometry {
+  const c = map.current;
+  if (c === null) {
+    return {
+      aabb: { x: -9999, y: -9999, w: 0, h: 0 },
+      viewport: { w: 0, h: 0 },
+    };
+  }
+  const scale = worldScale(c.currentZoom());
+  const aabbSize = rotAABB(placement.w, placement.h, placement.rot);
+  const center = c.worldToScreenPoint(
+    placement.x + placement.w / 2,
+    placement.y + placement.h / 2,
+  );
+  return {
+    aabb: {
+      x: center.x - (aabbSize.w * scale) / 2,
+      y: center.y - (aabbSize.h * scale) / 2,
+      w: aabbSize.w * scale,
+      h: aabbSize.h * scale,
+    },
+    viewport: {
+      w: map.el?.clientWidth ?? 0,
+      h: map.el?.clientHeight ?? 0,
+    },
+  };
+}
+
+/** Panel actions live in App so Report/Remove reuse the same store paths
+   as the rest of the UI. */
+function placeDetailActions(
+  map: MapHandle,
+  store: AppStore,
+): PlaceDetailActions {
+  return {
+    isLoggedIn: () => store.me !== null,
+    onReport: (id) => void store.reportPlacement(id),
+    isAdmin: () => store.me?.is_admin === true,
+    onRemove: (id, bbox) => void onRemove(map, store, id, bbox),
+    onAuthPrompt: () => {
+      store.promptAuth();
+    },
+    onDeselect: () => {
+      store.deselectPlace();
+      map.current?.clearSelection();
+    },
+  };
+}
+
 export default function App() {
   const store = createAppStore(createApiClient());
 
@@ -127,18 +199,18 @@ export default function App() {
 
   // Keep the ghost image in sync with the placing flow.
   wireGhostSync(map, store);
+  const detailActions = placeDetailActions(map, store);
+
+  // Bumped on every pan/zoom so anchored overlays reposition.
+  const [viewportVersion, bumpViewport] = createSignal(0);
 
   onMount(() => {
     if (map.el === undefined) return;
     map.current = createWorldMap(map.el, {
       onMapClick: (x, y) => void onMapClick(map, store, x, y),
-      isLoggedIn: () => store.me !== null,
-      isAdmin: () => store.me?.is_admin === true,
-      onReport: (id) => void store.reportPlacement(id),
-      onRemove: (id, bbox) => void onRemove(map, store, id, bbox),
-      onAuthPrompt: () => {
-        store.promptAuth();
-      },
+    });
+    map.current.onViewportChange(() => {
+      bumpViewport(1);
     });
     void store.refreshMe();
     void store.refreshCenter();
@@ -154,7 +226,15 @@ export default function App() {
 
   return (
     <>
-      <div class="map-root" ref={map.el} />
+      <div class="map-root" ref={map.el}>
+        <PlaceDetail
+          store={store}
+          container={map.el}
+          viewportVersion={viewportVersion}
+          geometry={(placement) => selectionGeometry(map, placement)}
+          actions={detailActions}
+        />
+      </div>
 
       <input
         class="hidden-input"

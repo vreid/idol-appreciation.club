@@ -32,6 +32,9 @@ oxfmt = "0.72.0"
 kubeconform = "0.8.0"
 # Release automation (tags + GitHub Releases from conventional commits).
 "npm:semantic-release" = "25.0.9"
+# Registry image ops (deploy:k8s stamps release semver tags onto the
+# digests recorded in images.lock.json).
+crane = "0.22.1"
 opentofu = "1.13.1"
 helm = "4.3.0"
 kubectl = "1.37.1"

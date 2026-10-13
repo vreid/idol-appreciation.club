@@ -48,10 +48,113 @@ tasks:
         esac
 
   release:
-    desc: semantic-release — tag + GitHub Release + notes from conventional commits (no npm publish)
+    desc: conventional-commit version tag cutter (TAG ONLY — no changelog, no GitHub Release; git log is the changelog)
     cmds:
-      # ARGS escapes hatch: task release ARGS="--dry-run"
-      - semantic-release {{.ARGS}}
+      # Version rules (same semantics the old semantic-release had):
+      # breaking (subject '!:' or body 'BREAKING CHANGE:') -> major,
+      # any feat -> minor, any fix/perf -> patch, otherwise no tag.
+      - |
+        set -euo pipefail
+        git fetch origin 'refs/tags/v*:refs/tags/v*' --quiet
+        last="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
+        maj=0; min=0; pat=0
+        if [ -n "$last" ]; then
+          v="${last#v}"; IFS=. read -r maj min pat <<< "$v"
+        fi
+        log="$(git log --format='%s%n%b' ${last:+"$last..HEAD"})"
+        major=false; minor=false; patch=false
+        if printf '%s' "$log" | grep -qE '^BREAKING CHANGE:|![[:space:]]*:'; then
+          major=true
+        elif printf '%s' "$log" | grep -qE '^feat(\(|:)'; then
+          minor=true
+        elif printf '%s' "$log" | grep -qE '^(fix|perf)(\(|:)'; then
+          patch=true
+        fi
+        if $major; then
+          next="v$((maj + 1)).0.0"
+        elif $minor; then
+          next="v$maj.$((min + 1)).0"
+        elif $patch; then
+          next="v$maj.$min.$((pat + 1))"
+        else
+          echo "no release-worthy commits since ${last:-root}; no tag"
+          exit 0
+        fi
+        if git rev-parse -q --verify "refs/tags/$next" > /dev/null; then
+          echo "tag $next already exists; refusing to move it" >&2
+          exit 1
+        fi
+        git tag "$next" HEAD
+        git push origin "$next"
+        echo "tagged $next (${last:-none} -> $next)"
+
+  image:prune:
+    desc: GHCR retention — keep main + last 10 vX.Y.Z tags per package; never prune digests pinned by images.lock.json
+    env:
+      GH_TOKEN: '{{.GH_TOKEN | default ""}}'
+    cmds:
+      - |
+        set -euo pipefail
+        test -n "$GH_TOKEN" || { echo "GH_TOKEN required" >&2; exit 1; }
+        keep_ver=10
+        api="https://api.github.com"
+        reg="https://ghcr.io/v2"
+        for pkg in backend web; do
+          lock_digest="$(jq -r ".${pkg}.digest" images.lock.json)"
+          : > "/tmp/prune-$pkg.jsonl"
+          page=1
+          while :; do
+            resp="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+              "$api/user/packages/container/idol-appreciation.club-$pkg/versions?per_page=100&page=$page")"
+            n="$(jq 'length' <<< "$resp")"
+            [ "$n" -gt 0 ] || break
+            jq -c '.[]' <<< "$resp" >> "/tmp/prune-$pkg.jsonl"
+            [ "$n" -eq 100 ] || break
+            page=$((page + 1))
+          done
+          keep_tags="$(jq -r '.metadata.container.tags[]' "/tmp/prune-$pkg.jsonl" \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -uV | tail -n "$keep_ver")"
+          kept=0; pruned=0
+          while IFS= read -r row; do
+            vid="$(jq -r .id <<< "$row")"
+            tags="$(jq -r 'if (.metadata.container.tags | length) > 0 then (.metadata.container.tags | join(",")) else "(untagged)" end' <<< "$row")"
+            # Never prune: the main rolling tag, the newest 10 version
+            # tags, untagged versions (their digest cannot be verified
+            # against the lock pin via a tag reference — keep and count
+            # them), and — asserted, not assumed — any version whose
+            # manifest digest is the one images.lock.json pins (deploy pin).
+            keep=false
+            case ",$tags," in
+              *,main,*) keep=true ;;
+            esac
+            if [ "$tags" = "(untagged)" ]; then
+              keep=true
+              untagged=$((untagged + 1))
+            fi
+            for t in $keep_tags; do
+              case ",$tags," in *,"$t",*) keep=true ;; esac
+            done
+            if ! $keep; then
+              d="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+                "$reg/vreid/idol-appreciation.club-$pkg/manifests/$(echo "$tags" | cut -d, -f1)" \
+                -o /dev/null -D - | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}')"
+              [ "$d" = "$lock_digest" ] && keep=true
+            fi
+            if $keep; then
+              kept=$((kept + 1))
+            else
+              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                "$api/user/packages/container/idol-appreciation.club-$pkg/versions/$vid")"
+              case "$code" in
+                204) pruned=$((pruned + 1)); echo "$pkg: pruned version $vid ($tags)" ;;
+                *) echo "$pkg: prune of version $vid ($tags) returned HTTP $code; failing" >&2; exit 1 ;;
+              esac
+            fi
+          done < "/tmp/prune-$pkg.jsonl"
+          echo "$pkg: kept $kept, pruned $pruned (lock pin $lock_digest protected)"
+        done
 
   lint:workflows:
     desc: jactionlint over all workflows (ci.yml workflows-lint)
@@ -296,13 +399,8 @@ tasks:
         # helm cmd via state files (same pattern as the rotation flag).
         printf '%s\n' "$BACKEND_DIGEST" > /tmp/deploy-backend-digest
         printf '%s\n' "$WEB_DIGEST" > /tmp/deploy-web-digest
-        # Release deploys stamp the recorded digests with the semver tag in
-        # GHCR (audit trail; the digest stays what actually runs).
-        if [ -n "$RELEASE_TAG" ]; then
-          echo "$GHCR_TOKEN" | crane auth login ghcr.io -u "${GITHUB_ACTOR:-token}" --password-stdin
-          crane tag "ghcr.io/vreid/idol-appreciation.club-backend@$BACKEND_DIGEST" "$RELEASE_TAG"
-          crane tag "ghcr.io/vreid/idol-appreciation.club-web@$WEB_DIGEST" "$RELEASE_TAG"
-        fi
+        # Semver GHCR tags are applied at BUILD time by images.yml (tag
+        # trigger) — deploys never touch the registry.
         uuid="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_TOKEN}" \
           https://api.upcloud.com/1.3/kubernetes \
           | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"

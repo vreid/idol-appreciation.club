@@ -1,28 +1,37 @@
 name: images
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
+    branches: [main]
+    # Rolling-guard trigger: src-touching commits that strict
+    # conventional rules don't bump still get a fresh `main` image +
+    # lock update. The lock PR merge itself touches only the lock file
+    # and is excluded so it can't loop.
+    paths:
+      - "backend/**"
+      - "web/**"
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: images
+  group: images-${{ github.ref }}
   cancel-in-progress: false
 
-# Builds only what changed since a component's last recorded build, then
-# records component -> {digest, mergeSha} into images.lock.json via an
-# auto-merge PR. deploy.yml consumes that file; it builds nothing.
-# Repo semver (vX.Y.Z tags/releases) remains the release audit trail;
-# digests stay the deploy source of truth.
+# Version -> image is causal:
+#   tag push (vX.Y.Z)  -> build from the tag's commit, tag images vX.Y.Z
+#                         (+ digest), record in images.lock.json; a tag
+#                         with no component drift aliases the current
+#                         lock digests instead of building.
+#   push to main (backend/** or web/**) -> build the `main` rolling tag,
+#                         record in images.lock.json via auto-merge PR.
+# deploy.yml consumes images.lock.json only; it builds nothing and never
+# touches the registry.
 jobs:
   images:
-    name: build changed images
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+    name: build images (${{ startsWith(github.ref, 'refs/tags/') && 'release tag' || 'main rolling' }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -39,11 +48,19 @@ jobs:
           # last recorded build commit
           fetch-depth: 0
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+        with:
+          cache: false
 
-      - name: plan (which components changed since their last build)
-        id: plan
+      - name: mode and plan
+        id: mode
         run: |
           set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag=main
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           b_sha="$(jq -r '.backend.mergeSha // empty' images.lock.json)"
           w_sha="$(jq -r '.web.mergeSha // empty' images.lock.json)"
           backend=false
@@ -56,10 +73,9 @@ jobs:
           fi
           echo "backend=$backend" >> "$GITHUB_OUTPUT"
           echo "web=$web" >> "$GITHUB_OUTPUT"
-          echo "backend changed: $backend; web changed: $web"
+          echo "mode tag=$tag backend changed: $backend; web changed: $web"
 
       - name: docker login ghcr.io
-        if: steps.plan.outputs.backend == 'true' || steps.plan.outputs.web == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
@@ -68,25 +84,62 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
         with:
           cache-binary: false
-        if: steps.plan.outputs.backend == 'true' || steps.plan.outputs.web == 'true'
 
       - name: build and push backend image
         id: backend
-        if: steps.plan.outputs.backend == 'true'
+        if: steps.mode.outputs.backend == 'true'
         run: echo "digest=$(task image:backend | tail -1)" >> "$GITHUB_OUTPUT"
         env:
-          BACKEND_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:main
+          BACKEND_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:${{ steps.mode.outputs.tag }}
 
       - name: build and push web image
         id: web
-        if: steps.plan.outputs.web == 'true'
+        if: steps.mode.outputs.web == 'true'
         run: echo "digest=$(task image:web | tail -1)" >> "$GITHUB_OUTPUT"
         env:
-          WEB_IMAGE: ghcr.io/vreid/idol-appreciation.club-web:main
+          WEB_IMAGE: ghcr.io/vreid/idol-appreciation.club-web:${{ steps.mode.outputs.tag }}
+
+      # Release tag with NO component drift: the version's images are the
+      # current lock digests — alias them with the version tag so every
+      # version resolves, without a pointless rebuild.
+      - name: alias current digests with the version tag
+        if: >-
+          startsWith(github.ref, 'refs/tags/') &&
+          steps.mode.outputs.backend == 'false' &&
+          steps.mode.outputs.web == 'false'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.mode.outputs.tag }}"
+          for pkg in backend web; do
+            d="$(jq -r ".${pkg}.digest" images.lock.json)"
+            crane tag "ghcr.io/vreid/idol-appreciation.club-$pkg@$d" "$tag"
+            echo "$pkg: aliased $tag -> $d"
+          done
+
+  prune:
+    name: prune old GHCR version tags
+    needs: [images]
+    if: always() && !failure() && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+        with:
+          cache: false
+      - name: prune
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: task image:prune
 
   lock:
     name: record digests (auto-merge PR)
-    needs: images
+    needs: [images]
     if: >-
       always() && !failure() && !cancelled() &&
       (needs.images.outputs.backend != '' || needs.images.outputs.web != '')
@@ -100,6 +153,7 @@ jobs:
           # the bot pushes its branch with the job-scoped GITHUB_TOKEN
           persist-credentials: true
       - name: update images.lock.json
+        id: lockfile
         run: |
           set -euo pipefail
           b="${{ needs.images.outputs.backend }}"
@@ -120,7 +174,6 @@ jobs:
             git --no-pager diff -- images.lock.json
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-        id: lockfile
       - name: push branch and open/update auto-merge PR
         if: steps.lockfile.outputs.changed == 'true'
         run: |
@@ -133,7 +186,7 @@ jobs:
           git push --force origin HEAD:refs/heads/bot/image-versions
           body="$(mktemp)"
           {
-            echo "Automated image digest update from run ${{ github.run_id }}."
+            echo "Automated image digest update from run ${{ github.run_id }} (ref ${{ github.ref }})."
             echo
             echo '```'
             jq -r '"backend  \(.backend.digest)  \(.backend.mergeSha[0:7])", "web      \(.web.digest)  \(.web.mergeSha[0:7])"' images.lock.json

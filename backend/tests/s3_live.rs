@@ -65,3 +65,30 @@ async fn s3_live_put_get_roundtrip() {
         .expect("del2");
     println!("cleanup ok");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "hits the real S3 bucket; run with S3_LIVE_CHECK=1 and S3_* env"]
+async fn s3_list_derivative_count() {
+    if std::env::var("S3_LIVE_CHECK").as_deref() != Ok("1") {
+        eprintln!("skipped: set S3_LIVE_CHECK=1 with S3_* env to run");
+        return;
+    }
+    // Dedup receipt: N placements of M unique images must keep ~M
+    // derivative objects, because derivatives are content-addressed
+    // (derivatives/{sha256}.webp).
+    let cfg = config();
+    let st = store::from_config(&cfg).expect("store from env");
+    use futures::StreamExt;
+    use object_store::ObjectStore;
+    let mut count = 0u32;
+    let mut stream = st.list(Some(&store::key("derivatives/")));
+    while let Some(meta) = stream.next().await {
+        let meta = meta.expect("list derivatives");
+        if meta.location.as_ref().ends_with(".webp") {
+            count += 1;
+        }
+    }
+    println!("derivative objects: {count}");
+    assert!(count > 0, "expected at least one derivative");
+    assert!(count < 500, "dedup broken? {count} derivative objects");
+}

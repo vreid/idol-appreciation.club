@@ -236,7 +236,15 @@ Tests:
 - `S3_LIVE_CHECK=1 cargo test --test s3_live -- --ignored` — roundtrip against
   the REAL bucket (plus normal `S3_*` env); exercises the production buffered
   known-length PUT path (UpCloud rejects streamed/chunked SigV4 PUTs). Skipped
-  everywhere else, so default runs never need cloud credentials.
+  everywhere else, so default runs never need cloud credentials. A second
+  ignored test lists the `derivatives/` prefix — the dedup receipt (N placements
+  of M unique images must keep ~M derivative objects).
+- `test-assets/seed.sh BASE USER PASS` — classic 16-image layout; `SEED_COUNT=N`
+  scale-seeds N cells of a 100×100 grid cyclically from the 100 unique images at
+  a fixed 512 long edge (byte-identical derivatives → dedup), resumable via
+  `SEED_STATE_DIR`, aborts after 3 consecutive non-201s, keeps near-center cells
+  on the seed account (`SEED_NEAR_PX`, default 8192), and accepts
+  `SEED_ACCOUNTS_FILE` (JSON) for per-account-cooldown fan-out.
 
 CI note: fmt/clippy/test all need `libvips-dev` installed on the runner.
 

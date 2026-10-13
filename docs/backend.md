@@ -308,6 +308,14 @@ CI note: fmt/clippy/test all need `libvips-dev` installed on the runner.
 - Stateless logout cannot revoke a presented cookie (accepted; no session store
   by design).
 - Concurrent place requests serialize per chunk set — by design, to keep paint
-  order == seq order.
-- Single-instance deployment assumed for in-process caches/locks; scale by shard
-  or move tile locks to a shared store if that changes.
+  order == seq order. Serialization is two-tier: in-process per-key locks (cheap
+  same-pod) then session-level PG advisory locks on a dedicated connection held
+  across the chunk GET→composite→PUT window (`chunks.rs`). Sorted-key
+  acquisition keeps multi-chunk rects deadlock-free cross-instance; the lock
+  must outlive the transaction because the object PUT is not transactional
+  (commit-then-PUT would leave the read-modify-write window open).
+- Tile render locks stay in-process only: cross-instance duplicate cold renders
+  are benign (same seq ⇒ byte-identical output; last PUT wins with identical
+  bytes). Multi-replica is now structurally safe for the write path but still
+  needs validation at `replicas: 2` (in-memory tile cache hit rates, pool sizing
+  under advisory-lock waits) before raising the replica count.

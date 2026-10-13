@@ -173,6 +173,12 @@ async fn tile_bytes_inner(app: &App, z: i64, x: i64, y: i64) -> AppResult<(Bytes
         return Ok((bytes, seq));
     }
     // Serialize renders per tile so concurrent misses don't duplicate work.
+    // In-process only, by design: cross-instance duplicate renders are
+    // benign — every instance computes the same seq for the tile, so both
+    // produce byte-identical output and the last PUT wins with identical
+    // content (place compositing is the only nondeterministic raster
+    // writer, and it takes the chunk advisory locks). No PG advisory locks
+    // on this path.
     let lock_key = format!("{z}/{x}/{y}");
     let _guard = app.tile_locks.lock_sorted(&[lock_key]).await;
     // Another request may have rendered this exact seq while we waited.

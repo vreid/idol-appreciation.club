@@ -1,4 +1,3 @@
-{{- if .Values.web.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -85,4 +84,3 @@ spec:
           # privilege escalation, drop the rest.
           securityContext:
             allowPrivilegeEscalation: false
-{{- end }}

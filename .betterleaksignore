@@ -35,11 +35,24 @@ web/e2e/helpers.ts:generic-password:14
 web/src/lib/api.test.ts:generic-password:76
 web/src/lib/components/AuthPopover.tsx:generic-password:89
 
-# feat(web)! PR: fixture passwords verified non-secret — "hunter2hunter2"
-# is the repo's load-test bot password (50684f2), contract.test.ts:161 is
-# the contract-suite bot password. Regenerate per .betterleaks.toml.
+# 50684f2 (stale-serve render queue) added a tile load-test script + its
+# shared test fixture that log in a throwaway "loader" seed account; the
+# files were removed again by a later merge, so these are git-history-only.
+# Synthetic load-test fixture values, verified not real credentials.
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/tests/common/mod.rs:generic-password:251
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/scripts/load_tile_swr.sh:generic-password:69
 50684f22ed07898f11dadf214caede9e2cfc5efa:backend/scripts/load_tile_swr.sh:generic-password:71
+
+# 3700663 (Solid frontend rewrite, since replaced) briefly carried
+# AuthPopover.tsx + web/test/contract/contract.test.ts: one finding is UI
+# placeholder= text ("new-..."), the other the contract-test fixture
+# password for api.register(). Git-history-only; synthetic, verified not
+# real credentials.
+3700663d1f7b383325c67d6bf9cece37d41f2d1a:web/src/lib/components/AuthPopover.tsx:generic-password:89
 3700663d1f7b383325c67d6bf9cece37d41f2d1a:web/test/contract/contract.test.ts:generic-password:161
+
+# feat(web)! PR revives both files on this tree ("hunter2hunter2" is the
+# repo's load-test bot password, contract.test.ts:161 the contract-suite
+# bot password) — working-tree entries required again. Regenerate per
+# .betterleaks.toml.
 web/test/contract/contract.test.ts:generic-password:161

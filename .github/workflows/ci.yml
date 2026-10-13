@@ -12,6 +12,14 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
+# Two-tier gate layout: tier 1 is the fast, parallel set (seconds each) —
+# leaks hard gate, cheap linters, pr-title — and the `tier1` job aggregates
+# it. Tier 2 (the container-minute jobs: backend/web lint+test, tofu plan)
+# starts only after `tier1` is green AND only for components its paths
+# touch (`changed` job: git diff vs the PR base / push parent; shared
+# surfaces — Taskfile, mise.toml, workflows, contract/** — rebuild every
+# component they can affect). Common failure classes fail the run in under
+# a minute; a frontend-only PR never pays for backend clippy.
 # Every tool job is checkout + mise + exactly one `task` invocation; the
 # task recipes in Taskfile.yml are the single source of truth for how each
 # gate runs (local and CI identical). Tool versions: mise.toml (+ node/pnpm
@@ -19,25 +27,59 @@ concurrency:
 # libvips 8.16.1 container via RUNNER=docker.
 
 jobs:
-  ready:
-    name: owner readiness markers
+  # What changed (drives tier-2 path filtering). One cheap git-diff job
+  # instead of per-job filters; shared surfaces (Taskfile, mise, workflows,
+  # contract) rebuild everything they can affect.
+  changed:
+    name: what changed (paths)
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     outputs:
-      backend: ${{ steps.marks.outputs.backend }}
-      web: ${{ steps.marks.outputs.web }}
+      backend: ${{ steps.f.outputs.backend }}
+      web: ${{ steps.f.outputs.web }}
+      tofu: ${{ steps.f.outputs.tofu }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - id: marks
+          fetch-depth: 0
+      - id: f
         run: |
-          b=$([ -f backend/.ci-ready ] && echo true || echo false)
-          w=$([ -f web/.ci-ready ] && echo true || echo false)
-          echo "backend=$b" >> "$GITHUB_OUTPUT"
-          echo "web=$w" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          elif [ -n "${{ github.event.before }}" ] && ! printf '%s' "${{ github.event.before }}" | grep -q '^0*$'; then
+            base="${{ github.event.before }}"
+          else
+            echo "no diff base available; running the full matrix"
+            {
+              echo "backend=true"
+              echo "web=true"
+              echo "tofu=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(git diff --name-only "$base" ${{ github.sha }})"
+          echo "$files"
+          pick() { if printf '%s\n' "$files" | grep -qE "$2"; then echo "$1=true" >> "$GITHUB_OUTPUT"; else echo "$1=false" >> "$GITHUB_OUTPUT"; fi; }
+          pick backend '(^backend/|^contract/|^Taskfile\.yml$|^mise\.toml$|^\.github/workflows/)'
+          pick web '(^web/|^contract/|^Taskfile\.yml$|^mise\.toml$|^\.github/workflows/)'
+          pick tofu '(^tofu/|^\.github/workflows/)'
 
-  # ---------------- lint (fast, parallel, seconds each) ----------------
+  # ---------------- tier 1: fast, parallel ----------------
+
+  leaks:
+    name: leaks (betterleaks hard gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          # git-history scan needs the full history, not a shallow clone
+          fetch-depth: 0
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task leaks
 
   workflows-lint:
     name: workflows-lint (jactionlint)
@@ -63,8 +105,9 @@ jobs:
 
   pr-title-lint:
     name: lint:pr-title (conventional commits)
-    # PR-only: the job never runs on main, so it must NOT join ci-ok
-    # (a skipped need fails that aggregator).
+    # PR-only: on push runs this job is skipped, which the tier1 gate and
+    # ci-ok tolerate (skipped != failed) — every other tier-1 result must
+    # be success.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -79,39 +122,8 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
 
-  backend-lint:
-    name: backend-lint (fmt+clippy)
-    needs: ready
-    if: needs.ready.outputs.backend == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      RUNNER: docker
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      # task backend:lint builds the pinned libvips 8.16.1 builder image
-      # (backend/Dockerfile + rustfmt/clippy overlay) and runs fmt+clippy
-      # inside it, so lint and test share the exact gate toolchain.
-      - run: task backend:lint
-
-  web-lint:
-    name: web-lint (vp check)
-    needs: ready
-    if: needs.ready.outputs.web == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - run: task web:lint
-
   helm-lint:
-    name: helm-lint (lint+template)
+    name: helm-lint (lint+template+kubeconform)
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -120,37 +132,6 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
       - run: task helm:lint
-
-  leaks:
-    name: leaks (betterleaks hard gate)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-          # git-history scan needs the full history, not a shallow clone
-          fetch-depth: 0
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - run: task leaks
-
-  lint:
-    name: lint (all areas)
-    needs: [md-lint, workflows-lint, backend-lint, web-lint, helm-lint]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Fail if any lint failed or was skipped
-        run: |
-          failed=0
-          for r in ${{ join(needs.*.result, ' ') }}; do
-            case "$r" in
-              success) ;;
-              *) echo "lint result: $r"; failed=1 ;;
-            esac
-          done
-          exit $failed
 
   tofu:
     name: tofu fmt + validate
@@ -163,9 +144,99 @@ jobs:
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
       - run: task tofu:ci
 
+  tier1:
+    name: tier1 gate (fast checks)
+    needs:
+      - leaks
+      - workflows-lint
+      - md-lint
+      - pr-title-lint
+      - helm-lint
+      - tofu
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Fail if any tier-1 check failed (skips allowed — pr-title is PR-only)
+        run: |
+          failed=0
+          for r in ${{ join(needs.*.result, ' ') }}; do
+            case "$r" in
+              success | skipped) ;;
+              *) echo "tier-1 result: $r"; failed=1 ;;
+            esac
+          done
+          exit $failed
+
+  # ---------------- tier 2: slow, container minutes, path-filtered ----------------
+
+  backend-checks:
+    name: backend-checks (fmt+clippy+test, one container)
+    needs: [changed, tier1]
+    if: needs.changed.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RUNNER: docker
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      # fmt → clippy → cargo test, serial in ONE pinned-libvips container:
+      # a single container start + cache restore + runner slot per PR, and
+      # a clippy failure skips the test run (fail-fast, free time saved).
+      # Same aggregate deploy.yml has always used.
+      - run: task backend:ci
+
+  web-lint:
+    name: web-lint (vp check)
+    needs: [changed, tier1]
+    if: needs.changed.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task web:lint
+
+  lint:
+    name: lint (all areas)
+    needs: [changed, tier1, backend-checks, web-lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Fail if any lint failed (skips are path filters, not failures)
+        run: |
+          failed=0
+          for r in ${{ join(needs.*.result, ' ') }}; do
+            case "$r" in
+              success | skipped) ;;
+              *) echo "lint result: $r"; failed=1 ;;
+            esac
+          done
+          exit $failed
+
+  web-test:
+    name: web-test (vp test)
+    needs: [changed, tier1, lint]
+    if: needs.changed.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task web:test
+
   tofu-plan:
-    name: tofu plan (PRs only)
-    if: github.event_name == 'pull_request'
+    name: tofu plan (PRs only, tofu paths)
+    needs: [changed, tier1]
+    if: github.event_name == 'pull_request' && needs.changed.outputs.tofu == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: production
@@ -179,40 +250,13 @@ jobs:
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
       - run: task tofu:plan
 
-  # ---------------- test (needs lint counterpart) ----------------
-
-  backend-test:
-    name: backend-test (cargo test, pinned libvips image)
-    needs: [lint]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      RUNNER: docker
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - run: task backend:test
-
-  web-test:
-    name: web-test (vp test)
-    needs: [lint]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - run: task web:test
-
   web-contract:
     name: web-contract (real-backend contract suite)
     # Boots the pinned backend gate image + Postgres (RUNNER=docker, same
     # container convention as the backend gates) and parses every live
     # response/SSE event against contract/zod.
-    needs: [lint]
+    needs: [changed, tier1, lint]
+    if: needs.changed.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -224,28 +268,26 @@ jobs:
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
       - run: task web:contract
 
-  # ---------------- merge gate: skipped jobs fail here ----------------
+  # ---------------- merge gate: skips are path filters, failures block ----------------
 
   ci-ok:
     name: ci-ok (merge gate)
     needs:
-      - ready
+      - tier1
       - lint
-      - tofu
-      - backend-test
+      - backend-checks
       - web-test
       - web-contract
-      - leaks
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Fail if any gate failed or was skipped
+      - name: Fail if any gate failed (skipped = filtered by paths)
         run: |
           failed=0
           for r in ${{ join(needs.*.result, ' ') }}; do
             case "$r" in
-              success) ;;
+              success | skipped) ;;
               *) echo "gate result: $r"; failed=1 ;;
             esac
           done

@@ -73,6 +73,9 @@ CI runs:
 | `vp test`            | Vitest unit + component tests                       |
 | `vp test --coverage` | Tests + v8 coverage, fails below 80% lines          |
 
+CI runs `vp check` and `vp test --coverage` on every PR that touches `web/`
+(path-filtered; no markers — broken code fails its own PR).
+
 ## Toolchain notes (vp)
 
 - `vp` v1.1.0; bundled toolchain: vite 8.3.3 (rolldown/oxc), vitest 5.0.3,

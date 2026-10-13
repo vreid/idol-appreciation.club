@@ -1,4 +1,3 @@
-{{- if .Values.web.enabled }}
 {{- $hc := dict "health_check_type" .Values.edgeLoadBalancer.healthCheck.type "health_check_interval" .Values.edgeLoadBalancer.healthCheck.interval "health_check_fall" .Values.edgeLoadBalancer.healthCheck.fall "health_check_rise" .Values.edgeLoadBalancer.healthCheck.rise "health_check_tls_verify" false }}
 {{- $cfg := dict "plan" .Values.edgeLoadBalancer.plan "frontends" (list (dict "name" "http" "port" 80 "mode" "tcp") (dict "name" "https" "port" 443 "mode" "tcp")) "backends" (list (dict "name" "http" "properties" $hc) (dict "name" "https" "properties" $hc)) }}
 # Caddy-direct edge: this Service is THE LoadBalancer. Caddy terminates TLS
@@ -24,4 +23,3 @@ spec:
     - name: https
       port: 443
       targetPort: 8443
-{{- end }}

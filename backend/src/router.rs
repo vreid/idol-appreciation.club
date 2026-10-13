@@ -17,6 +17,7 @@ pub fn router(state: App) -> Router {
         .route("/api/place", post(place::place))
         .route("/api/tiles/{z}/{x}/{*y}", get(tiles::get_tile))
         .route("/api/placements/near", get(api::near))
+        .route("/api/dig", get(api::dig))
         .route("/api/center", get(api::center))
         .route("/api/events", get(events::sse))
         .route("/api/reports", post(api::report))

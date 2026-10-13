@@ -16,6 +16,8 @@ import {
   placeEventSchema,
   placementSchema,
   placementsNearSchema,
+  digEntrySchema,
+  digStackSchema,
   registerResultSchema,
   removeEventSchema,
   worldEventSchema,
@@ -57,7 +59,12 @@ describe("world events", () => {
       bbox: [0, 0, 1, 1],
     });
     expect(parsed.success).toBe(true);
-    if (parsed.success) expect(parsed.data).toEqual({ type: "place", seq: 1, bbox: [0, 0, 1, 1] });
+    if (parsed.success)
+      expect(parsed.data).toEqual({
+        type: "place",
+        seq: 1,
+        bbox: [0, 0, 1, 1],
+      });
   });
 
   it("accepts a remove event with a non-empty id", () => {
@@ -72,7 +79,12 @@ describe("world events", () => {
       future_field: "x",
     });
     expect(parsed.success).toBe(true);
-    if (parsed.success) expect(parsed.data).toEqual({ type: "place", seq: 1, bbox: [1, 2, 3, 4] });
+    if (parsed.success)
+      expect(parsed.data).toEqual({
+        type: "place",
+        seq: 1,
+        bbox: [1, 2, 3, 4],
+      });
   });
 
   it("rejects malformed events", () => {
@@ -108,6 +120,32 @@ describe("placements", () => {
     ok(placementsNearSchema, [valid]);
   });
 
+  it("accepts a dig stack with depth metadata", () => {
+    ok(digEntrySchema, { ...valid, depth: 3 });
+    ok(digStackSchema, { stack: [], total: 0, truncated: false });
+    ok(digStackSchema, {
+      stack: [{ ...valid, depth: 1 }],
+      total: 1,
+      truncated: false,
+    });
+    ok(digStackSchema, {
+      stack: [
+        { ...valid, depth: 1 },
+        { ...valid, depth: 2 },
+      ],
+      total: 12,
+      truncated: true,
+    });
+  });
+
+  it("rejects malformed dig stacks", () => {
+    rejected(digStackSchema, {});
+    rejected(digStackSchema, { stack: [{ ...valid }] }); // missing depth
+    rejected(digStackSchema, { stack: [{ ...valid, depth: "1" }], total: 1 });
+    rejected(digStackSchema, { stack: [], total: 1 }); // missing truncated
+    rejected(digStackSchema, { stack: [], total: 0, truncated: "no" });
+  });
+
   it("rejects malformed placements and lists", () => {
     rejected(placementsNearSchema, {});
     rejected(placementsNearSchema, [{ ...valid, x: "1" }]);
@@ -125,7 +163,14 @@ describe("placements", () => {
       rot: 45,
       seq: 77,
     });
-    rejected(placedPlacementSchema, { id: "x", x: 1, y: 2, w: 32, h: 16, rot: 45 });
+    rejected(placedPlacementSchema, {
+      id: "x",
+      x: 1,
+      y: 2,
+      w: 32,
+      h: 16,
+      rot: 45,
+    });
   });
 });
 
@@ -178,8 +223,18 @@ describe("auth", () => {
       is_admin: false,
       cooldown_until: null,
     });
-    rejected(meSchema, { id: 1, username: "g", is_admin: false, cooldown_until: null });
-    rejected(meSchema, { id: "x", username: "g", is_admin: 0, cooldown_until: null });
+    rejected(meSchema, {
+      id: 1,
+      username: "g",
+      is_admin: false,
+      cooldown_until: null,
+    });
+    rejected(meSchema, {
+      id: "x",
+      username: "g",
+      is_admin: 0,
+      cooldown_until: null,
+    });
   });
 
   it("accepts register results", () => {

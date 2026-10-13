@@ -86,6 +86,9 @@ if [[ -n "${LB_IPV6}" ]]; then
 fi
 
 # Report the proxied state so callers (and humans) can verify DNS-only.
+# Cosmetic: the upserts above already did the work, so a flaky listing
+# (Cloudflare API hiccup) must not fail the deploy.
 auth "${API}/zones/${zone_id}/dns_records?per_page=100" \
   | jq -r '.result[] | select(.type=="A" or .type=="AAAA")
-           | "\(.type) \(.name) -> \(.content) proxied=\(.proxied)"'
+           | "\(.type) \(.name) -> \(.content) proxied=\(.proxied)"' \
+  || echo "warning: could not list DNS records for the final report (non-fatal; upserts already succeeded)" >&2

@@ -17,26 +17,27 @@ import {
   worldScale,
   worldScreenSize,
   worldToLatLng,
+  tileIndexAt,
 } from "./world";
 
 describe("world <-> latLng conversion", () => {
   it("round-trips the world center", () => {
     const ll = worldToLatLng(WORLD_CENTER, WORLD_CENTER);
-    expect(ll).toEqual({ lat: -0.5, lng: 0.5 });
+    expect(ll).toEqual({ lat: -128, lng: 128 });
     expect(latLngToWorld(ll.lat, ll.lng)).toEqual({
       x: WORLD_CENTER,
       y: WORLD_CENTER,
     });
   });
 
-  it("flips y: world top (y=0) maps to lat 0, bottom to lat -1", () => {
+  it("flips y: world top (y=0) maps to lat 0, bottom to lat -256", () => {
     expect(worldToLatLng(WORLD_CENTER, 0)).toEqual({
       lat: 0,
-      lng: 0.5,
+      lng: 128,
     });
     expect(worldToLatLng(WORLD_CENTER, WORLD_SIZE)).toEqual({
-      lat: -1,
-      lng: 0.5,
+      lat: -256,
+      lng: 128,
     });
   });
 
@@ -172,9 +173,28 @@ describe("world bounds and fit math", () => {
 
   it("world centre maps to the middle of the bounds", () => {
     expect(worldToLatLng(WORLD_CENTER, WORLD_CENTER)).toEqual({
-      lat: -0.5,
-      lng: 0.5,
+      lat: -128,
+      lng: 128,
     });
+  });
+
+  it("matches the server tile formula at the world centre", () => {
+    // 256 CRS.Simple units x 2^zoom px per unit / 256px tiles = 2^zoom tiles
+    // per side — the server's slippy scheme at every zoom.
+    expect(tileIndexAt(0, WORLD_CENTER)).toBe(0);
+    expect(tileIndexAt(8, WORLD_CENTER)).toBe(128);
+    expect(tileIndexAt(16, WORLD_CENTER)).toBe(32768);
+    expect(tileIndexAt(19, WORLD_CENTER)).toBe(262144);
+    // The centre sits exactly on a tile boundary at z20.
+    expect(tileIndexAt(20, WORLD_CENTER)).toBe(524288);
+  });
+
+  it("splits tiles exactly at server tile boundaries", () => {
+    // z8 tile edge in native px: 256 * 2^(20-8) = 2^20.
+    const edge = 256 * 2 ** (20 - 8);
+    expect(tileIndexAt(8, edge - 1)).toBe(0);
+    expect(tileIndexAt(8, edge)).toBe(1);
+    expect(tileIndexAt(8, 3 * edge + 5)).toBe(3);
   });
 
   it("computes world screen size at integer zooms", () => {

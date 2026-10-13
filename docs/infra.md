@@ -84,6 +84,37 @@ are pinned by full-length SHA; jobs carry timeout-minutes.
 Known trap: `hashFiles()` is illegal in job-level `if:` — owner gating uses the
 `ready` job's `test -f` outputs instead.
 
+## Image pipeline: builds decoupled from deploys
+
+Merges to main do not build or deploy images directly. `images.yml` (runs after
+CI completes on main) diffs each component against the merge SHA recorded for
+its last build and pushes only changed images, then records
+`component -> {digest, mergeSha}` into `images.lock.json` via an auto-merge
+`chore(images)` PR. Merging that PR is what triggers `deploy.yml`, which is a
+pure consumer of the lock file: no build steps, no empty-digest state by
+construction, and manual dispatches valid without a preceding build. Code merges
+reach the cluster only when their image lands in the lock file; chart and script
+changes redeploy in place with unchanged digests.
+
+Policy:
+
+- **Default pair = same merge SHA.** Both lock entries are normally updated by
+  the same run, preserving today's atomic deploy semantics. Independent
+  per-component picks are deferred until the web<->backend API/SSE contract has
+  explicit graceful-degradation rules — that contract is expected to widen when
+  fastingest's batch SSE events land; coordinate the tag pair at that point
+  rather than before.
+- **Fewer pod rolls per merge.** Deployments are digest-pinned, so a deploy
+  whose lock entry is unchanged for a component leaves that Deployment
+  untouched: a backend-only merge rolls only the backend pod, and a chart-only
+  merge rolls neither. Soak and maintenance windows shrink accordingly.
+- **Repo semver stays the release audit trail** (vX.Y.Z tags, GitHub Releases,
+  `images.*.tag` + rollout annotations). Release deploys re-stamp the recorded
+  digests with the semver tag (`crane tag`); the digest remains what actually
+  runs.
+- **tofu is decoupled** on its own `infra/**` paths (apply/destroy/ recreate
+  workflows); `deploy.yml` only runs the harmless state-settle refresh.
+
 ## Destroy / recreate runbook
 
 1. Actions → **infra-destroy** → Run workflow → `confirm: destroy`. Everything
@@ -212,6 +243,19 @@ helper refuses to render — at `helm template` time, so `task helm:lint` catche
 it pre-merge — any `images.*` entry with a missing, malformed digest, or
 malformed tag. Digests remain the source of truth for what actually runs; the
 semver `tag` is an audit trail only, never concatenated into the ref.
+
+## Deploy secret choreography (S3 auth invariant)
+
+`deploy:k8s` provisions `app-env` (DB URL, S3 creds, session secret) **before**
+the helm upgrade, and never blindly rotates: the cluster's current S3 creds are
+probed with a cheap signed ListObjects — HTTP 200 keeps them (idempotent
+deploys, zero key churn), HTTP 403 rotates, and anything else aborts the deploy
+with prod untouched. Rotation therefore happens only while no pod has rolled, so
+the upgrade itself brings every pod up on a live key: **deploys never invalidate
+working S3 auth** (no `SignatureDoesNotMatch` windows). A trailing
+`rollout restart` runs only on the rotate branch, and only to cover upgrades
+that were a no-op for pods. The DB password stays fresh-from-API on every deploy
+(UpCloud may rotate managed-DB user passwords; state is not trusted for it).
 
 ## Deploy secret choreography (S3 auth invariant)
 

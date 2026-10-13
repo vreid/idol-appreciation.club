@@ -492,8 +492,12 @@ tasks:
           # zero valid keys — and every later deploy re-entered the same
           # broken rotate on its 403 probe.
           uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc6.json
-          mapfile -t oldkeys < <(jq -r '.[].access_key_id' /tmp/uc6.json)
-          echo "existing access keys before rotation: ${#oldkeys[@]}"
+          # go-task runs cmds in its interpreted shell (mvdan-sh), where
+          # `mapfile -t x < <(...)` silently leaves x unset -> unbound
+          # variable under set -u (run 38465310743). Plain assignment +
+          # word-splitting; access key ids are hex with no whitespace.
+          oldkeys="$(jq -r '.[].access_key_id' /tmp/uc6.json)"
+          echo "existing access keys before rotation: $(jq 'length' /tmp/uc6.json)"
           # CREATE first: the 2-key quota still has room while the old
           # keys exist, and a failed mint leaves prod credentials intact.
           uc key-create POST "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc5.json
@@ -513,8 +517,8 @@ tasks:
             echo "new access key failed live verify (HTTP $vcode); old keys left intact, refusing to rotate" >&2
             exit 1
           fi
-          # Only now delete the old keys.
-          for old in "${oldkeys[@]}"; do
+          # Only now delete the old keys (empty list -> no iterations).
+          for old in $oldkeys; do
             uc key-del DELETE "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" /tmp/uc7.json
             echo "deleted old access key ${old:0:8}…"
           done
@@ -529,6 +533,9 @@ tasks:
         fi
         echo "s3 auth: $([ "$rotate" = true ] && echo rotated || echo verified-working)"
         echo "$rotate" > /tmp/deploy-s3-rotated
+        # Fresh clusters have no namespaces yet (helm --create-namespace only
+        # helps the helm cmd; every kubectl apply before it needs this first).
+        kubectl create namespace idol --dry-run=client -o yaml | kubectl apply -f -
         # prod registration closed until an admin approves the account
         kubectl -n idol create secret generic app-env \
           --from-literal="DATABASE_URL=$db" \
@@ -539,6 +546,24 @@ tasks:
           --from-literal="REGISTRATION_APPROVAL_REQUIRED=true" \
           --from-literal="SESSION_SECRET=$SESSION_SECRET" \
           --dry-run=client -o yaml | kubectl apply -f -
+        # PG15+ revoked CREATE on schema public from PUBLIC, and the tofu
+        # logical database is owned by the admin user, so on a fresh
+        # instance backend migrations die with "permission denied for
+        # schema public" (run 38466837880). Hand the app role the database
+        # and the schema. Idempotent; runs on every deploy.
+        adminuser="$(jq -r '(.users? // .)[] | select(.type == "primary") | .username' /tmp/uc2.json)"
+        adminpw="$(jq -r '(.users? // .)[] | select(.type == "primary") | .password' /tmp/uc2.json)"
+        test -n "$adminuser" && test -n "$adminpw" || { echo "primary db user not found via API" >&2; exit 1; }
+        adminuri="$(printf '%s' "$db" | sed -E "s|//[^@]+@|//$adminuser:$adminpw@|")"
+        kubectl -n idol delete pod schema-grant --ignore-not-found >/dev/null 2>&1 || true
+        kubectl -n idol run schema-grant --restart=Never --image=postgres:16-alpine \
+          --env="PGURI=$adminuri" \
+          --env="SQL=ALTER DATABASE app OWNER TO app; GRANT ALL ON SCHEMA public TO app;" \
+          -- sh -c 'psql "$PGURI" -v ON_ERROR_STOP=1 -c "$SQL"' >/dev/null
+        kubectl -n idol wait --for=jsonpath='{.status.phase}'=Succeeded pod/schema-grant --timeout=180s \
+          || { kubectl -n idol logs schema-grant >&2 || true; kubectl -n idol delete pod schema-grant --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true; exit 1; }
+        kubectl -n idol logs schema-grant
+        kubectl -n idol delete pod schema-grant --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
       - |
         set -euo pipefail
         cp web/Caddyfile chart/caddy/Caddyfile

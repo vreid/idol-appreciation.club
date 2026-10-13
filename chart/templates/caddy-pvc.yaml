@@ -9,7 +9,11 @@ metadata:
   namespace: idol
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: idol-caddy-data
+  {{- /* A bound PVC's storageClassName is immutable: emit the class the live
+         claim was bound with (lookup); the chart-owned Delete-reclaim class
+         applies to fresh installs/recreates only. */}}
+  {{- $existing := lookup "v1" "PersistentVolumeClaim" "idol" "caddy-data" }}
+  storageClassName: {{ if $existing }}{{ $existing.spec.storageClassName }}{{ else }}idol-caddy-data{{ end }}
   resources:
     requests:
       storage: 1Gi

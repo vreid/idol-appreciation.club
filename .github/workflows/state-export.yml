@@ -2,7 +2,10 @@ name: state-export
 
 # ONE-TIME operator tool (#88 migration): restores the cached tofu state and
 # exports it as a run artifact so it can be migrated to the S3 backend without
-# a runner-local cache download path. Delete this file after the migration.
+# a runner-local cache download path. The cache inputs (path spec + keys) MUST
+# match the pre-#103 tofu-setup composite exactly: the actions/cache lookup
+# version is a hash of the path list, so any deviation restores nothing.
+# Delete this file after the migration.
 
 on:
   workflow_dispatch: {}
@@ -15,18 +18,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Restore cached tofu state
+      - name: Restore cached tofu state (pre-#103 path spec verbatim)
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
         with:
           path: |
-            tofu/*.tfstate
             tofu/.terraform
+            tofu/terraform.tfstate
+            tofu/terraform.tfstate.backup
           key: tofu-state-${{ github.run_id }}
-          restore-keys: tofu-state-
+          restore-keys: |
+            tofu-state-
       - name: Upload state artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: tofu-state-export
-          path: tofu/*.tfstate*
+          path: tofu/terraform.tfstate*
           if-no-files-found: error
           retention-days: 1

@@ -13,7 +13,7 @@ IS the commit. Titles must be strict
 - `type` (required): `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, `test`,
   `ci`, `build`, or `style`.
 - `scope` (optional): `backend`, `web`, `tofu`, `chart`, `ci`, `deps`,
-  `release`, `api`, or `seed`.
+  `release`, `api`, `seed`, or `docs`.
 - `!` before the colon marks a breaking change (major release).
 - `subject`: non-empty, no trailing period, no trailing whitespace. Imperative
   mood ("add x", not "added x").

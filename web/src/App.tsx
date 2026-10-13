@@ -28,12 +28,24 @@ interface MapHandle {
   el: HTMLDivElement | undefined;
 }
 
-/** One deselect path: clears the store selection, the map highlight,
-   and hands the wheel back to zoom. */
+/** One deselect path: selection, highlight, wheel all released. */
 function releaseSelection(map: MapHandle, store: AppStore): void {
   store.deselectPlace();
   map.current?.clearSelection();
   map.current?.setDigMode(false);
+}
+
+/** Long-press target: deselect, pin the spot, open the upload flow. */
+function onLongPress(
+  map: MapHandle,
+  store: AppStore,
+  openPicker: () => void,
+  x: number,
+  y: number,
+): void {
+  releaseSelection(map, store);
+  store.pinSpot(x, y);
+  openPicker();
 }
 
 async function onMapClick(
@@ -57,9 +69,7 @@ async function onMapClick(
   const zoom = controller.currentZoom();
   const near = await store.refreshNear(x, y, queryRadiusForZoom(zoom));
   const top = near[0];
-  // Empty spots are a silent no-op — no toast spam on bare canvas — but
-  // they deselect (clicking away closes the detail panel and restores
-  // wheel-zoom).
+  // Empty spots silently deselect (and restore wheel-zoom).
   if (top === undefined) {
     releaseSelection(map, store);
     return;
@@ -206,13 +216,11 @@ export default function App() {
     onEvent: (event) => {
       const [x, y, w, h] = event.bbox;
       const bbox: BBox = { x, y, w, h };
-      // The selected stratum vanished under someone else: close the
-      // panel and hand the wheel back to the map.
+      // The selected stratum vanished under someone else.
       if (event.type === "remove" && store.selectedPlace?.id === event.id) {
         releaseSelection(map, store);
       }
-      // Coalesced: place AND remove events refresh the affected visible
-      // tiles at most once per ~500ms window, deduped by tile coord.
+      // Coalesced: place AND remove events refresh affected tiles.
       map.current?.queueTileRefresh(bbox);
       map.current?.pulse(bbox);
       if (eventTouchesCenter(event.bbox)) void store.refreshCenter();
@@ -235,10 +243,11 @@ export default function App() {
     if (map.el === undefined) return;
     map.current = createWorldMap(map.el, {
       onMapClick: (x, y) => void onMapClick(map, store, x, y),
+      onLongPress: (x, y) => {
+        onLongPress(map, store, () => fileInput?.click(), x, y);
+      },
     });
-    map.current.onViewportChange(() => {
-      bumpViewport(1);
-    });
+    map.current.onViewportChange(() => void bumpViewport(1));
     void store.refreshMe();
     void store.refreshCenter();
     const poll = setInterval(() => void store.refreshCenter(), 30_000);

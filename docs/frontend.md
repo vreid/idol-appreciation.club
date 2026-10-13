@@ -214,6 +214,25 @@ admin placements delete, admin accounts list/approve. UX rules live in
 `/api/center` polls every 30 s and refreshes early when an SSE bbox covers the
 center.
 
+## Long-press to place (touch + right-click)
+
+Long-pressing the map (or right-clicking on desktop) pins the pressed world
+point and opens the existing upload flow against it:
+
+- `src/lib/longPress.ts` owns the input: Leaflet `contextmenu` for desktop, a
+  500 ms touch timer with 10 px move-slop for touch (iOS Safari never fires
+  `contextmenu` for touches). A fired long-press eats the synthetic `click` that
+  the following `touchend` would produce. The map root suppresses the native
+  callout (`-webkit-touch-callout: none`) and text selection.
+- The store holds the pin (`pendingSpot`); the place panel's primary becomes
+  **📍 Place at pinned spot** (`confirmPinned`), which rides the exact
+  `confirmAt` path as tap-to-choose — auth prompt, 429 cooldown toast and
+  clamping are shared, not forked. Cancelling anywhere clears the pin.
+- A held selection is released first: long-press never fights the wheel-dig
+  session.
+- e2e: `e2e/touch-place.spec.ts` — right-click pin, synthetic-touch long-press,
+  and a drag-cancels case (no chooser opens).
+
 ## Design tokens (Chota)
 
 `chota/dist/chota.min.css` is imported before `src/app.css` and supplies the

@@ -98,4 +98,31 @@ describe("PlacePanel", () => {
     await Promise.resolve();
     expect(screen.queryByText("Place an image")).toBeNull();
   });
+
+  it("offers the pinned spot after a long-press and places there", async () => {
+    const store = makeStore();
+    store.pinSpot(500, 700);
+    store.startPlace(PNG, "a.png", 100, 100);
+    render(() => <PlacePanel store={store} />);
+
+    // The pinned primary replaces "Choose spot"; the stub client accepts
+    // the place, so confirmPinned rides the same path as confirmSpot.
+    expect(screen.getByText(/Place at pinned spot/u)).toBeDefined();
+    expect(screen.queryByText(/🎯 Choose spot/u)).toBeNull();
+
+    fireEvent.click(screen.getByText(/Place at pinned spot/u));
+    await vi.waitFor(() => {
+      expect(store.pendingSpot).toBeNull();
+    });
+    expect(store.placeMode).toBe("idle");
+  });
+
+  it("shows the plain choose flow when nothing is pinned", () => {
+    const store = makeStore();
+    store.startPlace(PNG, "a.png", 100, 100);
+    render(() => <PlacePanel store={store} />);
+
+    expect(screen.getByText(/🎯 Choose spot/u)).toBeDefined();
+    expect(screen.queryByText(/Place at pinned spot/u)).toBeNull();
+  });
 });

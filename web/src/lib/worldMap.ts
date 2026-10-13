@@ -1,4 +1,5 @@
 import "leaflet/dist/leaflet.css";
+import { wireLongPress } from "./longPress";
 import L from "leaflet";
 import {
   latLngToWorld,
@@ -32,6 +33,9 @@ const PULSE_MS = 1400;
 
 export interface MapCallbacks {
   onMapClick(x: number, y: number): void;
+  /** Long-press (or right-click) at world coords: opens the place flow
+   * pinned to that spot on touch devices. */
+  onLongPress(x: number, y: number): void;
 }
 
 export interface GhostImage {
@@ -113,6 +117,7 @@ function showHighlight(
 
 interface MapInternals {
   map: L.Map;
+  container: HTMLElement;
   tileLayer: L.TileLayer;
   ghost: GhostState;
   callbacks: MapCallbacks;
@@ -128,7 +133,11 @@ function wireMapEvents(internal: MapInternals): void {
       showHighlight(map, highlight);
     }
   });
+  const longPress = wireLongPress(internal.container, map, callbacks);
   map.on("click", (event: L.LeafletMouseEvent) => {
+    // The touchend after a fired long-press synthesizes a click — eat
+    // it so the pinned flow isn't immediately deselected.
+    if (longPress.eatClick()) return;
     const world = latLngToWorld(event.latlng.lat, event.latlng.lng);
     callbacks.onMapClick(world.x, world.y);
   });
@@ -275,6 +284,7 @@ export function createWorldMap(
 
   const internal: MapInternals = {
     map,
+    container,
     tileLayer,
     callbacks,
     ghost: makeGhostState(),

@@ -12,6 +12,7 @@ pub mod handlers;
 pub mod img;
 pub mod metrics;
 pub mod place;
+pub mod rate;
 pub mod router;
 pub mod state;
 pub mod statics;
@@ -44,6 +45,7 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         events_tx: events_tx.clone(),
         tile_locks: KeyLocks::new(),
         render_queue,
+        login_limiter: rate::LoginLimiter::new(),
         cfg,
     });
 

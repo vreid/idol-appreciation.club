@@ -21,6 +21,12 @@ use sha2::{Digest, Sha256};
 /// Paper background tiles render on.
 pub const PAPER: [f64; 3] = [244.0, 240.0, 232.0];
 
+/// Backstop decoded-pixel budget for callers without a tighter, config-
+/// driven bound (internal compositing over already-validated stored bytes).
+/// 4096×4096 = 64 MiB of RGBA; uploads for placement use the tighter
+/// `max_decode_pixels` config via the header probe in `place` instead.
+pub const DEFAULT_MAX_DECODE_PIXELS: u64 = 4096 * 4096;
+
 /// Initialize libvips exactly once per process. The app handle is leaked:
 /// vips_shutdown at process exit is neither needed nor safe to race.
 /// Serializes ALL libvips work process-wide. The libvips crate is not
@@ -104,24 +110,59 @@ pub fn get_pixel(img: &VipsImage, x: i32, y: i32) -> [u8; 3] {
     [p[0] as u8, p[1] as u8, p[2] as u8]
 }
 
-pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
+pub fn probe(bytes: &[u8]) -> Result<(i32, i32), AppError> {
+    let _vips = VIPS.lock();
+    let img = VipsImage::new_from_buffer(bytes, "")
+        .map_err(|_| AppError::BadRequest("undecodable image"))?;
+    // Header-only: new_from_buffer parses the container header, and these
+    // field reads never touch pixel data, so a bomb's bulk is never
+    // allocated. Orientation swaps the axes (a 90°-rotated upload presents
+    // rotated dimensions), so rotate first like `decode` does. Animated
+    // inputs: report first-frame height (decode extracts one page), the
+    // full strip can only be larger.
+    let img = orient_upright(img)?;
+    let w = img.get_width();
+    let h = match img.get_n_pages() {
+        pages if pages > 1 => img.get_page_height().max(1),
+        _ => img.get_height(),
+    };
+    Ok((w, h))
+}
+
+fn format_of(loader: &str) -> Option<SourceFormat> {
+    if loader.starts_with("jpegload") {
+        Some(SourceFormat::Jpeg)
+    } else if loader.starts_with("pngload") {
+        Some(SourceFormat::Png)
+    } else if loader.starts_with("webpload") {
+        Some(SourceFormat::Webp)
+    } else if loader.starts_with("gifload") {
+        Some(SourceFormat::Gif)
+    } else if loader.starts_with("heifload") {
+        Some(SourceFormat::Avif) // HEIC/AVIF family via libheif; re-saved as AVIF
+    } else {
+        None
+    }
+}
+
+/// Decode an upload into a single-frame, upright RGBA raster image.
+///
+/// `max_pixels` bounds the declared pixel count and is enforced on the
+/// HEADER before any full decode, so a decompression bomb (tiny wire
+/// bytes, gigabytes of RGBA) is rejected with [`AppError::TooLarge`]
+/// instead of being materialized. Rejects unknown loaders; collapses
+/// animation to the first frame; applies EXIF orientation before any
+/// metadata stripping, so pixels are upright.
+pub fn decode(bytes: &[u8], max_pixels: u64) -> Result<(VipsImage, SourceFormat), AppError> {
     let _vips = VIPS.lock();
     let img = VipsImage::new_from_buffer(bytes, "")
         .map_err(|_| AppError::BadRequest("undecodable image"))?;
     let loader = img.get_as_string("vips-loader").unwrap_or_default();
-    let format = if loader.starts_with("jpegload") {
-        SourceFormat::Jpeg
-    } else if loader.starts_with("pngload") {
-        SourceFormat::Png
-    } else if loader.starts_with("webpload") {
-        SourceFormat::Webp
-    } else if loader.starts_with("gifload") {
-        SourceFormat::Gif
-    } else if loader.starts_with("heifload") {
-        SourceFormat::Avif // HEIC/AVIF family via libheif; re-saved as AVIF
-    } else {
-        return Err(AppError::BadRequest("unsupported image format"));
-    };
+    let format = format_of(&loader).ok_or(AppError::BadRequest("unsupported image format"))?;
+    let declared = i64::from(img.get_width()) * i64::from(img.get_height());
+    if declared > 0 && u64::try_from(declared).unwrap_or(u64::MAX) > max_pixels {
+        return Err(AppError::TooLarge);
+    }
     let mut img = orient_upright(img)?;
 
     // Animated inputs (GIF/WEBP): keep only the first frame.
@@ -316,7 +357,7 @@ pub fn blank_chunk(size: i32) -> Result<VipsImage, AppError> {
     let _vips = VIPS.lock();
     const ONE_PX_TRANSPARENT_PNG_HEX: &str = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
     let bytes = hex_decode(ONE_PX_TRANSPARENT_PNG_HEX);
-    let (tiny, _) = decode(&bytes)?;
+    let (tiny, _) = decode(&bytes, DEFAULT_MAX_DECODE_PIXELS)?;
     let embedded = ops::embed_with_opts(
         &tiny,
         0,
@@ -421,12 +462,12 @@ pub fn test_png(width: u32, height: u32) -> Vec<u8> {
 
 fn decode_1px(color: [u8; 3]) -> VipsImage {
     let bytes = tiny_png_rgba(color);
-    let (img, _) = decode(&bytes).expect("decode 1px png");
+    let (img, _) = decode(&bytes, DEFAULT_MAX_DECODE_PIXELS).expect("decode 1px png");
     img
 }
 
 /// CRC-32 (IEEE) for PNG chunks, table-free.
-fn crc32(data: &[u8]) -> u32 {
+pub fn crc32(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &b in data {
         crc ^= u32::from(b);
@@ -531,7 +572,7 @@ pub fn composite_chunks(
     rot: f32,
 ) -> crate::error::AppResult<Vec<Vec<u8>>> {
     let _vips = VIPS.lock();
-    let (ov, _) = decode(overlay)?;
+    let (ov, _) = decode(overlay, DEFAULT_MAX_DECODE_PIXELS)?;
     // WebP sources decode to sequential-access lazy images; embedding or
     // compositing at offsets clips them, which needs random access.
     let ov = VipsImage::image_copy_memory(ov)?;
@@ -610,7 +651,7 @@ pub fn replay_canvas(
         None => None,
     };
     for (bytes, x, y, rot) in overlays {
-        let (ov, _) = decode(bytes)?;
+        let (ov, _) = decode(bytes, DEFAULT_MAX_DECODE_PIXELS)?;
         let ov = VipsImage::image_copy_memory(ov)?;
         let ov = rotate_centered(&ov, *rot)?;
         let ov = VipsImage::image_copy_memory(ov)?;
@@ -690,7 +731,7 @@ mod tests {
     /// Decoded RGBA raster built through the real pipeline (a plain
     /// bandjoin_const image carries multiband and cannot be composited).
     fn red_rgba(w: u32, h: u32) -> VipsImage {
-        decode(&red_png(w, h)).unwrap().0
+        decode(&red_png(w, h), DEFAULT_MAX_DECODE_PIXELS).unwrap().0
     }
 
     #[test]
@@ -698,10 +739,10 @@ mod tests {
         if !vips() {
             return;
         }
-        assert!(decode(b"not an image at all").is_err());
+        assert!(decode(b"not an image at all", DEFAULT_MAX_DECODE_PIXELS).is_err());
         // SVG is not in the allowed set.
         let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>";
-        assert!(decode(svg).is_err());
+        assert!(decode(svg, DEFAULT_MAX_DECODE_PIXELS).is_err());
     }
 
     #[test]
@@ -712,7 +753,7 @@ mod tests {
         // RGB JPEG (no alpha) must come out 4-band RGBA.
         let black = ops::black(32, 16).unwrap();
         let jpg = ops::jpegsave_buffer(&black).unwrap();
-        let (img, fmt) = decode(&jpg).unwrap();
+        let (img, fmt) = decode(&jpg, DEFAULT_MAX_DECODE_PIXELS).unwrap();
         assert_eq!(fmt, SourceFormat::Jpeg);
         assert_eq!(img.get_bands(), 4);
         assert_eq!((img.get_width(), img.get_height()), (32, 16));
@@ -729,7 +770,7 @@ mod tests {
         let black = ops::black(20, 20).unwrap();
         let rgba = ops::bandjoin_const(&black, &mut [1.0, 2.0, 3.0, 255.0]).unwrap();
         let gif = ops::gifsave_buffer(&rgba).unwrap();
-        let (img, fmt) = decode(&gif).unwrap();
+        let (img, fmt) = decode(&gif, DEFAULT_MAX_DECODE_PIXELS).unwrap();
         assert_eq!(fmt, SourceFormat::Gif);
         assert_eq!((img.get_width(), img.get_height()), (20, 20));
     }
@@ -739,7 +780,7 @@ mod tests {
         if !vips() {
             return;
         }
-        let (img, _) = decode(&red_png(640, 320)).unwrap();
+        let (img, _) = decode(&red_png(640, 320), DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let out = resize_exact(&img, 64, 32).unwrap();
         assert_eq!((out.get_width(), out.get_height()), (64, 32));
         assert_eq!(out.get_bands(), 4);
@@ -758,10 +799,10 @@ mod tests {
         // builds is explicitly NOT required — sha keys are environment-
         // scoped, so an upgraded encoder just produces a new derivative
         // object for new uploads (old keys keep resolving).
-        let (img1, _) = decode(&red_png(100, 50)).unwrap();
+        let (img1, _) = decode(&red_png(100, 50), DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let d1 = resize_exact(&img1, 32, 16).unwrap();
         let b1 = webp_bytes(&d1, 85).unwrap();
-        let (img2, _) = decode(&red_png(100, 50)).unwrap();
+        let (img2, _) = decode(&red_png(100, 50), DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let d2 = resize_exact(&img2, 32, 16).unwrap();
         let b2 = webp_bytes(&d2, 85).unwrap();
         assert_eq!(
@@ -783,10 +824,10 @@ mod tests {
         let mut png1 = red_png(40, 40);
         png1.extend_from_slice(b"junk-after-idat-not-really-png");
         // (trailing bytes are ignored by decoders; chunk CRCs stay valid)
-        let (img1, f1) = decode(&png1).unwrap();
+        let (img1, f1) = decode(&png1, DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let s1 = strip_resave(&img1, f1).unwrap();
         let png2 = red_png(40, 40);
-        let (img2, f2) = decode(&png2).unwrap();
+        let (img2, f2) = decode(&png2, DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let s2 = strip_resave(&img2, f2).unwrap();
         assert_eq!(sha256_hex(&s1), sha256_hex(&s2));
     }
@@ -796,7 +837,7 @@ mod tests {
         if !vips() {
             return;
         }
-        let (ov, _) = decode(&red_png(64, 64)).unwrap();
+        let (ov, _) = decode(&red_png(64, 64), DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let blank = blank_chunk(256).unwrap();
         let out = composite(&blank, &ov, 200, 200).unwrap();
         assert_eq!((out.get_width(), out.get_height()), (256, 256));
@@ -819,7 +860,7 @@ mod tests {
             ops::Interpretation::Srgb as i32
         );
         let bytes = webp_bytes(&c, 90).unwrap();
-        let (back, _) = decode(&bytes).unwrap();
+        let (back, _) = decode(&bytes, DEFAULT_MAX_DECODE_PIXELS).unwrap();
         // All alpha must be 0.
         let mem = back.image_write_to_memory();
         assert!(mem.chunks(4).all(|px| px[3] == 0));
@@ -847,7 +888,7 @@ mod tests {
         if !vips() {
             return;
         }
-        let (img, _) = decode(&red_png(1024, 1024)).unwrap();
+        let (img, _) = decode(&red_png(1024, 1024), DEFAULT_MAX_DECODE_PIXELS).unwrap();
         // z=19: 512-px sub-rect → 256-px tile.
         let t = tile_from_chunk(&img, 512, 0, 512).unwrap();
         assert_eq!((t.get_width(), t.get_height()), (256, 256));
@@ -948,7 +989,7 @@ mod rot_tests {
         let base_img = blank_chunk(1024).unwrap();
         let base_bytes = webp_bytes(&base_img, 90).unwrap();
         eprintln!("step2: decode overlay");
-        let (ov, _) = decode(&asymmetric_test_png(128, 64)).unwrap();
+        let (ov, _) = decode(&asymmetric_test_png(128, 64), DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let ov = VipsImage::image_copy_memory(ov).unwrap();
         eprintln!("step3: rotate");
         let rot = rotate_centered(&ov, 45.0).unwrap();
@@ -972,7 +1013,7 @@ mod rot_tests {
         let base_img = blank_chunk(1024).unwrap();
         let base_bytes = webp_bytes(&base_img, 90).unwrap();
         // webp derivative like production.
-        let (ov, _) = decode(&asymmetric_test_png(128, 64)).unwrap();
+        let (ov, _) = decode(&asymmetric_test_png(128, 64), DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let derivative = resize_exact(&ov, 128, 128).unwrap();
         let overlay = webp_bytes(&derivative, 85).unwrap();
         eprintln!("calling composite_chunks 4 chunks rot45");
@@ -998,7 +1039,7 @@ mod rot_tests {
         }
         let base_img = blank_chunk(1024).unwrap();
         let mut base_bytes = webp_bytes(&base_img, 90).unwrap();
-        let (ov, _) = decode(&asymmetric_test_png(128, 64)).unwrap();
+        let (ov, _) = decode(&asymmetric_test_png(128, 64), DEFAULT_MAX_DECODE_PIXELS).unwrap();
         let derivative = resize_exact(&ov, 128, 128).unwrap();
         let overlay = webp_bytes(&derivative, 85).unwrap();
         for round in 0..3 {

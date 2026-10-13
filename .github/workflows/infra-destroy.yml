@@ -29,23 +29,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      # mise first: the composite's tofu init needs tofu on PATH.
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      # Restores the tofu local backend (state + plugins) from the Actions
+      # cache and runs tofu init.
       - uses: ./.github/actions/tofu-setup
-      - name: tofu destroy
-        run: tofu destroy -auto-approve -input=false
-        working-directory: tofu
-      - name: Delete orphaned CCM load balancers
-        if: always()
-        run: |
-          set -o pipefail
-          # Destroying the cluster does not remove LBs the CCM provisioned
-          # for LoadBalancer Services - they keep billing until deleted.
-          set -e
-          for lb in $(curl -s -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-              https://api.upcloud.com/1.3/load-balancer \
-              | jq -r '.[] | select(.name | startswith("${{ env.CLUSTER }}")) | .uuid'); do
-            echo "deleting LB $lb"
-            curl -s -X DELETE -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-              "https://api.upcloud.com/1.3/load-balancer/$lb" -o /dev/null -w "%{http_code}\n"
-          done
+      # task tofu:destroy defers the orphaned-LB cleanup so it still runs
+      # (and stops the billing) when the destroy itself fails.
+      - name: tofu destroy + LB cleanup
+        run: task tofu:destroy
+        env:
+          CLUSTER: ${{ env.CLUSTER }}
       - name: Summary
         run: echo "### infra destroyed (hourly billing stopped)" >> "$GITHUB_STEP_SUMMARY"

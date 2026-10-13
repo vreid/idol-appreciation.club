@@ -12,6 +12,12 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
+# Every tool job is checkout + mise + exactly one `task` invocation; the
+# task recipes in Taskfile.yml are the single source of truth for how each
+# gate runs (local and CI identical). Tool versions: mise.toml (+ node/pnpm
+# from web/package.json devEngines). Backend gates run inside the pinned
+# libvips 8.16.1 container via RUNNER=docker.
+
 jobs:
   ready:
     name: owner readiness markers
@@ -41,12 +47,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: jactionlint over all workflows
-        run: |
-          curl -sSLf -o /tmp/jl.tar.gz \
-            https://github.com/jdx/jactionlint/releases/download/v2.1.0/jactionlint_2.1.0_linux_amd64.tar.gz
-          tar xzf /tmp/jl.tar.gz -C /tmp jactionlint
-          /tmp/jactionlint .github/workflows/*.yml
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task lint:workflows
 
   md-lint:
     name: md-lint (oxfmt)
@@ -56,35 +58,26 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - run: npx --yes oxfmt@0.72.0 --check "**/*.md"
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task lint:md
 
   backend-lint:
     name: backend-lint (fmt+clippy)
     needs: ready
     if: needs.ready.outputs.backend == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: backend
+    timeout-minutes: 15
+    env:
+      RUNNER: docker
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Install libvips (clippy compiles the crate)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libvips-dev
-      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
-        with:
-          # match rust:trixie (gate image) so rustfmt output is identical
-          toolchain: "1.99.0"
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          workspaces: backend
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      # task backend:lint builds the pinned libvips 8.16.1 builder image
+      # (backend/Dockerfile + rustfmt/clippy overlay) and runs fmt+clippy
+      # inside it, so lint and test share the exact gate toolchain.
+      - run: task backend:lint
 
   web-lint:
     name: web-lint (vp check)
@@ -92,17 +85,12 @@ jobs:
     if: needs.ready.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af
-      - run: vp install
-      # vp check = tsgo typecheck + oxlint + oxfmt
-      - run: vp check
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task web:lint
 
   helm-lint:
     name: helm-lint (lint+template)
@@ -112,10 +100,21 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - run: helm version
-      - run: helm lint chart
-      - run: helm template chart > /dev/null
-      - run: helm template chart --set web.enabled=false > /dev/null
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task helm:lint
+
+  leaks:
+    name: leaks (betterleaks hard gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          # git-history scan needs the full history, not a shallow clone
+          fetch-depth: 0
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task leaks
 
   lint:
     name: lint (all areas)
@@ -143,15 +142,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
-        with:
-          tofu_version: 1.13.1
-      - working-directory: tofu
-        run: tofu fmt -check -recursive
-      - working-directory: tofu
-        run: tofu init -backend=false -input=false
-      - working-directory: tofu
-        run: tofu validate
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task tofu:ci
 
   tofu-plan:
     name: tofu plan (PRs only)
@@ -166,13 +158,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
-        with:
-          tofu_version: 1.13.1
-      - working-directory: tofu
-        run: tofu init -input=false
-      - working-directory: tofu
-        run: tofu plan -input=false -no-color
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task tofu:plan
 
   # ---------------- test (needs lint counterpart) ----------------
 
@@ -181,43 +168,26 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: backend
+    env:
+      RUNNER: docker
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
-      - name: Backend tests in pinned libvips image
-        run: |
-          docker buildx build --target builder -t backend-builder \
-            --cache-from type=gha --cache-to type=gha,mode=max \
-            --load .
-          docker run --rm backend-builder bash -c '
-            # TEMPORARY SKIP: webp buffer encode fails in gate image only
-            # (works in prod runtime + e2e). Tracking: backend agent
-            # actively debugging. REVERT when fix lands.
-            cargo test -- --skip derivative_bytes_are_deterministic
-          '
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task backend:test
 
   web-test:
     name: web-test (vp test)
     needs: [lint]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af
-      - run: vp install
-      # vp test = vitest with coverage threshold (>=80% on src/lib,
-      # enforced by web/ config).
-      - run: vp test
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task web:test
 
   # ---------------- merge gate: skipped jobs fail here ----------------
 
@@ -229,6 +199,7 @@ jobs:
       - tofu
       - backend-test
       - web-test
+      - leaks
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

@@ -19,6 +19,9 @@ once per shell so those tools (and the right node/pnpm) resolve:
 eval "$(mise activate bash)"  # or zsh/fish equivalents
 ```
 
+GitHub Actions workflows run these same tasks via `jdx/mise-action` — CI and
+local share one entrypoint set.
+
 ## Who owns which version
 
 | Tool                                  | Pinned in                                   |
@@ -44,6 +47,8 @@ separately; if an old rustup toolchain shadows mise's, remove rustup's env
 
 ## Tasks
 
+CI gate entrypoints (one per ci.yml job):
+
 | Task                  | ci.yml job     | Purpose                                      |
 | --------------------- | -------------- | -------------------------------------------- |
 | `task lint:md`        | md-lint        | oxfmt check over all Markdown                |
@@ -52,7 +57,7 @@ separately; if an old rustup toolchain shadows mise's, remove rustup's env
 | `task web:test`       | web-test       | `vp test` (vitest, >=80% coverage gate)      |
 | `task backend:lint`   | backend-lint   | `cargo fmt --check` + clippy `-D warnings`   |
 | `task backend:test`   | backend-test   | `cargo test`                                 |
-| `task leaks`          | (leaks gate)   | betterleaks git-history + filesystem scan    |
+| `task leaks`          | leaks          | betterleaks git-history + filesystem scan    |
 | `task helm:lint`      | helm-lint      | `helm lint` + `helm template`                |
 | `task tofu:fmt`       | tofu           | `tofu fmt -check -recursive`                 |
 | `task tofu:validate`  | tofu           | `tofu init -backend=false` + `tofu validate` |
@@ -60,6 +65,24 @@ separately; if an old rustup toolchain shadows mise's, remove rustup's env
 
 `task ci` runs the lint/test/leaks tasks in parallel and the backend gates
 serially at the end. `task <name>` reruns any single gate.
+
+Workflow operation entrypoints (deploy.yml / infra-\* / e2e.yml; CI-only — they
+need secrets, registry credentials, or a live cluster):
+
+| Task                 | Workflow job          | Purpose                               |
+| -------------------- | --------------------- | ------------------------------------- |
+| `task lint:fast`     | deploy lint           | md + workflows + helm + tofu fmt      |
+| `task backend:ci`    | deploy backend-checks | backend lint then test, serial        |
+| `task web:ci`        | deploy web-checks     | web lint then test                    |
+| `task tofu:ci`       | ci.yml tofu           | fmt + validate                        |
+| `task tofu:plan`     | ci.yml tofu-plan      | init (real backend) + plan            |
+| `task tofu:apply`    | infra-apply           | validate + apply (one-retry converge) |
+| `task tofu:destroy`  | infra-destroy         | destroy + deferred LB cleanup         |
+| `task tofu:recreate` | infra-recreate        | LB cleanup + destroy + apply          |
+| `task image:backend` | deploy backend-build  | buildx build + push, prints digest    |
+| `task image:web`     | deploy web-build      | buildx build + push, prints digest    |
+| `task deploy:k8s`    | deploy deploy         | kubeconfig, helm, app-env secret, DNS |
+| `task web:e2e`       | e2e.yml               | chromium install + smoke + full run   |
 
 ## Backend container parity
 

@@ -139,15 +139,16 @@ libvips-rs 2.3 + libvips 8.15/8.16 — do not "simplify" them away:
 Admission runs cheapest-first, and nothing pixel-sized happens before the last
 cheap gate: multipart is streamed under the `MAX_UPLOAD_BYTES` wire cap, then
 the image is **header-probed only** (`img::probe` — no pixel decode) for the
-decoded-pixel budget `MAX_DECODE_PIXELS` (default 4096² = 64 MiB RGBA), then
-world bounds on the true AABB, then a read-only **cooldown pre-check**. A
-decompression bomb (tiny upload, gigabytes of declared pixels) is a `413`
-without materializing anything, and a cooled-down account never spends the
-process-wide serialized libvips stage on a request the transaction would reject.
-`decode` itself re-checks the budget on the header as a backstop
-(`img::DEFAULT_MAX_DECODE_PIXELS` for internal callers over already-validated
-stored bytes). The strip/resave stage preserves dimensions, so the probed header
-determines the placement rect exactly.
+decoded-pixel budget `MAX_DECODE_PIXELS` (default 64 MPx = 256 MiB RGBA, sized
+to keep 48 MPx camera sources placeable — animated inputs are measured on their
+first frame, not the strip), then world bounds on the true AABB, then a
+read-only **cooldown pre-check**. A decompression bomb (tiny upload, gigabytes
+of declared pixels) is a `413` without materializing anything, and a cooled-down
+account never spends the process-wide serialized libvips stage on a request the
+transaction would reject. `decode` itself re-checks the budget on the header as
+a backstop (`img::DEFAULT_MAX_DECODE_PIXELS` for internal callers over
+already-validated stored bytes). The strip/resave stage preserves dimensions, so
+the probed header determines the placement rect exactly.
 
 Pipeline (all inside chunk-key locks, acquired sorted — deadlock-free, and paint
 order always matches `seq` order):
@@ -392,7 +393,7 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `S3_SECRET_ACCESS_KEY`, `SESSION_SECRET` (≥ 32 bytes). Optional with defaults:
 `LISTEN_ADDR=0.0.0.0:8080`, `PUBLIC_BASE_URL`, `STATIC_DIR=../web/dist`,
 `COOLDOWN_PAINT_SECS=300`, `COOLDOWN_EMPTY_SECS=1`, `MAX_UPLOAD_BYTES=10485760`,
-`MAX_DECODE_PIXELS=16777216`, `MIN_SIZE=16`, `MAX_SIZE=4096`,
+`MAX_DECODE_PIXELS=67108864`, `MIN_SIZE=16`, `MAX_SIZE=4096`,
 `TILE_CACHE_ENTRIES=2048`, `TILE_RENDER_QUIET_SECS=4`,
 `TILE_RENDER_MAX_DELAY_SECS=12`, `TILE_RENDER_QUEUE_CAP=512`, `RUST_LOG=info`,
 `REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external

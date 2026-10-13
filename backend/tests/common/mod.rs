@@ -123,7 +123,8 @@ pub async fn start_server_full(
         cooldown_paint_secs: paint_secs,
         cooldown_empty_secs: empty_secs,
         max_upload_bytes: max_upload,
-        max_decode_pixels: idol_appreciation_club_backend::img::DEFAULT_MAX_DECODE_PIXELS,
+        // Production default (MAX_DECODE_PIXELS env default): 64 MPx.
+        max_decode_pixels: 67_108_864,
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,

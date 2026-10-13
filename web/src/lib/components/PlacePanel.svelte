@@ -33,10 +33,24 @@
         <input
           type="range"
           min="16"
-          max="2048"
+          max="4096"
           step="1"
           value={store.longEdge}
           oninput={(e) => store.setLongEdge(e.currentTarget.valueAsNumber)}
+        />
+      </label>
+      <label class="place-slider">
+        <span>
+          Rotation
+          <b>{store.rotation}°</b>
+        </span>
+        <input
+          type="range"
+          min="-180"
+          max="180"
+          step="1"
+          value={store.rotation}
+          oninput={(e) => store.setRotation(e.currentTarget.valueAsNumber)}
         />
       </label>
       <button

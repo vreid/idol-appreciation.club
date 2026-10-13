@@ -9,7 +9,7 @@ import {
 } from "./sizing";
 
 describe("clampLongEdge", () => {
-  it("clamps into [16, 2048] and rounds", () => {
+  it("clamps into [16, 4096] and rounds", () => {
     expect(clampLongEdge(0)).toBe(MIN_LONG_EDGE);
     expect(clampLongEdge(15.4)).toBe(MIN_LONG_EDGE);
     expect(clampLongEdge(300.6)).toBe(301);
@@ -37,7 +37,7 @@ describe("longEdgeToSize", () => {
 
   it("clamps the requested long edge", () => {
     expect(longEdgeToSize(200, 100, 1)).toEqual({ w: 16, h: 8 });
-    expect(longEdgeToSize(200, 100, 5000)).toEqual({ w: 2048, h: 1024 });
+    expect(longEdgeToSize(200, 100, 5000)).toEqual({ w: 4096, h: 2048 });
   });
 
   it("guards against degenerate natural sizes", () => {

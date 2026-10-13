@@ -10,11 +10,19 @@ import {
   tilesIntersecting,
   WORLD_CENTER,
   WORLD_LAT_LNG_BOUNDS,
+  rotAABB,
   worldFitsViewport,
   worldScale,
   worldToLatLng,
   type BBox,
 } from "./world";
+import { wireUrlViewState } from "./urlViewState";
+import {
+  makeGhostState,
+  positionGhost,
+  setGhostImage,
+  type GhostState,
+} from "./ghost";
 import { timeAgo } from "./format";
 import { isRecord } from "./guards";
 
@@ -27,6 +35,7 @@ export interface PlacementForPopup {
   y: number;
   w: number;
   h: number;
+  rot: number;
   created_at: string;
 }
 
@@ -41,9 +50,11 @@ export interface MapCallbacks {
 
 export interface GhostImage {
   url: string;
-  /** Native world px size of the ghost. */
+  /** Native world px size of the unrotated ghost rect. */
   w: number;
   h: number;
+  /** Clockwise rotation in degrees, applied about the rect centre. */
+  rot: number;
 }
 
 export interface WorldMapController {
@@ -99,14 +110,39 @@ function addPulseRect(map: L.Map, bbox: BBox): void {
   }, PULSE_MS);
 }
 
-function bboxRectangle(map: L.Map, bbox: BBox, className: string): L.Rectangle {
-  return L.rectangle(
-    L.latLngBounds(
-      worldToLatLng(bbox.x, bbox.y),
-      worldToLatLng(bbox.x + bbox.w, bbox.y + bbox.h),
-    ),
-    { className, interactive: false },
-  ).addTo(map);
+/**
+ * Highlight for a (possibly rotated) placement: a screen-px-sized div centred
+ * on the rect centre, rotated about it. `highlight-rect` shows the rect;
+ * the anchor box carries the dashed AABB.
+ */
+function showHighlight(
+  map: L.Map,
+  highlight: { current: L.Marker | null; placement: PlacementForPopup | null },
+): void {
+  const p = highlight.placement;
+  if (p === null) return;
+  if (highlight.current !== null) {
+    map.removeLayer(highlight.current);
+    highlight.current = null;
+  }
+  const scale = worldScale(map.getZoom());
+  const aabb = rotAABB(p.w, p.h, p.rot);
+  const aw = Math.max(1, Math.round(aabb.w * scale));
+  const ah = Math.max(1, Math.round(aabb.h * scale));
+  const rw = Math.max(1, Math.round(p.w * scale));
+  const rh = Math.max(1, Math.round(p.h * scale));
+  highlight.current = L.marker(worldToLatLng(p.x + p.w / 2, p.y + p.h / 2), {
+    interactive: false,
+    keyboard: false,
+    icon: L.divIcon({
+      className: "highlight-anchor",
+      html:
+        `<div class="highlight-aabb" style="width:${aw}px;height:${ah}px"></div>` +
+        `<div class="highlight-rect" style="width:${rw}px;height:${rh}px;transform:translate(-50%,-50%) rotate(${p.rot}deg)"></div>`,
+      iconSize: [aw, ah],
+      iconAnchor: [aw / 2, ah / 2],
+    }),
+  }).addTo(map);
 }
 
 function popupContent(
@@ -159,51 +195,23 @@ function popupContent(
   return content;
 }
 
-interface GhostState {
-  el: HTMLImageElement | null;
-  native: { w: number; h: number };
-  pointer: L.Point | null;
-  moving: boolean;
-}
-
-function positionGhost(map: L.Map, ghost: GhostState): void {
-  if (ghost.el === null || ghost.pointer === null) return;
-  ghost.el.style.transform = `translate(${ghost.pointer.x}px, ${ghost.pointer.y}px)`;
-  ghost.el.classList.toggle("hidden", ghost.moving);
-}
-
-function setGhostImage(
-  map: L.Map,
-  container: HTMLElement,
-  ghost: GhostState,
-  next: GhostImage | null,
-): void {
-  ghost.el?.remove();
-  ghost.el = null;
-  if (next === null) return;
-  const el = document.createElement("img");
-  el.className = "map-ghost";
-  el.alt = "";
-  el.src = next.url;
-  ghost.native = { w: next.w, h: next.h };
-  container.append(el);
-  ghost.el = el;
-  const scale = worldScale(map.getZoom());
-  el.style.width = `${ghost.native.w * scale}px`;
-  el.style.height = `${ghost.native.h * scale}px`;
-  positionGhost(map, ghost);
-}
-
 interface MapInternals {
   map: L.Map;
   tileLayer: L.TileLayer;
   ghost: GhostState;
   callbacks: MapCallbacks;
-  highlight: { current: L.Rectangle | null };
+  highlight: { current: L.Marker | null; placement: PlacementForPopup | null };
 }
 
 function wireMapEvents(internal: MapInternals): void {
   const { map, ghost, callbacks, highlight } = internal;
+  map.on("zoomend", () => {
+    // The rotated highlight is sized in screen px — re-render it at the new
+    // scale while its popup is open.
+    if (highlight.placement !== null) {
+      showHighlight(map, highlight);
+    }
+  });
   map.on("click", (event: L.LeafletMouseEvent) => {
     const world = latLngToWorld(event.latlng.lat, event.latlng.lng);
     callbacks.onMapClick(world.x, world.y);
@@ -227,6 +235,7 @@ function wireMapEvents(internal: MapInternals): void {
       map.removeLayer(highlight.current);
       highlight.current = null;
     }
+    highlight.placement = null;
   });
 }
 
@@ -284,14 +293,14 @@ export function createWorldMap(
   }).addTo(map);
 
   const stopCentering = wireWorldCentering(map);
-  map.setView(worldToLatLng(WORLD_CENTER, WORLD_CENTER), 16);
+  const stopUrlView = wireUrlViewState(map);
 
   const internal: MapInternals = {
     map,
     tileLayer,
     callbacks,
-    ghost: { el: null, native: { w: 0, h: 0 }, pointer: null, moving: false },
-    highlight: { current: null },
+    ghost: makeGhostState(),
+    highlight: { current: null, placement: null },
   };
   wireMapEvents(internal);
   const { ghost, highlight } = internal;
@@ -328,10 +337,8 @@ export function createWorldMap(
     },
 
     showPlacement(p: PlacementForPopup): void {
-      if (highlight.current !== null) {
-        map.removeLayer(highlight.current);
-      }
-      highlight.current = bboxRectangle(map, p, "highlight-rect");
+      highlight.placement = p;
+      showHighlight(map, highlight);
       L.popup({ className: "world-popup", closeButton: true })
         .setLatLng(worldToLatLng(p.x + p.w / 2, p.y + p.h / 2))
         .setContent(popupContent(p, callbacks, map))
@@ -344,6 +351,7 @@ export function createWorldMap(
 
     destroy(): void {
       stopCentering();
+      stopUrlView();
       ghost.el?.remove();
       ghost.el = null;
       map.remove();

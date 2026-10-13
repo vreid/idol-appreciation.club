@@ -30,6 +30,7 @@ export interface AppStore {
   readonly placeMode: PlaceMode;
   readonly prepared: PreparedImage | null;
   readonly longEdge: number;
+  readonly rotation: number;
   readonly submittingPlace: boolean;
   readonly authPrompt: boolean;
 
@@ -60,6 +61,7 @@ export interface AppStore {
     naturalH: number,
   ): boolean;
   setLongEdge(value: number): void;
+  setRotation(value: number): void;
   ghostSize(): { w: number; h: number };
   enterChoose(): void;
   backToPanel(): void;

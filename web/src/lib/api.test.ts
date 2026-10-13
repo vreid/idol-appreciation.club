@@ -54,6 +54,7 @@ const samplePlacement: Placement = {
   y: 134217728,
   w: 256,
   h: 128,
+  rot: 0,
   created_at: "2026-10-12T00:00:00Z",
 };
 
@@ -63,7 +64,7 @@ describe("auth flows", () => {
       jsonResponse(201, { username: "liz", pending: true }),
     );
     const api = createApiClient({ fetch: mock.fetch });
-    const created = await api.register("liz", "pw123456");
+    const created = await api.register("liz", "pw");
     expect(created).toEqual({ username: "liz", pending: true });
     expect(mock.calls[0]?.url).toBe("/api/auth/register");
     expect(mock.calls[0]?.init.method).toBe("POST");
@@ -73,7 +74,7 @@ describe("auth flows", () => {
     });
     expect(jsonBody(mock.calls[0])).toEqual({
       username: "liz",
-      password: "pw123456",
+      password: "pw",
     });
   });
 
@@ -119,6 +120,7 @@ describe("place", () => {
         y: 2,
         w: 32,
         h: 16,
+        rot: 45,
         seq: 77,
       }),
     );
@@ -130,6 +132,7 @@ describe("place", () => {
       x: 134217664,
       y: 134217600,
       size: 32,
+      rot: 45,
     });
     const init = mock.calls[0]?.init;
     expect(mock.calls[0]?.url).toBe("/api/place");
@@ -140,6 +143,7 @@ describe("place", () => {
     expect(form.get("x")).toBe("134217664");
     expect(form.get("y")).toBe("134217600");
     expect(form.get("size")).toBe("32");
+    expect(form.get("rot")).toBe("45");
     const file = form.get("image");
     if (!(file instanceof File)) throw new Error("expected File");
     expect(file.name).toBe("wiz.webp");
@@ -149,6 +153,7 @@ describe("place", () => {
       y: 2,
       w: 32,
       h: 16,
+      rot: 45,
       seq: 77,
     });
   });
@@ -159,7 +164,14 @@ describe("place", () => {
     );
     const api = createApiClient({ fetch: mock.fetch });
     const err = await api
-      .place({ image: new Blob(), fileName: "a.png", x: 0, y: 0, size: 16 })
+      .place({
+        image: new Blob(),
+        fileName: "a.png",
+        x: 0,
+        y: 0,
+        size: 16,
+        rot: 0,
+      })
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err).toMatchObject({ status: 429, retryAfterSeconds: 42 });
@@ -169,7 +181,14 @@ describe("place", () => {
     const mock = fetchMock(() => jsonResponse(400, { error: "bad size" }));
     const api = createApiClient({ fetch: mock.fetch });
     await expect(
-      api.place({ image: new Blob(), fileName: "a.png", x: 0, y: 0, size: 1 }),
+      api.place({
+        image: new Blob(),
+        fileName: "a.png",
+        x: 0,
+        y: 0,
+        size: 1,
+        rot: 0,
+      }),
     ).rejects.toMatchObject({ status: 400, message: "bad size" });
   });
 });
@@ -199,6 +218,7 @@ describe("near / center", () => {
           y: 2,
           w: 3,
           h: 4,
+          rot: 0,
         },
       },
       all_time: [{ username: "yujin", seconds: 800 }],
@@ -273,7 +293,14 @@ describe("transport errors", () => {
   it("network failure during place also surfaces as status 0", async () => {
     const api = createApiClient({ fetch: failingFetch });
     await expect(
-      api.place({ image: new Blob(), fileName: "a", x: 0, y: 0, size: 16 }),
+      api.place({
+        image: new Blob(),
+        fileName: "a",
+        x: 0,
+        y: 0,
+        size: 16,
+        rot: 0,
+      }),
     ).rejects.toMatchObject({ status: 0 });
   });
 });

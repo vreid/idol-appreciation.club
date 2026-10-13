@@ -91,12 +91,22 @@ body {
   z-index: 640;
   pointer-events: none;
   opacity: 0.65;
-  outline: 1px dashed var(--accent);
   image-rendering: pixelated;
   will-change: transform;
 }
 
-.map-ghost.hidden {
+.map-ghost-outline {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 639;
+  pointer-events: none;
+  border: 1px dashed var(--accent-2);
+  will-change: transform;
+}
+
+.map-ghost.hidden,
+.map-ghost-outline.hidden {
   display: none;
 }
 
@@ -118,11 +128,27 @@ body {
   }
 }
 
+.highlight-anchor {
+  pointer-events: none;
+  /* Children may exceed the AABB box while rotating. */
+  overflow: visible;
+}
+
+.highlight-aabb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 1px dashed var(--accent-2);
+}
+
 .highlight-rect {
-  fill: rgba(255, 95, 162, 0.12);
-  stroke: var(--accent);
-  stroke-width: 1.5;
-  stroke-dasharray: 6 4;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border: 1.5px dashed var(--accent);
+  background: rgba(255, 95, 162, 0.12);
+  /* Centred on the anchor point, then rotated about that centre. */
+  transform: translate(-50%, -50%) rotate(0deg);
 }
 
 /* ---------- top bar ---------- */

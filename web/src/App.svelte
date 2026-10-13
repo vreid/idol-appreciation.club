@@ -10,7 +10,6 @@
   import TopBar from "./lib/components/TopBar.svelte";
   import PlacePanel from "./lib/components/PlacePanel.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
-  import LeaderboardModal from "./lib/components/LeaderboardModal.svelte";
   import AboutModal from "./lib/components/AboutModal.svelte";
 
   const store = createAppStore(createApiClient());
@@ -19,7 +18,6 @@
   let fileInput = $state<HTMLInputElement>();
   let controller: WorldMapController | null = null;
 
-  let showLeaderboard = $state(false);
   let showAbout = $state(false);
 
   const sse = new SseClient({
@@ -88,10 +86,8 @@
     const zoom = controller.currentZoom();
     const near = await store.refreshNear(x, y, queryRadiusForZoom(zoom));
     const top = near[0];
-    if (top === undefined) {
-      store.notify("Nothing placed here yet");
-      return;
-    }
+    // Empty spots are a silent no-op — no toast spam on bare canvas.
+    if (top === undefined) return;
     controller.showPlacement(top);
   }
 
@@ -142,19 +138,7 @@
   bind:this={fileInput}
 />
 
-<TopBar
-  {store}
-  onOpenLeaderboard={() => (showLeaderboard = true)}
-  onPickImage={pickImage}
-/>
-
-<button
-  class="btn primary jump"
-  type="button"
-  onclick={() => controller?.jumpToCenter()}
->
-  ⌖ Jump to 0/0
-</button>
+<TopBar {store} onPickImage={pickImage} />
 
 <div class="footer-chip">
   <button class="linkish" type="button" onclick={() => (showAbout = true)}>
@@ -171,9 +155,6 @@
 <PlacePanel {store} />
 <Toasts {store} />
 
-{#if showLeaderboard}
-  <LeaderboardModal {store} onClose={() => (showLeaderboard = false)} />
-{/if}
 {#if showAbout}
   <AboutModal onClose={() => (showAbout = false)} />
 {/if}

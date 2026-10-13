@@ -1,0 +1,15 @@
+{{- if .Values.web.enabled }}
+# Chart-owned StorageClass so the caddy PV is always Delete-reclaimed: the
+# CCM-provided upcloud classes are Retain and their reclaimPolicy is
+# immutable, which is how six orphan disks piled up during recreate cycle 3.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: idol-caddy-data
+provisioner: storage.csi.upcloud.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  tier: standard
+{{- end }}

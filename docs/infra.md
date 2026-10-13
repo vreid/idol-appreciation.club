@@ -385,6 +385,14 @@ All canvas/user data is lost unless backed up first (managed-DB daily backups
 exist but a full re-import is manual). The recreate capability is for dev; run
 `tofu destroy`/`apply` against prod data only with explicit acknowledgment.
 
+### PV cleanup after recreate
+
+The caddy PVC uses the chart-owned `idol-caddy-data` StorageClass (reclaimPolicy
+Delete, WaitForFirstConsumer): deleting a release or recreating the cluster
+removes its backing disk automatically — no manual volume cleanup after destroy.
+(The CCM-provided upcloud classes are Retain and their policy is immutable; do
+not use them for stateful chart volumes.)
+
 ### DNS during recreate
 
 `scripts/sync-dns.sh` is idempotent and re-points A/AAAA to whatever the current

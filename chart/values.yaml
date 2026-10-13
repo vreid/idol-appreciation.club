@@ -20,13 +20,16 @@ domain: idol-appreciation.club
 backend:
   registrationApprovalRequired: true
   replicaCount: 1
+  # Requests sized for HPA math + scheduling; limits generous so parallel
+  # chunk composites (libvips) never throttle: 6-way placement bursts
+  # OOMKilled at the old 1536Mi limit (2026-10-13 soak).
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 500m
+      memory: 512Mi
     limits:
-      cpu: 1500m
-      memory: 1536Mi
+      cpu: "4"
+      memory: 2Gi
 
 web:
   # false = bootstrap: placeholder Deployment+Service become a plain-HTTP

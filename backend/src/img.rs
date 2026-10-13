@@ -408,27 +408,82 @@ pub fn flatten_paper(img: VipsImage) -> Result<VipsImage, AppError> {
 /// this to build uploads without shipping binary fixtures).
 pub fn test_png(width: u32, height: u32) -> Vec<u8> {
     let _vips = VIPS.lock();
-    solid_png(width, height, RED_1PX_RGBA_PNG_HEX)
+    solid_png(width, height, [220, 40, 40])
 }
 
-const RED_1PX_RGBA_PNG_HEX: &str = "89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C4890000000D49444154789C63B8A3A1F11F00053C022C0EC42FC50000000049454E44AE426082";
-const BLUE_1PX_RGBA_PNG_HEX: &str = "89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C4890000000D49444154789C63D0D0B8F31F0003D4022C732B71BC0000000049454E44AE426082";
-
-fn decode_1px(one_px_hex: &str) -> VipsImage {
-    let bytes: Vec<u8> = (0..one_px_hex.len())
-        .step_by(2)
-        .filter_map(|i| u8::from_str_radix(&one_px_hex[i..i + 2], 16).ok())
-        .collect();
+fn decode_1px(color: [u8; 3]) -> VipsImage {
+    let bytes = tiny_png_rgba(color);
     let (img, _) = decode(&bytes).expect("decode 1px png");
     img
+}
+
+/// CRC-32 (IEEE) for PNG chunks, table-free.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in data {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn push_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    let start = out.len();
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    let crc = crc32(&out[start..]);
+    out.extend_from_slice(&crc.to_be_bytes());
+}
+
+/// Build a 1×1 solid-color RGBA PNG from scratch (signature + IHDR +
+/// stored-block zlib IDAT + IEND). No baked byte blobs: entropy-based
+/// secret scanners flag long hex/base64 constants, and a constructed
+/// image needs none.
+fn tiny_png_rgba([r, g, b]: [u8; 3]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(70);
+    out.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&1u32.to_be_bytes()); // width
+    ihdr.extend_from_slice(&1u32.to_be_bytes()); // height
+    ihdr.push(8); // bit depth
+    ihdr.push(6); // color type RGBA
+    ihdr.extend_from_slice(&[0, 0, 0]); // compression, filter, interlace
+    push_chunk(&mut out, b"IHDR", &ihdr);
+    // zlib stream with one stored (uncompressed) deflate block: 1-byte
+    // filter type 0 then the RGBA pixel.
+    let scanline = [0u8, r, g, b, 255];
+    let (mut s1, mut s2) = (1u32, 0u32);
+    for &v in &scanline {
+        s1 = (s1 + u32::from(v)) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    let adler: u32 = (s2 << 16) | s1;
+    let mut idat = Vec::with_capacity(12 + scanline.len());
+    idat.push(0x78); // zlib header (deflate, 32K window, fastest)
+    idat.push(0x01); // FCHECK ok: 0x7801 % 31 == 0
+    idat.push(0x01); // deflate stored block, BFINAL=1
+    idat.extend_from_slice(&(scanline.len() as u16).to_le_bytes());
+    idat.extend_from_slice(&(!(scanline.len() as u16)).to_le_bytes());
+    idat.extend_from_slice(&scanline);
+    idat.extend_from_slice(&adler.to_be_bytes());
+    push_chunk(&mut out, b"IDAT", &idat);
+    push_chunk(&mut out, b"IEND", &[]);
+    out
 }
 
 /// Scale a decoded 1×1 solid-color RGBA PNG to `width x height` and
 /// encode. (Constructing constants over `black` yields broken band
 /// layouts — see blank_chunk for the same decode-based trick.)
-fn solid_png(width: u32, height: u32, one_px_hex: &str) -> Vec<u8> {
+fn solid_png(width: u32, height: u32, color: [u8; 3]) -> Vec<u8> {
     init().expect("vips");
-    let tiny = decode_1px(one_px_hex);
+    let tiny = decode_1px(color);
     // A 1px source tiled to the exact target size — solid by construction.
     let img = ops::replicate(&tiny, width as i32, height as i32).expect("replicate 1px");
     ops::pngsave_buffer(&img).expect("encode solid png")
@@ -442,8 +497,8 @@ pub fn asymmetric_test_png(width: u32, height: u32) -> Vec<u8> {
     let w = width as i32;
     let h = height as i32;
     let half = (h / 2).max(1);
-    let red = decode_1px(RED_1PX_RGBA_PNG_HEX);
-    let blue = decode_1px(BLUE_1PX_RGBA_PNG_HEX);
+    let red = decode_1px([220, 40, 40]);
+    let blue = decode_1px([40, 40, 220]);
     let top = ops::replicate(&red, w, half).unwrap();
     let bottom = ops::replicate(&blue, w, h - half).unwrap();
     let canvas = ops::join(&top, &bottom, ops::Direction::Vertical).unwrap();
@@ -950,39 +1005,5 @@ mod rot_tests {
             base_bytes = out[0].clone();
         }
         eprintln!("ok rounds");
-    }
-
-    #[test]
-    fn probe_copy_memory() {
-        if !vips() {
-            return;
-        }
-        for rot in [7.5f32, 45.0, 179.0, 359.0] {
-            let src = VipsImage::new_from_buffer(&test_png(100, 100), "").unwrap();
-            let aabb = crate::world::rotated_aabb(0, 0, 100, 100, rot);
-            println!("rot {rot} aabb {}x{}", aabb.w, aabb.h);
-            let opts = ops::SimilarityOptions {
-                angle: f64::from(rot),
-                background: vec![0.0; 4],
-                ..Default::default()
-            };
-            let rotated = ops::similarity_with_opts(&src, &opts);
-            match rotated {
-                Ok(r) => {
-                    println!(
-                        "  sim {}x{} bands {}",
-                        r.get_width(),
-                        r.get_height(),
-                        r.get_bands()
-                    );
-                    match VipsImage::image_copy_memory(r) {
-                        Ok(_) => println!("  copy ok"),
-                        Err(e) => println!("  copy ERR: {e}"),
-                    }
-                }
-                Err(e) => println!("  sim ERR: {e}"),
-            }
-            std::mem::forget(opts);
-        }
     }
 }

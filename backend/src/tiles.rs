@@ -12,7 +12,7 @@ use crate::img;
 use crate::state::App;
 use crate::world::{
     is_valid_tile, tile_bounds, tile_chunk, tile_key, tile_native_size, tile_offset_in_chunk, Rect,
-    BASE_Z, CHUNK_PX, TILE_PX,
+    BASE_Z, CHUNK_PX, MAX_Z, TILE_PX,
 };
 use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -663,6 +663,33 @@ async fn render_tile(app: &App, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
 /// TILE_PX must divide a chunk exactly at BASE_Z for the recursion to line
 /// up (compile-time sanity of the world constants).
 const _: () = assert!(TILE_PX * (1 << (20 - BASE_Z)) == CHUNK_PX);
+
+/// Post-import prewarm: render the z18..z20 tiles covering `chunks` through
+/// the NORMAL serving path (memory → object storage → render + staleness
+/// row), so prewarmed tiles are indistinguishable from lazily served ones.
+/// Opt-in via the import request's `prewarm` flag and strictly post-commit:
+/// tiles are never rendered while a batch is still ingesting (ingest only
+/// lets the `tiles.seq` staleness index mark them stale implicitly).
+pub async fn prewarm_chunks(app: &App, chunks: &[(i64, i64)]) -> AppResult<u64> {
+    let mut rendered = 0u64;
+    for &(cx, cy) in chunks {
+        for z in BASE_Z..=MAX_Z {
+            let span = 1i64 << (z - BASE_Z);
+            for dy in 0..span {
+                for dx in 0..span {
+                    // Stale::Never: prewarm is a render, not a serve — it
+                    // always resolves fresh (and never sheds), matching the
+                    // parent-render path's guarantees.
+                    match tile_bytes(app, z, cx * span + dx, cy * span + dy, Stale::Never).await? {
+                        TileResolved::Bytes { .. } => rendered += 1,
+                        TileResolved::Shed => unreachable!("Stale::Never never sheds"),
+                    }
+                }
+            }
+        }
+    }
+    Ok(rendered)
+}
 
 #[cfg(test)]
 mod tests {

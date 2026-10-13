@@ -11,20 +11,27 @@ use crate::state::App;
 use crate::world::{chunk_key, Rect, CHUNK_PX};
 use sqlx::Row;
 
-/// Composite an overlay onto every chunk the rect touches. Caller must
-/// hold the locks for `rect.chunk_keys()`.
-pub async fn composite_placement(app: &App, rect: Rect, overlay: Vec<u8>) -> AppResult<()> {
-    let keys = rect.chunk_keys();
+/// Composite an overlay (rotated about its center by `rot` clockwise
+/// degrees) onto every chunk the placement's AABB touches. `aabb` must be
+/// `world::rotated_aabb(x, y, w, h, rot)`. Caller must hold the locks for
+/// `aabb.chunk_keys()`.
+pub async fn composite_placement(
+    app: &App,
+    aabb: Rect,
+    rot: f32,
+    overlay: Vec<u8>,
+) -> AppResult<()> {
+    let keys = aabb.chunk_keys();
     // Fetch all current chunk rasters first.
     let mut bases = Vec::with_capacity(keys.len());
     let mut targets = Vec::with_capacity(keys.len());
     for (cx, cy) in &keys {
         let key = chunk_key(*cx, *cy);
         bases.push(crate::store::get_bytes(&app.store, &key).await?);
-        targets.push((rect.x - cx * CHUNK_PX, rect.y - cy * CHUNK_PX));
+        targets.push((aabb.x - cx * CHUNK_PX, aabb.y - cy * CHUNK_PX));
     }
     let encoded =
-        tokio::task::spawn_blocking(move || img::composite_chunks(bases, &overlay, &targets))
+        tokio::task::spawn_blocking(move || img::composite_chunks(bases, &overlay, &targets, rot))
             .await
             .map_err(internal)?
             .map_err(internal)?;
@@ -47,7 +54,7 @@ pub async fn replay_chunks(
         let (qx0, qy0) = (*cx * CHUNK_PX, *cy * CHUNK_PX);
         let (qx1, qy1) = (qx0 + CHUNK_PX - 1, qy0 + CHUNK_PX - 1);
         let rows = sqlx::query(
-            "SELECT image_key, x, y FROM placements
+            "SELECT image_key, x, y, w, h, rot FROM placements
              WHERE removed_at IS NULL
                AND bbox && box(point($1::float8, $2::float8), point($3::float8, $4::float8))
              ORDER BY seq",
@@ -59,16 +66,23 @@ pub async fn replay_chunks(
         .fetch_all(&mut **tx)
         .await?;
         let canvas = crate::store::get_bytes(&app.store, &key).await?;
-        let mut overlays: Vec<(Vec<u8>, i64, i64)> = Vec::with_capacity(rows.len());
+        let mut overlays: Vec<(Vec<u8>, i64, i64, f32)> = Vec::with_capacity(rows.len());
         for row in rows {
             let image_key: String = row.get("image_key");
             let px: i64 = row.get("x");
             let py: i64 = row.get("y");
+            let rot: f32 = row.get("rot");
             let Some(bytes) = crate::store::get_bytes(&app.store, &image_key).await? else {
                 tracing::warn!(key = %image_key, "derivative missing during replay");
                 continue;
             };
-            overlays.push((bytes, px - qx0, py - qy0));
+            // The stored x/y are the UNROTATED rect's top-left; the
+            // painted bitmap is the rotated AABB, offset by the AABB's
+            // distance from the rect corner (negative extents included).
+            let w: i32 = row.get("w");
+            let h: i32 = row.get("h");
+            let aabb = crate::world::rotated_aabb(px, py, i64::from(w), i64::from(h), rot);
+            overlays.push((bytes, aabb.x - qx0, aabb.y - qy0, rot));
         }
         let canvas_owned = canvas.clone();
         let encoded =

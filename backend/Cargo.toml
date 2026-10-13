@@ -36,6 +36,7 @@ base64 = "0.22"
 thiserror = "2"
 lru = "0.12"
 futures = "0.3"
+parking_lot = "0.12"
 bytes = "1"
 anyhow = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }

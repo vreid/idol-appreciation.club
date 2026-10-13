@@ -292,3 +292,20 @@ jobs:
             esac
           done
           exit $failed
+
+  # TEMPORARY diagnostic — remove before merge. Captures what GHA actually
+  # evaluates for the tier-2 gate conditions on this PR (web-test and
+  # web-contract skipped despite outputs.web appearing true: web-lint ran
+  # on the same expression).
+  debug-needs:
+    name: debug needs context
+    needs: [changed, tier1, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: dump needs
+        run: |
+          echo "changed outputs = ${{ toJson(needs.changed.outputs) }}"
+          echo "results = ${{ toJson(needs.*.result) }}"
+          echo "canary web=='true' evaluates: ${{ needs.changed.outputs.web == 'true' }}"

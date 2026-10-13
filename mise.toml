@@ -27,6 +27,9 @@ jactionlint = "2.1.0"
 # Markdown formatter (repo-wide, config in .oxfmtrc.json). Called directly
 # from Taskfile — never via npx, which trips npm's devEngines enforcement.
 oxfmt = "0.72.0"
+# Offline K8s manifest schema validation (helm:lint gate); catches typed
+# shape errors helm lint/template cannot see.
+kubeconform = "0.8.0"
 # Release automation (tags + GitHub Releases from conventional commits).
 "npm:semantic-release" = "25.0.9"
 opentofu = "1.13.1"

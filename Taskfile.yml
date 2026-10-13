@@ -72,6 +72,12 @@ tasks:
       - helm lint chart
       - helm template chart > /dev/null
       - helm template chart --set web.enabled=false > /dev/null
+      # Client-side K8s schema validation: helm lint/template only parse
+      # YAML and miss typed-shape errors (e.g. lifecycle.preStop.exec
+      # rendered as an array). kubectl apply/create --dry-run=client need
+      # an API server for REST mapping, so offline kubeconform with pinned
+      # upstream schemas is the gate.
+      - helm template chart | kubeconform -strict -summary -kubernetes-version 1.32.0
 
   tofu:fmt:
     desc: tofu fmt check, recursive (ci.yml tofu)

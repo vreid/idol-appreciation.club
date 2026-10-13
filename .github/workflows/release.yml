@@ -26,7 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          persist-credentials: false
+          # semantic-release pushes the version tag with git, so the
+          # checkout must persist its (job-scoped GITHUB_TOKEN) credential.
+          persist-credentials: true
           # semantic-release analyzes full commit history
           fetch-depth: 0
       # cache: false — release provenance must not depend on a potentially

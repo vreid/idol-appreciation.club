@@ -1,0 +1,57 @@
+name: release
+
+# Runs after CI succeeds on main: tags a release from conventional commits
+# and, when a release was cut, dispatches deploy.yml with the version so
+# images are tagged with the semver alongside their digest.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          # semantic-release analyzes full commit history
+          fetch-depth: 0
+      # cache: false — release provenance must not depend on a potentially
+      # poisoned tool cache (jactionlint cache-poisoning).
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+        with:
+          cache: false
+      - name: semantic-release
+        id: rel
+        run: |
+          set -euo pipefail
+          before="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
+          task release
+          # @semantic-release/github creates the tag via the API, not local
+          # git — re-fetch before comparing.
+          git fetch origin 'refs/tags/v*:refs/tags/v*' --quiet
+          after="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+          echo "release: ${before:-none} -> ${after:-none}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: dispatch deploy with release version
+        if: steps.rel.outputs.after != steps.rel.outputs.before
+        run: gh workflow run deploy.yml --ref main -f semver="$AFTER"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AFTER: ${{ steps.rel.outputs.after }}

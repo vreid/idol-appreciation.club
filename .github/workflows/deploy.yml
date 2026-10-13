@@ -1,7 +1,13 @@
 name: deploy
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      semver:
+        description: Release version (v-prefixed) to tag images with; empty = digest-only
+        required: false
+        type: string
+        default: ""
   push:
     branches: [main]
     paths:
@@ -121,6 +127,7 @@ jobs:
         run: echo "digest=$(task image:backend | tail -1)" >> "$GITHUB_OUTPUT"
         env:
           BACKEND_IMAGE: ${{ env.BACKEND_IMAGE }}
+          SEMVER: ${{ inputs.semver }}
     outputs:
       digest: ${{ steps.push.outputs.digest }}
 
@@ -155,6 +162,7 @@ jobs:
         run: echo "digest=$(task image:web | tail -1)" >> "$GITHUB_OUTPUT"
         env:
           WEB_IMAGE: ${{ env.WEB_IMAGE }}
+          SEMVER: ${{ inputs.semver }}
     outputs:
       digest: ${{ steps.push.outputs.digest }}
 
@@ -188,6 +196,7 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           UPCLOUD_API_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
           CLUSTER: ${{ env.CLUSTER }}
+          RELEASE_TAG: ${{ inputs.semver }}
           BACKEND_DIGEST: ${{ needs.backend-build.outputs.digest }}
           WEB_DIGEST: ${{ needs.web-build.outputs.digest }}
           READY_BACKEND: ${{ needs.ready.outputs.backend }}

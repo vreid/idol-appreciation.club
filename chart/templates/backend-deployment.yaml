@@ -6,8 +6,21 @@ metadata:
   labels:
     app: backend
     app.kubernetes.io/part-of: idol-appreciation.club
+  annotations:
+    # Greppable scaling constraint marker — see docs/infra.md
+    # "Scaling: the backend is single-writer" before touching replicaCount.
+    idol.app/scaling: single-writer-required
 spec:
   replicas: {{ .Values.backend.replicaCount }}
+  # ⚠ Scaling gate: replicas MUST stay 1 until the PG advisory-lock chunk
+  # path is in place (paint-order == seq guarantee; see docs/infra.md
+  # "Scaling: the backend chunk writer"). RollingUpdate maxSurge=1
+  # maxUnavailable=0 provides zero-downtime rollouts.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: backend
@@ -15,7 +28,15 @@ spec:
     metadata:
       labels:
         app: backend
+      annotations:
+        # Release semver recorded for audit (the image itself stays
+        # digest-pinned; GHCR tags are mutable — see chart/values.yaml).
+        idol-appreciation.club/release-tag: {{ .Values.images.backend.tag | quote }}
     spec:
+      # SSE connections are long-lived: axum graceful shutdown drains
+      # in-flight requests and streams on SIGTERM; web clients reconnect
+      # with exponential backoff (web/src/lib/sse.ts) when streams drop.
+      terminationGracePeriodSeconds: 30
       # image declares USER idol (non-numeric), so kubelet cannot verify
       # runAsNonRoot - the image's own USER enforces non-root.
       securityContext:

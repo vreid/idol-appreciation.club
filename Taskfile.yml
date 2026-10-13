@@ -131,6 +131,11 @@ tasks:
     cmds:
       - jactionlint .github/workflows/*.yml
 
+  lint:action-pins:
+    desc: fail on unpinned third-party action refs (ci.yml workflows-lint, issue #86)
+    cmds:
+      - ./scripts/check-action-pins.sh
+
   web:lint:
     desc: vp check (oxfmt + oxlint + tsgo type check) (ci.yml web-lint)
     dir: web
@@ -241,7 +246,7 @@ tasks:
 
   lint:fast:
     desc: fast universal lint subset (deploy.yml lint)
-    deps: [lint:md, lint:workflows, helm:lint, tofu:fmt]
+    deps: [lint:md, lint:workflows, lint:action-pins, helm:lint, tofu:fmt]
 
   backend:ci:
     desc: backend lint + test gates, serial in one container (ci.yml backend-checks, deploy.yml backend-checks)

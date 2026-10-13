@@ -57,9 +57,13 @@ jobs:
 
       # mise first: the composite's tofu init needs tofu on PATH.
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      # Restores the tofu local backend (state + plugins) from the Actions
-      # cache and runs tofu init.
+      # Initializes the S3 state backend (Managed Object Storage); state
+      # and its credentials never touch Actions caches.
       - uses: ./.github/actions/tofu-setup
+        with:
+          state-endpoint: ${{ secrets.TOFU_STATE_ENDPOINT }}
+          state-access-key: ${{ secrets.TOFU_STATE_ACCESS_KEY }}
+          state-secret-key: ${{ secrets.TOFU_STATE_SECRET_KEY }}
 
       - name: deploy to cluster (kubeconfig, helm, secrets, DNS)
         run: task deploy:k8s

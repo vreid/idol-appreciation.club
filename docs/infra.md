@@ -48,7 +48,7 @@ project requirement.
 
 | workflow         | trigger                                   | does                                                                                                         |
 | ---------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `ci`             | PR + push to main                         | tofu fmt/validate/plan (PRs), oxfmt markdown, backend cargo gates, web vp gates                              |
+| `ci`             | PR + push to main                         | tofu fmt/validate (PRs, credential-less), oxfmt markdown, backend cargo gates, web vp gates                  |
 | `infra-apply`    | push to main touching `tofu/`, manual     | `tofu apply -auto-approve`                                                                                   |
 | `infra-destroy`  | manual, input `confirm=destroy`           | `tofu destroy -auto-approve`                                                                                 |
 | `infra-recreate` | manual                                    | destroy (best effort) then apply                                                                             |
@@ -171,37 +171,56 @@ curl -X DELETE -H "Authorization: Bearer $UPCLOUD_TOKEN" \
 
 ### State handling
 
-State stays on the **local backend**, kept out of git (`*.tfstate*` is ignored)
-and shared between CI runs through the Actions cache
-(`.github/actions/tofu-setup`). The state contains secrets (DB password, S3
-keys) — treat it accordingly.
+State lives in the **S3 backend on Managed Object Storage** (bucket
+`tofu-state`, key `idol-appreciation.club`, region `europe-1` — see the
+`backend "s3"` block in `tofu/versions.tf`). The state contains secrets (DB
+password, S3 keys) and therefore never touches Actions caches: any PR —
+including from a fork — can read caches created on the base branch, so the old
+cache-based local backend was a credential-exposure hole (issue #88). The
+`tofu-setup` composite caches provider plugins only; the state bucket
+credentials travel per-run as repo secrets.
 
-If the cache is ever evicted, CI has no state and an apply would fail on name
-conflicts rather than silently duplicating (all names are unique per account).
-Recovery is the recreate runbook above. For a durable backend, migrate to the S3
-backend on Managed Object Storage itself (`upctl`-style docs: "Managed Object
-Storage as S3 State Backend"):
+Bucket and credentials are provisioned **outside** the managed state (no
+circular dependency). One-time bootstrap, done manually in the UpCloud console
+or via `upctl`:
 
-```hcl
-backend "s3" {
-  bucket                      = "tofu-state"
-  key                         = "idol-appreciation.club"
-  region                      = "europe-1"
-  endpoint                    = "https://<objsto-endpoint>"
-  access_key                  = var.state_access_key
-  secret_key                  = var.state_secret_key
-  skip_credentials_validation = true
-  skip_region_validation      = true
-  skip_requesting_account_id  = true
-  force_path_style            = true
-}
+1. Create a Managed Object Storage in `europe-1` with a bucket `tofu-state`
+   (private, no public access).
+2. Create an object-storage access key scoped to that bucket (read-write).
+3. Repo secrets (Settings → Secrets → Actions): `TOFU_STATE_ENDPOINT` (the
+   bucket's S3 endpoint URL), `TOFU_STATE_ACCESS_KEY`, `TOFU_STATE_SECRET_KEY`.
+
+Migrating the pre-existing state off the Actions cache (one-time, while the old
+cache entry still exists):
+
+```
+gh cache download --repo vreid/idol-appreciation.club --key tofu-state-
+unzip '*.zip'   # yields tofu/terraform.tfstate
+cp terraform.tfstate tofu/
+cd tofu && tofu init -migrate-state -input=false \
+  -backend-config="endpoint=$TOFU_STATE_ENDPOINT" \
+  -backend-config="access_key=$TOFU_STATE_ACCESS_KEY" \
+  -backend-config="secret_key=$TOFU_STATE_SECRET_KEY"
 ```
 
-Keep the state bucket and its credentials OUT of the managed state to avoid a
-circular dependency. `tofu init -migrate-state` moves existing state.
+Rotation after landing the S3 backend (issue #88 remediation): rotate the
+managed-DB password and the S3 secret access key that the state leaked exposure
+window covered; update the matching repo secrets in the same change
+(`deploy.yml` patches cluster secrets on the next deploy).
 
-To restore state locally from a CI run: `actions/cache` keys are
-`tofu-state-<run-id>`; restore with `tofu-state-` prefix fallback.
+Where plan/apply may run with credentials, and where they may not:
+
+| flow                               | credentials | state | trigger                    |
+| ---------------------------------- | ----------- | ----- | -------------------------- |
+| `deploy.yml`                       | yes         | yes   | push to `main` (trusted)   |
+| `infra-apply/destroy/recreate.yml` | yes         | yes   | manual `workflow_dispatch` |
+| `ci.yml` `tofu-plan`               | **none**    | none  | any PR touching tofu paths |
+
+The PR gate runs `task tofu:validate` (`init -backend=false` + `validate`):
+PR-authored recipes are executed with no cloud tokens, no environment, and no
+state — a rewritten recipe cannot reach production (issue #87). The `production`
+environment additionally requires a reviewer approval for any job that declares
+it.
 
 ### State drift rebuild + pre-merge gate (2026-10-13, validated)
 

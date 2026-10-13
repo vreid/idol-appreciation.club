@@ -27,9 +27,12 @@ trap cleanup EXIT
 # runs: a crashed/aborted earlier run leaks its API container and every
 # later run dies on "address already in use". Reap leftovers bound to OUR
 # port only (never touches containers of a parallel run on another port).
-leaked="$("${RUNNER}" ps -q --filter "publish=${BASE_PORT}")"
+# Parsed from the `{{.Ports}}` column rather than a `publish=` ps filter:
+# docker supports that filter, podman rejects it as invalid (exit 125).
+leaked="$("${RUNNER}" ps --format '{{.ID}} {{.Ports}}' \
+  | awk -v pat=":${BASE_PORT}->" '$2 ~ pat {print $1}')"
 if [ -n "${leaked}" ]; then
-  echo "port ${BASE_PORT} held by leftover container(s), reaping: $("${RUNNER}" ps --filter "publish=${BASE_PORT}" --format '{{.Names}}' | tr '\n' ' ')"
+  echo "port ${BASE_PORT} held by leftover container(s), reaping: $("${RUNNER}" ps --format '{{.Names}} {{.Ports}}' | awk -v pat=":${BASE_PORT}->" '$2 ~ pat {print $1}' | tr '\n' ' ')"
   printf '%s\n' "${leaked}" | xargs -r "${RUNNER}" rm -f
 fi
 

@@ -98,3 +98,5 @@ web/test/contract/contract.test.ts:generic-password:163
 d0da54d0ad5ad5da42ea4e9713fc9c338a901532:deploy/reseed-job.yaml:generic-password:60
 18dffef80fb98dc31cd2086768ed7d3b6c91dfea:backend/tests/integration.rs:generic-password:1080
 c9a0d42946a22082947257a8f2aa5d4a5580b6c8:backend/tests/integration.rs:generic-password:1080
+d8bf07705d11808c6082cfd28f7881154686c3d0:deploy/reseed-job.yaml:generic-password:60
+23d1b94373e7b2cee1e64b3654447bea153bd684:deploy/reseed-job.yaml:generic-password:60

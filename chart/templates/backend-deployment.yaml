@@ -48,7 +48,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: backend
-          image: {{ include "idol-canvas.image" (dict "image" .Values.images.backend) }}
+          image: {{ include "idol-canvas.image" (dict "image" .Values.images.backend "name" "backend") }}
           imagePullPolicy: Always
           ports:
             - containerPort: 8080

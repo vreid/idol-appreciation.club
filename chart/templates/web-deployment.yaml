@@ -47,7 +47,7 @@ spec:
             name: caddy-config
       containers:
         - name: web
-          image: {{ include "idol-canvas.image" (dict "image" .Values.images.web) }}
+          image: {{ include "idol-canvas.image" (dict "image" .Values.images.web "name" "web") }}
           imagePullPolicy: Always
           ports:
             - containerPort: 8080

@@ -78,6 +78,25 @@ tasks:
       # an API server for REST mapping, so offline kubeconform with pinned
       # upstream schemas is the gate.
       - helm template chart | kubeconform -strict -summary -kubernetes-version 1.32.0
+      # Render-assert image refs (second defense for the 2026-10-13
+      # InvalidImageName incident): digest-only, tag-only, both (digest
+      # wins, never concatenated), and neither (must fail loudly at
+      # render time).
+      - |
+        set -euo pipefail
+        d="sha256:$(head -c 64 /dev/zero | tr '\0' a)"
+        img() { helm template chart "$@" | grep -E 'image: ghcr\.io' | sed 's/^ *image: //' | sort; }
+        [ "$(img --set-string images.backend.digest="$d" --set-string images.web.digest="$d" --set-string images.backend.tag=v9.9.9 --set-string images.web.tag=v9.9.9 | grep -vc "^ghcr.io/[^@]*@$d$")" = 0 ] \
+          || { echo "digest set: every ref must be exactly repository@digest" >&2; exit 1; }
+        [ "$(img --set-string images.backend.digest= --set-string images.web.digest= | grep -vc ':main$')" = 0 ] \
+          || { echo "digest empty: refs must fall back to repository:tag" >&2; exit 1; }
+        if helm template chart --set-string images.backend.digest= --set-string images.backend.tag= --set-string images.web.digest= --set-string images.web.tag= >/dev/null 2>/tmp/helm-img.err; then
+          echo "neither digest nor tag: expected loud render failure, got success" >&2
+          exit 1
+        fi
+        grep -q "neither digest nor tag" /tmp/helm-img.err \
+          || { echo "empty images: failed for the wrong reason:" >&2; cat /tmp/helm-img.err >&2; exit 1; }
+        echo "image-ref render asserts OK"
 
   tofu:fmt:
     desc: tofu fmt check, recursive (ci.yml tofu)
@@ -242,6 +261,17 @@ tasks:
     cmds:
       - |
         set -euo pipefail
+        # InvalidImageName guard (2026-10-13 incident): a dispatch deploy
+        # whose image builds were skipped rolled pods with malformed image
+        # refs. Images that will roll MUST carry digests; web is exempt
+        # only while the bootstrap placeholder is the edge (web.enabled
+        # gets set false below and its image is never rendered).
+        [ -n "$BACKEND_DIGEST" ] \
+          || { echo "BACKEND_DIGEST is empty: image build skipped or produced no digest; refusing to deploy" >&2; exit 1; }
+        if [ "$READY_WEB" == "true" ] && [ -z "$WEB_DIGEST" ]; then
+          echo "WEB_DIGEST is empty: image build skipped or produced no digest; refusing to deploy" >&2
+          exit 1
+        fi
         uuid="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_TOKEN}" \
           https://api.upcloud.com/1.3/kubernetes \
           | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"

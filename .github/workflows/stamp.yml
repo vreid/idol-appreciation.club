@@ -1,0 +1,67 @@
+name: stamp
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag to stamp onto the current lock digests (e.g. v1.4.0)
+        required: true
+        type: string
+
+concurrency:
+  group: stamp-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions: {}
+
+# A release must never be stranded without its images: images.yml may
+# still be building/merging the lock when semantic-release cuts the tag,
+# and a failed release-deploy used to take the crane stamping down with
+# it (v1.4.0 shipped without image tags). So stamping is event-driven
+# here: wait until images.lock.json records merge commits >= the release
+# commit, then stamp the recorded digests with the release tag.
+jobs:
+  stamp:
+    name: stamp release tag onto lock digests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+        with:
+          cache: false
+      - name: wait for the lock to cover the release commit, then stamp
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          REL_SHA: ${{ github.event.release.target_commitish }}
+        run: |
+          set -euo pipefail
+          test -n "$TAG" || { echo "no tag resolved" >&2; exit 1; }
+          echo "$GHCR_TOKEN" | crane auth login ghcr.io -u "${GITHUB_ACTOR:-token}" --password-stdin
+          deadline=$((SECONDS + 2400))
+          while :; do
+            b_sha="$(jq -r '.backend.mergeSha // empty' images.lock.json)"
+            w_sha="$(jq -r '.web.mergeSha // empty' images.lock.json)"
+            if [ -n "$REL_SHA" ] && [ "$b_sha" = "$REL_SHA" ] && [ "$w_sha" = "$REL_SHA" ]; then
+              echo "lock covers the release commit ($REL_SHA)"
+              break
+            fi
+            if [ $SECONDS -ge $deadline ]; then
+              echo "lock did not reach ${REL_SHA:-<dispatch>} within 40m; stamping CURRENT lock digests as best-effort audit trail" >&2
+              break
+            fi
+            echo "waiting for lock to cover ${REL_SHA:-<dispatch>} (backend@$b_sha web@$w_sha); retrying in 60s"
+            sleep 60
+            git fetch origin main --quiet
+            git show FETCH_HEAD:images.lock.json > images.lock.json
+          done
+          b="$(jq -r '.backend.digest' images.lock.json)"
+          w="$(jq -r '.web.digest' images.lock.json)"
+          crane tag "ghcr.io/vreid/idol-appreciation.club-backend@$b" "$TAG"
+          crane tag "ghcr.io/vreid/idol-appreciation.club-web@$w" "$TAG"
+          echo "stamped $TAG: backend@$b web@$w"

@@ -2,9 +2,10 @@
 """Generate the 100 fictional-idol test images via the NanoGPT Image API.
 
 Stdlib only (urllib, json, base64). Reads NANO_GPT_API_KEY from ../.env
-relative to this script. Writes idols/NN-slug.jpg and manifest.json.
+or the environment. Writes idols/NN-slug.jpg and manifest.json.
 
-Usage: python3 generate.py [--only NN]
+Usage: python3 generate.py [--batch food] [--only NN]
+  --batch food  generate the idols-food/ batch instead of idols/
 """
 import base64
 import json
@@ -25,6 +26,10 @@ BUDGET_TARGET_USD = 9.5  # hard lifetime NanoGPT cap for this asset set
 PER_IMAGE_EST_USD = 0.10
 HERO_EST_USD = 0.35      # conservative pre-flight estimate for 2k requests
 MIN_BYTES = 30 * 1024
+
+FOOD_OUTDIR = "idols-food"  # second batch: idols eating food in random places
+FOOD_HERO_NUMBERS = {"55", "78", "85", "100"}
+FOOD_BUDGET_TARGET_USD = 12.0  # runaway guard for the food batch alone
 
 TAIL = ("professional photography, editorial quality, sharp focus, "
         "high detail, fictional idol, AI-generated fictional character, "
@@ -523,13 +528,492 @@ CATEGORIES = [
 ]
 
 
+FOOD_CATEGORIES = [
+    ("01", "ramyeon-convenience-store", "1:1",
+     "Female fictional idol in a hoodie slurping steaming cup ramyeon at a "
+     "convenience-store window counter at night, neon city lights reflecting "
+     "on the glass, chopsticks mid-air, cozy candid photography, 50mm lens, "
+     + TAIL),
+    ("02", "tteokbokki-street-stall", "3:4",
+     "Female fictional idol blowing on a forkful of spicy rice cakes from a "
+     "foil tray at a glowing street food stall, evening steam and string "
+     "lights, red sauce on her thumb, candid street photography, 85mm lens, "
+     + TAIL),
+    ("03", "korean-bbq-grill", "16:9",
+     "Five-member coed group of fictional idols gathered around a tabletop "
+     "charcoal grill, one member flipping marinated pork belly with tongs "
+     "while another fans the coals, smoke and warm brazier light, lively "
+     "restaurant scene, 35mm lens, " + TAIL),
+    ("04", "fried-chicken-relay", "16:9",
+     "Girl group of fictional idols in sweatshirts passing a bucket of fried "
+     "chicken across a practice-room sofa, delivery boxes and soda bottles "
+     "on the table, late-night candid documentary photography, 35mm lens, "
+     + TAIL),
+    ("05", "bingsu-cafe-date", "3:4",
+     "Female fictional idol leaning over a towering strawberry shaved-ice "
+     "dessert crowned with fresh berries, pastel cafe interior, spoon raised "
+     "in delight, bright dessert photography, 50mm lens, " + TAIL),
+    ("06", "hotteok-winter-street", "3:4",
+     "Female fictional idol in a puffer coat and beanie biting into a hot "
+     "syrup-filled cinnamon pancake from a paper sleeve, winter street steam "
+     "rising around a market stall, cozy evening tones, 85mm lens, " + TAIL),
+    ("07", "dalgona-challenge", "1:1",
+     "Male fictional idol squinting in deep concentration while carving a "
+     "honeycomb candy shape with a needle on a variety-show set, giant timer "
+     "graphic behind him, bright studio lighting, playful broadcast "
+     "photography, 50mm lens, " + TAIL),
+    ("08", "late-night-cup-noodles", "9:16",
+     "Female fictional idol with her hair in a claw clip eating cup noodles "
+     "standing at a dorm kitchen counter at 2 a.m., fridge light glow, "
+     "oversized t-shirt, quiet candid lifestyle photography, 35mm lens, "
+     + TAIL),
+    ("09", "ssam-wrap-offer", "1:1",
+     "Female fictional idol holding a crisp lettuce wrap toward the camera "
+     "with both hands at a barbecue table, sizzling grill bokeh behind her, "
+     "playful expression, warm restaurant lighting, 85mm lens, " + TAIL),
+    ("10", "naengmyeon-summer", "3:4",
+     "Male fictional idol pausing mid-slurp of icy cold buckwheat noodles at "
+     "an outdoor summer table, shaved ice melting in the broth, sweat and "
+     "sunshine, candid editorial photography, 50mm lens, " + TAIL),
+    ("11", "mukbang-live", "16:9",
+     "Female fictional idol hosting a live mukbang stream from a studio "
+     "table covered with spaced dishes, softbox ring light glow, waving at "
+     "the camera between bites, bright streaming setup, 35mm lens, " + TAIL),
+    ("12", "strawberry-milk-twirl", "3:4",
+     "Female fictional idol in a pink cardigan holding a glass bottle of "
+     "strawberry milk up beside her cheek in a pastel cafe, whipped-cream "
+     "drink beside her, soft window light, photocard-style photography, "
+     "85mm lens, " + TAIL),
+    ("13", "bubble-tea-taste-test", "1:1",
+     "Two female fictional idols comparing giant bubble tea cups with wide "
+     "straws on a mall bench, one frowning thoughtfully and one nodding "
+     "approval, shopping bags at their feet, candid street photography, "
+     "50mm lens, " + TAIL),
+    ("14", "airport-lounge-snack", "16:9",
+     "Female fictional idol with her mask pulled down eating a fruit cup in "
+     "an airline lounge, boarding pass and passport in hand, rolling "
+     "suitcase beside the armchair, natural terminal light, editorial travel "
+     "photography, 50mm lens, " + TAIL),
+    ("15", "rooftop-bbq-party", "16:9",
+     "Group of fictional idols at a rooftop barbecue at sunset, one member "
+     "grilling corn while others hold paper plates and soda cups, city "
+     "skyline and string lights behind, golden hour documentary photography, "
+     "35mm lens, " + TAIL),
+    ("16", "corn-dog-cheese-pull", "3:4",
+     "Female fictional idol stretching a long mozzarella pull from a crispy "
+     "corn dog at a night market, breadcrumbs on her sleeve, warm stall "
+     "lights bokeh, appetizing street food photography, 85mm lens, " + TAIL),
+    ("17", "hanriver-gimbap-picnic", "1:1",
+     "Group of fictional idols on a picnic mat by the river sharing a "
+     "basket of gimbap rolls and fruit, one member mid-laugh holding a rice "
+     "roll, park trees and bike path behind, sunny candid photography, "
+     "35mm lens, " + TAIL),
+    ("18", "spicy-noodle-challenge", "16:9",
+     "Male fictional idol with teary eyes and flushed cheeks holding up a "
+     "fork of extra-spicy noodles on a variety-show set, co-hosts laughing "
+     "beside him, bright studio lighting, comedic broadcast photography, "
+     "50mm lens, " + TAIL),
+    ("19", "birthday-cake-selfie", "3:4",
+     "Female fictional idol taking a selfie with a slice of cream cake at a "
+     "birthday cafe decorated with pastel banners and a star-symbol photo "
+     "wall, frosting on her fingertip, warm cafe light, photocard-style "
+     "photography, 85mm lens, " + TAIL),
+    ("20", "mandu-steamer-basket", "1:1",
+     "Female fictional idol lifting the bamboo lid off a steaming basket of "
+     "dumplings on a wooden hanok table, steam curling upward, side dishes "
+     "arranged around, warm natural light, food editorial photography, "
+     "50mm lens, " + TAIL),
+    ("21", "soft-serve-race", "3:4",
+     "Two fictional idols racing to eat towering soft-serve cones before "
+     "they melt at a beach boardwalk, one with cream on her nose, sea and "
+     "umbrellas behind, playful summer candid photography, 50mm lens, "
+     + TAIL),
+    ("22", "dorm-pizza-night", "16:9",
+     "Group of fictional idols in pajamas sitting on a dorm floor around "
+     "open pizza boxes, one member holding a slice like a microphone while "
+     "singing, fairy lights on the wall, cozy candid photography, 35mm lens, "
+     + TAIL),
+    ("23", "kimchi-stew-stirring", "1:1",
+     "Female fictional idol in an apron stirring a bubbling kimchi stew pot "
+     "in a dorm kitchen, wooden spoon raised, steam and warm stove light, "
+     "homey lifestyle photography, 50mm lens, " + TAIL),
+    ("24", "churros-festival-night", "3:4",
+     "Female fictional idol holding a paper sleeve of cinnamon-sugar "
+     "churros at a night festival, ferris wheel lights and lanterns behind "
+     "her, sugar dust on her smile, evening street photography, 85mm lens, "
+     + TAIL),
+    ("25", "tangerine-orchard", "16:9",
+     "Female fictional idol in a straw hat picking tangerines in a sunlit "
+     "orchard, wicker basket of fruit on her arm, photobook concept "
+     "photography, warm backlit daylight, 85mm lens, " + TAIL),
+    ("26", "watermelon-split", "1:1",
+     "Male fictional idol cracking a watermelon open on a picnic table at a "
+     "summer poolside, juice spraying, friends cheering in swimwear behind, "
+     "dynamic candid photography, 50mm lens, " + TAIL),
+    ("27", "donut-bakery-decision", "3:4",
+     "Female fictional idol pressing a finger to her chin in front of a "
+     "bakery case full of colorful donuts, holding a pink box already half "
+     "full, warm bakery lighting, candid lifestyle photography, 85mm lens, "
+     + TAIL),
+    ("28", "practice-room-ramyeon", "16:9",
+     "Girl group of fictional idols sitting on a practice-room floor "
+     "against the mirror wall eating cup noodles from a cardboard box, "
+     "choreography notes and water bottles scattered, fluorescent evening "
+     "light, documentary photography, 35mm lens, " + TAIL),
+    ("29", "backstage-catering", "3:4",
+     "Male fictional idol with a towel around his neck filling a plate at a "
+     "backstage catering table between rehearsals, stage crew silhouettes "
+     "behind, warm tent lighting, candid backstage photography, 50mm lens, "
+     + TAIL),
+    ("30", "macaron-tea-tower", "1:1",
+     "Female fictional idol in an elegant dress at an afternoon tea table "
+     "with a pastel macaron tower, holding a teacup with her pinky raised, "
+     "soft hotel cafe light, refined editorial photography, 85mm lens, "
+     + TAIL),
+    ("31", "bungeoppang-winter", "3:4",
+     "Female fictional idol holding two fish-shaped pastries in a paper "
+     "bag, steam rising in cold winter air, cheerful winter market stall "
+     "lights, cozy street photography, 85mm lens, " + TAIL),
+    ("32", "soda-can-cheers", "16:9",
+     "Group of fictional idols clinking soda cans over a wooden picnic "
+     "table piled with fried chicken and fries, golden hour park light, "
+     "laughter and raised arms, candid celebration photography, 35mm lens, "
+     + TAIL),
+    ("33", "tteok-making-courtyard", "1:1",
+     "Fictional idol duo in matching headbands pounding rice cake dough "
+     "with a wooden mallet in a traditional courtyard, flour dust in the "
+     "air, bright cultural festival setting, documentary photography, "
+     "50mm lens, " + TAIL),
+    ("34", "noodle-slurp-contest", "16:9",
+     "Two fictional idols competing in a noodle-slurping contest at "
+     "attached tables on a variety-show set, cheeks puffed, scoreboard "
+     "behind them, bright studio lighting, energetic broadcast photography, "
+     "50mm lens, " + TAIL),
+    ("35", "honey-toast-brunch", "4:3",
+     "Female fictional idol admiring a cube of honey toast crowned with ice "
+     "cream and drizzled caramel at a sunlit cafe window seat, spoon in "
+     "hand, airy brunch photography, 50mm lens, " + TAIL),
+    ("36", "street-toast-cart", "1:1",
+     "Female fictional idol taking a big bite of a street toast stacked "
+     "with egg and vegetables in front of a food cart, cabbage shreds "
+     "falling, morning market bustle behind, candid street photography, "
+     "50mm lens, " + TAIL),
+    ("37", "tteokbokki-pot-party", "16:9",
+     "Girl group of fictional idols leaning over a bubbling red rice cake "
+     "pot on a portable stove, cheeks flushed and laughing, cheese "
+     "stretching from a fork, cozy restaurant booth, appetizing documentary "
+     "photography, 35mm lens, " + TAIL),
+    ("38", "camping-ramyeon-pot", "3:4",
+     "Male fictional idol in a hiking jacket tending a bubbling ramyeon pot "
+     "on a portable stove at a pine campsite, enamel mugs and a lantern on "
+     "the log table, dusk blue tones, outdoor lifestyle photography, "
+     "50mm lens, " + TAIL),
+    ("39", "caramel-pudding-poke", "1:1",
+     "Close-up of a female fictional idol poking a wobbly caramel pudding "
+     "with a spoon in a pastel diner booth, glossy syrup, playful "
+     "expression, soft dessert photography, 85mm lens, " + TAIL),
+    ("40", "chimaek-picnic", "16:9",
+     "Group of fictional idols at an evening riverside picnic with a spread "
+     "of fried chicken and soda bottles, LED city lights twinkling across "
+     "the water, picnic mat and lawn chairs, warm candid photography, "
+     "35mm lens, " + TAIL),
+    ("41", "jokbal-feast-table", "1:1",
+     "Group of fictional idols around a celebration table with a sliced "
+     "braised pork trotter platter and wrap condiments, one member wrapping "
+     "a bite with peppers, warm restaurant lighting, lively feast "
+     "photography, 35mm lens, " + TAIL),
+    ("42", "strawberry-greenhouse", "16:9",
+     "Female fictional idol crouching between rows of strawberry plants in "
+     "a greenhouse, holding a freshly picked berry up to the light, winter "
+     "photobook concept, soft diffused daylight, 85mm lens, " + TAIL),
+    ("43", "eomuk-skewer-night", "3:4",
+     "Female fictional idol cupping a warm paper cup of fish cake skewers "
+     "at a winter street stall, breath fogging in the cold, orange broth "
+     "steam, cozy night street photography, 85mm lens, " + TAIL),
+    ("44", "halloween-candy-bowl", "1:1",
+     "Female fictional idol in a playful witch costume grabbing a fistful "
+     "of candy from a party bowl at a Halloween dorm party, pumpkin lights "
+     "and fake cobwebs behind, festive candid photography, 50mm lens, "
+     + TAIL),
+    ("45", "christmas-cake-decorating", "16:9",
+     "Group of fictional idols in Santa hats decorating a cream cake with "
+     "strawberries in a dorm kitchen, one member stealing a strawberry, "
+     "tinsel and string lights behind, warm holiday candid photography, "
+     "35mm lens, " + TAIL),
+    ("46", "hotel-breakfast-tray", "3:4",
+     "Male fictional idol in a robe cross-legged on a hotel bed with a "
+     "room-service breakfast tray of pastries and fruit, city morning view "
+     "through the window, tour-life lifestyle photography, 50mm lens, "
+     + TAIL),
+    ("47", "kimbap-rolling-class", "4:3",
+     "Female fictional idol in a cooking-show apron rolling gimbap with a "
+     "bamboo mat on a studio kitchen counter, ingredient bowls lined up, "
+     "instructor smiling behind, bright broadcast lighting, 50mm lens, "
+     + TAIL),
+    ("48", "sundubu-egg-crack", "3:4",
+     "Female fictional idol cracking an egg into a violently bubbling "
+     "stone pot of soft tofu stew, riser of steam, side dishes and rice "
+     "around, rustic restaurant lighting, appetizing editorial photography, "
+     "50mm lens, " + TAIL),
+    ("49", "snack-aisle-basket", "16:9",
+     "Fictional idol duo loading a convenience store basket with colorful "
+     "snack bags in the chip aisle, one reading a package upside down, "
+     "fluorescent store light, candid lifestyle photography, 35mm lens, "
+     + TAIL),
+    ("50", "melon-soda-float", "3:4",
+     "Female fictional idol with a straw in a bright green melon soda float "
+     "in a retro diner booth, checkered floor and jukebox tones, cherry on "
+     "top, playful vintage photography, 50mm lens, " + TAIL),
+    ("51", "galbi-grill-master", "16:9",
+     "Male fictional idol in a chef hat confidently wielding tongs over a "
+     "charcoal grill of marinated short ribs at a restaurant table, smoke "
+     "and embers, admiring group members beside, warm tabletop lighting, "
+     "lively documentary photography, 35mm lens, " + TAIL),
+    ("52", "patbingsu-two-spoons", "1:1",
+     "Duo of fictional idols sharing a mountain of red-bean shaved ice "
+     "with two spoons colliding mid-bite, condensed milk drizzle, summer "
+     "cafe window light, sweet candid photography, 50mm lens, " + TAIL),
+    ("53", "chicken-wing-huddle", "16:9",
+     "Fictional idol group huddled shoulder to shoulder over a platter of "
+     "glazed chicken wings on a variety-show set, hands reaching from every "
+     "side, scoreboard lights behind, comedic broadcast photography, "
+     "35mm lens, " + TAIL),
+    ("54", "cotton-candy-cloud", "3:4",
+     "Female fictional idol peeking over a giant pink cotton candy cloud at "
+     "an amusement park, carousel lights blurred behind, strands of sugar "
+     "catching the sun, dreamy photocard-style photography, 85mm lens, "
+     + TAIL),
+    ("55", "noodle-lift-hero", "2:3",
+     "Dramatic beauty close-up of a female fictional idol lifting glossy "
+     "noodle strands high with chopsticks, steam catching a single "
+     "spotlight against a dark moody background, glossy lips and flawless "
+     "makeup, cinematic food editorial photography, 85mm lens, " + TAIL),
+    ("56", "jjimdak-cheese-feast", "1:1",
+     "Group of fictional idols stretching cheese with chopsticks over a "
+     "bubbling braised-chicken platter in a lively restaurant, side dishes "
+     "crowding the table, warm lighting, appetizing feast photography, "
+     "35mm lens, " + TAIL),
+    ("57", "tteok-galbi-charcoal", "3:4",
+     "Close-up of a female fictional idol's hand turning minced short-rib "
+     "patties on a charcoal grill with golden tongs, ember glow and smoke, "
+     "banchan bowls blurred behind, tactile food photography, 85mm lens, "
+     + TAIL),
+    ("58", "smoothie-bowl-morning", "1:1",
+     "Female fictional idol in morning sunlight arranging banana slices on "
+     "a berry smoothie bowl in a dorm kitchen, blender still humming, "
+     "plants on the windowsill, fresh lifestyle photography, 50mm lens, "
+     + TAIL),
+    ("59", "dosirak-judgment", "16:9",
+     "Fictional idols lined up behind homemade lunchbox trays on a "
+     "variety-show set, one member wiping a proud tear, judge raising a "
+     "spoon, bright studio lighting, comedic broadcast photography, "
+     "35mm lens, " + TAIL),
+    ("60", "cream-pasta-twirl", "3:4",
+     "Female fictional idol twirling a perfect forkful of cream pasta at a "
+     "candlelit Italian bistro table, glass of sparkling water beside, warm "
+     "intimate lighting, editorial dining photography, 85mm lens, " + TAIL),
+    ("61", "mochi-ice-bite", "1:1",
+     "Male fictional idol biting into a chewy mochi ice cream ball with "
+     "puffed cheeks on a park bench, flavor boxes open beside him, spring "
+     "blossoms behind, playful candid photography, 50mm lens, " + TAIL),
+    ("62", "takoyaki-hot-panic", "3:2",
+     "Fictional idol group fanning their open mouths after biting molten "
+     "takoyaki balls at a festival stall, sauce and bonito flakes on paper "
+     "trays, lantern light, comedic candid photography, 50mm lens, " + TAIL),
+    ("63", "roasted-chestnuts-autumn", "3:4",
+     "Female fictional idol in a trench coat holding a paper cone of "
+     "roasted chestnuts on an autumn street, fallen maple leaves on the "
+     "pavement, warm afternoon light, seasonal street photography, "
+     "85mm lens, " + TAIL),
+    ("64", "chocolate-milk-mustache", "1:1",
+     "Female fictional idol in a practice room with a chocolate milk "
+     "mustache holding an empty carton, cheeks pink, members giggling "
+     "behind her, fluorescent candid photography, 50mm lens, " + TAIL),
+    ("65", "dakgangjeong-market-cup", "3:4",
+     "Female fictional idol holding a paper cup of glossy sweet-and-spicy "
+     "crispy chicken at a market alley stall, chopsticks poised, red "
+     "lantern glow, appetizing street photography, 85mm lens, " + TAIL),
+    ("66", "camping-army-stew", "16:9",
+     "Group of fictional idols crowded around a bubbling army-base stew "
+     "pot on a campsite table at night, ramyeon blocks and sausages "
+     "crowding the pot, headlamps and lantern glow, cozy outdoor "
+     "documentary photography, 35mm lens, " + TAIL),
+    ("67", "dango-cherry-blossoms", "3:4",
+     "Female fictional idol holding a skewer of tri-color dango under "
+     "drifting cherry blossom petals in a spring park, picnic blanket and "
+     "bento behind, soft pastel daylight, photocard-style photography, "
+     "85mm lens, " + TAIL),
+    ("68", "bibimbap-mix-studio", "1:1",
+     "Female fictional idol vigorously mixing a stone-pot bibimbap with "
+     "chili paste on a bright cooking-studio counter, sleeves rolled, "
+     "steam rising, sunny broadcast lighting, appetizing studio "
+     "photography, 50mm lens, " + TAIL),
+    ("69", "blue-slushie-tongues", "3:4",
+     "Duo of fictional idols sticking out bright blue tongues at the "
+     "camera after a giant blue raspberry slushie, convenience store "
+     "forecourt in summer, playful candid photography, 50mm lens, " + TAIL),
+    ("70", "steak-award-dinner", "16:9",
+     "Group of fictional idols in evening wear raising forks over a "
+     "celebratory steak dinner at a long restaurant table after an award "
+     "show, candlelight and glasses of sparkling cider, elegant event "
+     "photography, 50mm lens, " + TAIL),
+    ("71", "gyeran-ppang-morning", "1:1",
+     "Female fictional idol holding a golden egg-bread with a whole baked "
+     "egg at a morning market, steam wisps and seed topping, school-run "
+     "street behind, warm breakfast photography, 85mm lens, " + TAIL),
+    ("72", "food-truck-charity", "16:9",
+     "Fictional idol group in matching aprons serving snacks from a "
+     "brightly painted food truck window at a charity event, paper bags "
+     "handed to blurred crowd silhouettes, no readable logos, sunny "
+     "community photography, 35mm lens, " + TAIL),
+    ("73", "sashimi-market-morning", "1:1",
+     "Male fictional idol in a beanie savoring a fresh sashimi plate at a "
+     "wooden counter in a morning fish market, ice displays and lanterns "
+     "behind, documentary travel photography, 50mm lens, " + TAIL),
+    ("74", "cheese-fondue-chalet", "3:4",
+     "Duo of fictional idols dipping bread cubes into a bubbling cheese "
+     "fondue pot at a snowy chalet window, wool sweaters and rosy cheeks, "
+     "mountain view behind, cozy winter vlog photography, 50mm lens, "
+     + TAIL),
+    ("75", "yuzu-tea-hanok", "1:1",
+     "Female fictional idol in modern hanbok cradling a glass of yuzu tea "
+     "on a wooden hanok veranda, tray of traditional sweets beside, paper "
+     "lantern glow, serene cultural photography, 85mm lens, " + TAIL),
+    ("76", "popcorn-movie-night", "16:9",
+     "Group of fictional idols buried under blankets in a home cinema room "
+     "with a giant popcorn tub balanced among them, one member guarding "
+     "the bowl, screen glow on their faces, cozy candid photography, "
+     "35mm lens, " + TAIL),
+    ("77", "hodugwaja-rest-stop", "3:4",
+     "Female fictional idol holding a warm bag of walnut-shaped cakes at a "
+     "highway rest stop bench, road trip suitcase and camera beside her, "
+     "evening bus loop light, travel vlog photography, 50mm lens, " + TAIL),
+    ("78", "noodle-bite-beauty-hero", "2:3",
+     "Extreme beauty close-up of a female fictional idol about to bite a "
+     "single noodle strand lifted by chopsticks, prism light scattering "
+     "rainbow tones across her cheek, dark background, dewy idol makeup, "
+     "cinematic editorial photography, 85mm lens, " + TAIL),
+    ("79", "oyster-grill-winter-village", "16:9",
+     "Group of fictional idols grilling oysters and scallops on a drum-can "
+     "grill in a snowy village courtyard, mittens and scarves, smoke "
+     "drifting through string lights, winter trip vlog photography, "
+     "35mm lens, " + TAIL),
+    ("80", "fruit-sandwich-pastel", "1:1",
+     "Female fictional idol holding a cross-section of a fruit sandwich "
+     "loaded with strawberries and kiwi at a pastel cafe table, glass "
+     "bottle of milk beside, soft daylight, photocard-style photography, "
+     "85mm lens, " + TAIL),
+    ("81", "kimchijeon-rainy-window", "3:4",
+     "Female fictional idol enjoying crispy kimchi pancake bites at a cafe "
+     "window with rain streaking the glass, umbrella dripping in the "
+     "stand, moody cozy tones, lifestyle editorial photography, 50mm lens, "
+     + TAIL),
+    ("82", "beach-corn-bbq", "16:9",
+     "Group of fictional idols grilling corn and skewers at a beach shack "
+     "barbecue at sunset, one member fanning the coals, surfboards and "
+     "tide pools behind, golden documentary photography, 35mm lens, "
+     + TAIL),
+    ("83", "barista-latte-art", "3:4",
+     "Female fictional idol in an apron pouring latte art behind a cafe "
+     "counter, tongue tip peeking in concentration, foam pitcher mid-pour, "
+     "warm morning cafe light, slice-of-life photography, 50mm lens, "
+     + TAIL),
+    ("84", "spicy-stew-sweat", "1:1",
+     "Male fictional idol with sweat beading on his forehead giving a "
+     "thumbs-up over a violently red spicy stew on a variety-show close-up "
+     "set, exaggerated suffering expression, bright studio lighting, "
+     "comedic photography, 85mm lens, " + TAIL),
+    ("85", "cotton-candy-photocard-hero", "2:3",
+     "Photocard-style portrait of a female fictional idol holding a swirl "
+     "of pink cotton candy against a pastel gradient studio background, "
+     "sugar strands drifting, dreamy soft lighting, flawless idol makeup, "
+     "85mm lens, " + TAIL),
+    ("86", "hotpot-round-table", "16:9",
+     "Group of fictional idols around a divided hotpot at a round "
+     "restaurant table, plates of mushrooms and greens fanned out, "
+     "chopsticks crossing over the simmering broth, warm overhead "
+     "lighting, feast documentary photography, 35mm lens, " + TAIL),
+    ("87", "snack-tower-jenga", "1:1",
+     "Fictional idols stacking snack bags into a wobbly tower on a "
+     "variety-show table, one member biting her knuckles as it sways, "
+     "teammates gripping their heads, bright studio lighting, comedic "
+     "broadcast photography, 50mm lens, " + TAIL),
+    ("88", "campsite-dawn-ramyeon", "16:9",
+     "Solo female fictional idol cradling a steaming ramyeon pot at a "
+     "misty campsite at dawn, blanket over her shoulders, sunrise breaking "
+     "over pine ridges, serene outdoor photography, 50mm lens, " + TAIL),
+    ("89", "chocolate-fountain-fanmeet", "3:4",
+     "Group of fictional idols dipping strawberries at a cascading "
+     "chocolate fountain table at a fanmeeting event, pastel decorations "
+     "and star-symbol banners behind, warm event lighting, candid "
+     "celebration photography, 50mm lens, " + TAIL),
+    ("90", "jumeokbap-train-window", "1:1",
+     "Female fictional idol eating a hand-rolled rice ball by a train "
+     "window, rice grains on her fingertips, countryside blurring past, "
+     "lunchbox on the tray table, travel vlog photography, 50mm lens, "
+     + TAIL),
+    ("91", "grill-master-apron", "3:4",
+     "Male fictional idol in a cartoon-print apron raising tongs "
+     "triumphantly over a smoking tabletop grill, victorious grin, "
+     "restaurant staff laughing behind, warm lighting, lively documentary "
+     "photography, 50mm lens, " + TAIL),
+    ("92", "bingsu-volcano-challenge", "16:9",
+     "Girl group of fictional idols armed with long spoons facing a "
+     "tower-sized shaved ice dessert on a variety-show table, whipped "
+     "cream avalanche mid-slide, scoreboard and studio lights behind, "
+     "comedic broadcast photography, 35mm lens, " + TAIL),
+    ("93", "croquette-school-run", "3:4",
+     "Female fictional idol in a school uniform biting a hot croquette "
+     "outside a bakery, paper bag of bread rolls under her arm, afternoon "
+     "alley light, nostalgic street photography, 85mm lens, " + TAIL),
+    ("94", "naengmyeon-broth-pour", "3:2",
+     "Slow-motion style close-up of icy broth pouring over cold noodles in "
+     "a steel bowl on a bright kitchen-studio counter, ice cubes and pear "
+     "slices mid-tumble, droplets frozen in air, high-speed food "
+     "photography, 85mm lens, " + TAIL),
+    ("95", "mandu-soup-snowy-window", "1:1",
+     "Female fictional idol cradling a hot stone bowl of dumpling soup "
+     "beside a snow-frosted window, scarf still on, steam fogging the "
+     "glass, warm winter cafe tones, cozy lifestyle photography, 50mm "
+     "lens, " + TAIL),
+    ("96", "milkshake-two-straws", "3:4",
+     "Duo of fictional idols sharing a towering malted milkshake with two "
+     "straws in a chrome diner booth, whipped cream mountain with a "
+     "cherry, neon window sign glow, retro youth photography, 50mm lens, "
+     + TAIL),
+    ("97", "feast-table-overhead", "16:9",
+     "Overhead shot of a long Korean feast table crowded with stews, "
+     "grills and side dishes, fictional idols' hands reaching in with "
+     "chopsticks and tongs from every edge, editorial flat-lay feast "
+     "photography, 35mm lens, " + TAIL),
+    ("98", "parfait-glass-morning", "1:1",
+     "Female fictional idol in a sunlit kitchen spooning the bottom of a "
+     "tall yogurt and fruit parfait glass, berries on the counter, sleep "
+     "shirt and claw clip, fresh morning lifestyle photography, 50mm lens, "
+     + TAIL),
+    ("99", "spicy-ramyeon-selfie", "3:4",
+     "Female fictional idol taking a front-camera selfie with a bowl of "
+     "fiery red ramyeon, glossy lips and a brave grin, thumbs-up in frame, "
+     "dorm room string lights behind, playful selfie photography, 35mm "
+     "lens, " + TAIL),
+    ("100", "finale-feast-confetti", "16:9",
+     "Wide finale shot of a large cast of fictional idols around a "
+     "banquet-length table piled with festival foods, confetti cannons "
+     "bursting, members standing on chairs toasting with soda cups, arena "
+     "celebration lighting, cinematic wide photography, 24mm lens, " + TAIL),
+]
+
+
 def load_key():
+    env_key = os.environ.get("NANO_GPT_API_KEY")
+    if env_key:
+        return env_key
     env = os.path.join(os.path.dirname(HERE), ".env")
     with open(env, encoding="utf-8") as fh:
         for line in fh:
             if line.startswith("NANO_GPT_API_KEY="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
-    sys.exit("NANO_GPT_API_KEY not found in .env")
+    sys.exit("NANO_GPT_API_KEY not found (set it in .env or the environment)")
 
 
 def check_balance(key):
@@ -609,35 +1093,47 @@ def generate(key, prompt, aspect, resolution):
 
 def main():
     only = None
-    if len(sys.argv) > 2 and sys.argv[1] == "--only":
-        only = sys.argv[2]
+    batch = None
+    argv = sys.argv[1:]
+    if "--batch" in argv:
+        batch = argv[argv.index("--batch") + 1]
+    if "--only" in argv:
+        only = argv[argv.index("--only") + 1]
+    outdir = FOOD_OUTDIR if batch == "food" else "idols"
+    cats = FOOD_CATEGORIES if batch == "food" else CATEGORIES
+    heroes = FOOD_HERO_NUMBERS if batch == "food" else HERO_NUMBERS
+    budget = FOOD_BUDGET_TARGET_USD if batch == "food" else BUDGET_TARGET_USD
     key = load_key()
     manifest_path = os.path.join(HERE, "manifest.json")
+    os.makedirs(os.path.join(HERE, outdir), exist_ok=True)
     entries = []
     if os.path.exists(manifest_path):
         with open(manifest_path, encoding="utf-8") as fh:
             entries = json.load(fh)
     manifest_cats = {e["category"] for e in entries}
-    done = {num for num, slug, _a, _p in CATEGORIES if slug in manifest_cats}
-    spend = sum(e.get("cost_if_known") or 0 for e in entries)
+    done = {num for num, slug, _a, _p in cats if slug in manifest_cats}
+    batch_spend = sum((e.get("cost_if_known") or 0) for e in entries
+                      if e["file"].startswith(outdir + "/"))
     print(f"BALANCE BEFORE: ${check_balance(key):.8f} "
-          f"(lifetime spend on this set: ${spend:.4f})", flush=True)
+          f"(batch spend tracked: ${batch_spend:.4f}, lifetime tracked: "
+          f"${sum(e.get('cost_if_known') or 0 for e in entries):.4f})",
+          flush=True)
     generated = 0
     skipped = 0
 
-    for num, slug, aspect, prompt in CATEGORIES:
+    for num, slug, aspect, prompt in cats:
         if only and num != only:
             continue
-        rel = f"idols/{num}-{slug}.jpg"
+        rel = f"{outdir}/{num}-{slug}.jpg"
         if num in done:
             print(f"== {num}-{slug}: already in manifest, skipping")
             continue
-        res = HERO_RESOLUTION if num in HERO_NUMBERS else RESOLUTION
-        est = HERO_EST_USD if num in HERO_NUMBERS else PER_IMAGE_EST_USD
-        if spend + est > BUDGET_TARGET_USD:
-            print(f"STOP: budget target ${BUDGET_TARGET_USD} would be exceeded "
-                  f"(spent ${spend:.4f}); halting before {num}-{slug}",
-                  flush=True)
+        res = HERO_RESOLUTION if num in heroes else RESOLUTION
+        est = HERO_EST_USD if num in heroes else PER_IMAGE_EST_USD
+        if batch_spend + est > budget:
+            print(f"STOP: batch budget ${budget} would be exceeded "
+                  f"(batch spent ${batch_spend:.4f}); halting before "
+                  f"{num}-{slug}", flush=True)
             break
         print(f"== {num}-{slug} [{aspect} {res}] generating ...", flush=True)
         data = generate(key, prompt, aspect, res)
@@ -668,7 +1164,7 @@ def main():
         with open(out, "wb") as fh:
             fh.write(raw)
         cost = data.get("cost")
-        spend += cost or 0
+        batch_spend += cost or 0
         entries.append({
             "file": rel, "category": slug, "aspect_ratio": aspect,
             "width": w, "height": h, "bytes": len(raw), "prompt": prompt,
@@ -681,12 +1177,13 @@ def main():
         bal = data.get("remainingBalance")
         generated += 1
         print(f"    saved {rel} {w}x{h} {len(raw)}B "
-              f"cost=${cost} spend=${spend:.4f} balance=${bal}", flush=True)
+              f"cost=${cost} batch=${batch_spend:.4f} balance=${bal}",
+              flush=True)
         time.sleep(2)  # small gap between sequential requests
 
     print(f"BALANCE AFTER: ${check_balance(key):.8f}", flush=True)
     print(f"GENERATED: {generated} SKIPPED: {skipped}")
-    print(f"TOTAL SPEND (lifetime, this set): ${spend:.4f}")
+    print(f"BATCH SPEND ({outdir}): ${batch_spend:.4f}")
 
 
 if __name__ == "__main__":

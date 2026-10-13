@@ -11,14 +11,12 @@ on:
   push:
     branches: [main]
     paths:
-      - .github/workflows/deploy.yml
-      - .github/actions/tofu-setup/**
-      - backend/**
+      - images.lock.json
       - chart/**
-      - web/**
-      - deploy/**
       - scripts/sync-dns.sh
       - scripts/bootstrap-admin.sh
+      - .github/workflows/deploy.yml
+      - .github/actions/tofu-setup/**
 
 concurrency:
   group: idol-stack
@@ -27,132 +25,32 @@ concurrency:
 permissions:
   contents: read
 
-# Every tool job is checkout (+ credentials/buildkit actions where the job
-# genuinely needs them) + mise + exactly one `task` invocation. Taskfile.yml
-# is the single source of truth for what runs; mise.toml (+ node/pnpm from
-# web/package.json devEngines) is the single source of tool versions.
+# Deploy is a pure CONSUMER of images.lock.json (fed by images.yml): no
+# build steps, no empty-digest states by construction, manual dispatches
+# valid without a preceding build. Code merges deploy only when their
+# image lands in the lock file; chart/script changes redeploy in place.
+# Leak gating is inherited, not duplicated here: deploy only ever runs
+# main, and every push to main passes the leaks-first ci.yml gate.
+# tofu is decoupled on its own infra paths (infra-apply/destroy/recreate).
 
 env:
-  BACKEND_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:main
-  WEB_IMAGE: ghcr.io/vreid/idol-appreciation.club-web:main
   CLUSTER: idol-canvas
 
 jobs:
-  lint:
-    name: lint (fast universal)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - run: task lint:fast
-
-  backend-checks:
-    name: backend cargo gates
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      RUNNER: docker
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      # fmt+clippy+test inside the pinned libvips 8.16.1 image
-      - run: task backend:ci
-
-  web-checks:
-    name: web vp gates
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - run: task web:ci
-
-  backend-build:
-    name: build backend image
-    permissions:
-      contents: read
-      packages: write
-    needs: [lint, backend-checks]
-    if: >-
-      always() && !failure() && !cancelled() &&
-      needs.backend-checks.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-        with:
-          cache-binary: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - name: build and push backend image
-        id: push
-        run: echo "digest=$(task image:backend | tail -1)" >> "$GITHUB_OUTPUT"
-        env:
-          BACKEND_IMAGE: ${{ env.BACKEND_IMAGE }}
-          SEMVER: ${{ inputs.semver }}
-    outputs:
-      digest: ${{ steps.push.outputs.digest }}
-
-  web-build:
-    name: build web image
-    permissions:
-      contents: read
-      packages: write
-    needs: [lint, web-checks]
-    if: >-
-      always() && !failure() && !cancelled() &&
-      needs.web-checks.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-        with:
-          cache-binary: false
-      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
-      - name: build and push web image
-        id: push
-        run: echo "digest=$(task image:web | tail -1)" >> "$GITHUB_OUTPUT"
-        env:
-          WEB_IMAGE: ${{ env.WEB_IMAGE }}
-          SEMVER: ${{ inputs.semver }}
-    outputs:
-      digest: ${{ steps.push.outputs.digest }}
-
   deploy:
     name: deploy to k8s
-    needs: [lint, backend-build, web-build]
-    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
     permissions:
       contents: read
+      packages: write
       actions: write
     env:
       UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      RELEASE_TAG: ${{ inputs.semver }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -170,9 +68,6 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           UPCLOUD_API_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
           CLUSTER: ${{ env.CLUSTER }}
-          RELEASE_TAG: ${{ inputs.semver }}
-          BACKEND_DIGEST: ${{ needs.backend-build.outputs.digest }}
-          WEB_DIGEST: ${{ needs.web-build.outputs.digest }}
 
       - name: Dispatch e2e
         if: success()

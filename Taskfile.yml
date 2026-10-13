@@ -34,12 +34,12 @@ tasks:
         # - ! marks breaking (major bump)
         # - subject: required, no leading/trailing whitespace; no trailing
         #   period (checked separately so single-character subjects pass)
-        cc='^(feat|fix|perf|refactor|docs|chore|test|ci|build|style)(\((backend|web|tofu|chart|ci|deps|release|api|seed|docs|infra)\))?(!)?: [^[:space:]](.*[^[:space:]])?$'
+        cc='^(feat|fix|perf|refactor|docs|chore|test|ci|build|style)(\((backend|web|tofu|chart|ci|deps|release|api|seed|docs|infra|images)\))?(!)?: [^[:space:]](.*[^[:space:]])?$'
         if ! printf '%s\n' "$title" | grep -qE "$cc"; then
           echo "PR title is not strict Conventional Commits: \"$title\"" >&2
           echo 'expected: <type>(<scope>)?!: <subject>' >&2
           echo '  types:  feat|fix|perf|refactor|docs|chore|test|ci|build|style' >&2
-          echo '  scopes: backend|web|tofu|chart|ci|deps|release|api|seed|docs|infra (optional)' >&2
+          echo '  scopes: backend|web|tofu|chart|ci|deps|release|api|seed|docs|infra|images (optional)' >&2
           echo '  subject: non-empty, no trailing period, no trailing whitespace' >&2
           exit 1
         fi
@@ -272,21 +272,37 @@ tasks:
 
   deploy:k8s:
     desc: >-
-      S3 verify-or-rotate + app-env secret, kubeconfig fetch, tofu state
-      settle, atomic helm upgrade, DNS sync (deploy.yml deploy)
+      consume images.lock.json digests, S3 verify-or-rotate + app-env
+      secret, kubeconfig fetch, tofu state settle, atomic helm upgrade,
+      DNS sync (deploy.yml deploy)
     env:
       KUBECONFIG: '{{.KUBECONFIG | default "/tmp/idol-deploy-kubeconfig"}}'
       RELEASE_TAG: '{{.RELEASE_TAG | default ""}}'
+      IMAGES_LOCK: '{{.IMAGES_LOCK | default "images.lock.json"}}'
     cmds:
       - |
         set -euo pipefail
-        # InvalidImageName guard (2026-10-13 incident): a dispatch deploy
-        # whose image builds were skipped rolled pods with malformed image
-        # refs. Images that will roll MUST carry digests.
+        # Deploy is a pure images.lock.json consumer (images.yml maintains
+        # the file): an un-built image cannot be deployed by construction.
+        # The empty-digest guard stays as a loud second defense
+        # (2026-10-13 InvalidImageName incident).
+        BACKEND_DIGEST="$(jq -r '.backend.digest // empty' "$IMAGES_LOCK")"
+        WEB_DIGEST="$(jq -r '.web.digest // empty' "$IMAGES_LOCK")"
         [ -n "$BACKEND_DIGEST" ] \
-          || { echo "BACKEND_DIGEST is empty: image build skipped or produced no digest; refusing to deploy" >&2; exit 1; }
+          || { echo "backend digest missing or empty in $IMAGES_LOCK; refusing to deploy" >&2; exit 1; }
         [ -n "$WEB_DIGEST" ] \
-          || { echo "WEB_DIGEST is empty: image build skipped or produced no digest; refusing to deploy" >&2; exit 1; }
+          || { echo "web digest missing or empty in $IMAGES_LOCK; refusing to deploy" >&2; exit 1; }
+        # task runs each cmd in its own shell — hand the digests to the
+        # helm cmd via state files (same pattern as the rotation flag).
+        printf '%s\n' "$BACKEND_DIGEST" > /tmp/deploy-backend-digest
+        printf '%s\n' "$WEB_DIGEST" > /tmp/deploy-web-digest
+        # Release deploys stamp the recorded digests with the semver tag in
+        # GHCR (audit trail; the digest stays what actually runs).
+        if [ -n "$RELEASE_TAG" ]; then
+          echo "$GHCR_TOKEN" | crane auth login ghcr.io -u "${GITHUB_ACTOR:-token}" --password-stdin
+          crane tag "ghcr.io/vreid/idol-appreciation.club-backend@$BACKEND_DIGEST" "$RELEASE_TAG"
+          crane tag "ghcr.io/vreid/idol-appreciation.club-web@$WEB_DIGEST" "$RELEASE_TAG"
+        fi
         uuid="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_TOKEN}" \
           https://api.upcloud.com/1.3/kubernetes \
           | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
@@ -359,11 +375,22 @@ tasks:
         # every pod up on a live key. There is no window where pods hold
         # deleted keys. Anything other than 200/403 aborts untouched.
         rotate=true
+        # Probe the creds the RUNNING PODS hold (deployment exec), not the
+        # secret: the 38433144837 incident minted fresh creds into the
+        # secret but died before any pod rolled — secret-valid/pod-dead is
+        # exactly the state that must rotate. Fall back to the secret when
+        # no pod is up yet (fresh installs).
         if kubectl -n idol get secret app-env > /dev/null 2>&1; then
-          ak="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ACCESS_KEY_ID}' | base64 -d)"
-          sk="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_SECRET_ACCESS_KEY}' | base64 -d)"
-          pep="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' | base64 -d)"
-          pbucket="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_BUCKET}' | base64 -d)"
+          ak="$(kubectl -n idol exec deployment/backend -- printenv S3_ACCESS_KEY_ID 2>/dev/null || true)"
+          sk="$(kubectl -n idol exec deployment/backend -- printenv S3_SECRET_ACCESS_KEY 2>/dev/null || true)"
+          pep="$(kubectl -n idol exec deployment/backend -- printenv S3_ENDPOINT 2>/dev/null || true)"
+          pbucket="$(kubectl -n idol exec deployment/backend -- printenv S3_BUCKET 2>/dev/null || true)"
+          if [ -z "$ak" ] || [ -z "$sk" ] || [ -z "$pep" ] || [ -z "$pbucket" ]; then
+            ak="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ACCESS_KEY_ID}' | base64 -d)"
+            sk="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_SECRET_ACCESS_KEY}' | base64 -d)"
+            pep="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' | base64 -d)"
+            pbucket="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_BUCKET}' | base64 -d)"
+          fi
           if [ -n "$ak" ] && [ -n "$sk" ] && [ -n "$pep" ] && [ -n "$pbucket" ]; then
             code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
               --aws-sigv4 'aws:amz:us-east-1:s3' -u "$ak:$sk" \
@@ -389,6 +416,13 @@ tasks:
           sak="$(jq -r .access_key_id /tmp/uc5.json)"
           ssk="$(jq -r .secret_access_key /tmp/uc5.json)"
           test -n "$ssk" || { echo "access key creation failed" >&2; exit 1; }
+          # 2-key cap sanity: after delete-all + mint exactly ONE key must
+          # exist — an orphan here means a mint whose value was lost.
+          sleep 3
+          uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc8.json
+          nkeys="$(jq 'length' /tmp/uc8.json)"
+          [ "$nkeys" = "1" ] \
+            || { echo "orphaned access keys after rotation ($nkeys remain): $(jq -r '.[].access_key_id' /tmp/uc8.json | head -3)" >&2; exit 1; }
         else
           sak="$ak"
           ssk="$sk"
@@ -408,6 +442,10 @@ tasks:
       - |
         set -euo pipefail
         cp web/Caddyfile chart/caddy/Caddyfile
+        # Digests were derived and guarded in the first cmd; each task cmd
+        # is its own shell, so read them back from the state files.
+        BACKEND_DIGEST="$(cat /tmp/deploy-backend-digest)"
+        WEB_DIGEST="$(cat /tmp/deploy-web-digest)"
         # Cluster Autoscaler credential — the chart reads it only when
         # clusterAutoscaler.enabled; provisioning it on every deploy
         # keeps that flip a values-only change.

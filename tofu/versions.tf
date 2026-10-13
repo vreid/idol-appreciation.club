@@ -7,6 +7,22 @@
 terraform {
   required_version = "~> 1.13"
 
+  # State lives in the S3 backend on Managed Object Storage (docs/infra.md
+  # "State handling"). The endpoint and the bucket credentials are injected
+  # per-run via `tofu init -backend-config=...` from repo secrets (see the
+  # tofu-setup composite); the bucket itself is provisioned OUTSIDE this
+  # configuration so state management never depends on managed resources.
+  # Stateless runs (`-backend=false`, PR gates) never touch any of this.
+  backend "s3" {
+    bucket                      = "tofu-state"
+    key                         = "idol-appreciation.club"
+    region                      = "europe-1"
+    skip_credentials_validation = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    force_path_style            = true
+  }
+
   required_providers {
     upcloud = {
       source  = "UpCloudLtd/upcloud"

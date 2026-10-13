@@ -132,7 +132,7 @@ test("@full center tile serves real content, not the empty placeholder", async (
   });
   await page.goto("/");
   await page.waitForSelector(".leaflet-container");
-  await page.getByRole("button", { name: "⌖ Jump to 0/0" }).click();
+  // The map boots centred on the world centre at z16 by default.
   await page.waitForTimeout(2000);
 
   // Server formula: the z16 centre tile index for worldPx 134217728 is

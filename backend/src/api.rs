@@ -31,6 +31,8 @@ fn parse_param<T: std::str::FromStr>(params: &HashMap<String, String>, name: &st
 pub struct NearPlacement {
     pub id: Uuid,
     pub username: String,
+    /// Global manifest sequence (monotonic; topmost-at-a-point = max seq).
+    pub seq: i64,
     pub x: i64,
     pub y: i64,
     pub w: i32,
@@ -52,7 +54,7 @@ pub async fn near(
     }
     let r = r.min(65536);
     let rows = sqlx::query_as::<_, NearPlacement>(
-        "SELECT p.id, a.username, p.x, p.y, p.w, p.h, p.created_at
+        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.created_at
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
          WHERE p.removed_at IS NULL

@@ -170,7 +170,10 @@ resource "upcloud_managed_object_storage_user_policy" "app" {
   name         = upcloud_managed_object_storage_policy.app.name
 }
 
-resource "upcloud_managed_object_storage_user_access_key" "app" {
+# Address is "s3" (was "app"): renaming forces a one-time key rotation after
+# the upstream key secret was regenerated out-of-band on 2026-10-13 while the
+# stored secret stayed stale. Do not rename back; that would rotate again.
+resource "upcloud_managed_object_storage_user_access_key" "s3" {
   service_uuid = upcloud_managed_object_storage.this.id
   username     = upcloud_managed_object_storage_user.app.username
   status       = "Active"

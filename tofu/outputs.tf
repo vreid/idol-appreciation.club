@@ -73,13 +73,13 @@ output "s3_bucket" {
 
 output "s3_access_key_id" {
   description = "Application S3 access key id."
-  value       = upcloud_managed_object_storage_user_access_key.app.access_key_id
+  value       = upcloud_managed_object_storage_user_access_key.s3.access_key_id
   sensitive   = true
 }
 
 output "s3_secret_access_key" {
   description = "Application S3 secret access key."
-  value       = upcloud_managed_object_storage_user_access_key.app.secret_access_key
+  value       = upcloud_managed_object_storage_user_access_key.s3.secret_access_key
   sensitive   = true
 }
 

@@ -186,3 +186,5 @@ export const pendingAccountsSchema = z.array(pendingAccountSchema);
 export type Me = z.infer<typeof meSchema>;
 export type RegisterResult = z.infer<typeof registerResultSchema>;
 export type PendingAccount = z.infer<typeof pendingAccountSchema>;
+export type DigEntry = z.infer<typeof digEntrySchema>;
+export type DigStack = z.infer<typeof digStackSchema>;

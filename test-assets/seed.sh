@@ -8,18 +8,22 @@
 #   EXACTLY on the world center (center-holder leaderboard), 02..16 on a
 #   4-column ring of 512px slots, non-overlapping.
 #
-#   SEED_COUNT=N (default 10000): scale-seed mode. N cells of a 100x100
-#   grid (640px pitch, 512px slots, centered on 0/0) are filled CYCLICALLY
-#   from the 100 unique images, every file always at the 512 long edge —
-#   so every repeat produces byte-identical derivatives → same sha256 →
-#   the server's content-addressed dedup keeps ~100 derivative objects
-#   regardless of N. Cell (50,50) is reserved for 01-solo exactly on the
-#   center: if /api/center already shows a placement covering 0/0 the
-#   cell is skipped (holder preserved); otherwise 01-solo is placed first
-#   from the seed account.
+#   SEED_COUNT=N (default 10000): scrapbook-pile mode. N placements are
+#   scattered deterministically (per cell index) over a disc of
+#   SEED_RADIUS native px around 0/0, at each image's ORIGINAL
+#   dimensions (server cap 4096 long edge applies), each rotated by a
+#   truncated-gaussian jitter (sigma SEED_ROT_SIGMA, clamped ±15°).
+#   Deliberate overlaps — the pile is the point. Repeats of the same
+#   file are byte-identical derivatives → same sha256 → the server's
+#   content-addressed dedup keeps ~100 derivative objects regardless of
+#   N. The center image stays exactly on 0/0 (rot 0): if /api/center
+#   already shows a placement covering 0/0 it is skipped (holder
+#   preserved), otherwise 01-solo is placed first from the seed account.
 #
 # Modes (env):
-#   SEED_COUNT=N        scale-seed N grid cells (default unset = classic 16)
+#   SEED_COUNT=N        scrapbook-pile N placements (default unset = classic 16)
+#   SEED_RADIUS=R       pile disc radius in native px (default 100000)
+#   SEED_ROT_SIGMA=S    rotation jitter stddev in degrees (default 7.5, clamp ±15)
 #   SEED_DRY_RUN=1      compute placements, verify non-overlap, post nothing
 #   SEED_STATE_DIR=DIR  resume markers (default ./seed-state-<user>); on
 #                       rerun, cells with a marker are skipped
@@ -29,7 +33,6 @@
 #                       cells ALWAYS go to the seed account
 #   SEED_SLEEP=S        floor sleep between posts (default 1.5; use 0.25
 #                       when the seed account is cooldown-exempt)
-#   SEED_NEAR_PX=8192   radius around 0/0 reserved for the seed account
 #
 # Robustness: resumable (marker per cell), aborts after >3 consecutive
 # non-201s, logs every non-201 with cell coordinates.
@@ -46,7 +49,8 @@ SEED_COUNT=${SEED_COUNT:-0}
 SEED_STATE_DIR=${SEED_STATE_DIR:-./seed-state-${SEED_USERNAME}}
 SEED_ACCOUNTS_FILE=${SEED_ACCOUNTS_FILE:-}
 SEED_SLEEP=${SEED_SLEEP:-}
-SEED_NEAR_PX=${SEED_NEAR_PX:-8192}
+SEED_RADIUS=${SEED_RADIUS:-100000}
+SEED_ROT_SIGMA=${SEED_ROT_SIGMA:-7.5}
 GRID=100
 SLOT=512
 GUTTER=128
@@ -87,6 +91,23 @@ scaled_size() {
     printf '%dx%d' "$SLOT" $(( SLOT * h / w ))
   else
     printf '%dx%d' $(( SLOT * w / h )) "$SLOT"
+  fi
+}
+
+# original_size FILE -> "PWxPH" at the image's ORIGINAL dimensions, long
+# edge capped to the server's 4096.
+original_size() {
+  local d w h long
+  d=$(img_dims "$1"); w=${d%x*}; h=${d#*x}
+  long=$([[ $w -ge $h ]] && echo "$w" || echo "$h")
+  if [ "$long" -gt 4096 ]; then
+    if [ "$w" -ge "$h" ]; then
+      printf '4096x%d\n' $(( 4096 * h / w ))
+    else
+      printf '%dx4096\n' $(( 4096 * w / h ))
+    fi
+  else
+    printf '%dx%d\n' "$w" "$h"
   fi
 }
 
@@ -132,8 +153,8 @@ login_account() { # login_account INDEX -> 0 on success
 }
 
 # --- helpers ------------------------------------------------------------------
-place_cell() { # place_cell ACCOUNT_IDX FILE X Y CELL_TAG
-  local ai=$1 file=$2 x=$3 y=$4 tag=$5
+place_cell() { # place_cell ACCOUNT_IDX FILE X Y CELL_TAG [ROT] [SIZE]
+  local ai=$1 file=$2 x=$3 y=$4 tag=$5 rot=${6:-0} size=${7:-$SLOT}
   local body code t tsum
   if [ "$DRY_RUN" = "1" ]; then
     printf 'DRY  %-28s cell %s at (%d, %d)\n' "$(basename "$file")" "$tag" "$x" "$y"
@@ -141,7 +162,7 @@ place_cell() { # place_cell ACCOUNT_IDX FILE X Y CELL_TAG
   fi
   t0=$(date +%s.%N)
   body=$(curl -sS -m 60 -b "${JARS[$ai]}" -X POST "${BASE_URL%/}/api/place" \
-    -F "image=@${file}" -F "x=${x}" -F "y=${y}" -F "size=${SLOT}" \
+    -F "image=@${file}" -F "x=${x}" -F "y=${y}" -F "size=${size}" -F "rot=${rot}" \
     -w '\n%{http_code} %{time_total}') || {
     echo "NON-201 cell $tag: connection error" >&2; return 1; }
   t1=$(date +%s.%N)
@@ -184,11 +205,7 @@ N_FILES=${#FILES[@]}
 [ "$N_FILES" -ge 2 ] || { echo "ERROR: need >=2 images in $IDOLS_DIR" >&2; exit 1; }
 
 if [ "$SEED_COUNT" -gt 0 ]; then
-  # ---------------- scale-seed mode ----------------
-  ORIGIN=$((CX - GRID * PITCH / 2))
-  NEAR_CELLS=$(( (SEED_NEAR_PX + PITCH) / PITCH + 1 )) # cells of margin
-  LO=$(( 50 - NEAR_CELLS )); HI=$(( 50 + NEAR_CELLS ))
-
+  # ---------------- scrapbook pile mode ----------------
   center_covered() {
     [ -f "$SEED_STATE_DIR/center.done" ] && return 0
     [ "$DRY_RUN" = "1" ] && return 1
@@ -213,37 +230,44 @@ PYEOF
   else
     echo "==> Center not covered — placing 01-solo on 0/0 from the seed account"
     dims=$(scaled_size "$F01"); pw=${dims%x*}; ph=${dims#*x}
-    place_cell 0 "$F01" $(( CX - pw / 2 )) $(( CY - ph / 2 )) "center" || true
+    place_cell 0 "$F01" $(( CX - pw / 2 )) $(( CY - ph / 2 )) "center" 0 "$SLOT" || true
     [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || { echo "ABORT: $FAIL_LIMIT consecutive failures" >&2; exit 1; }
   fi
 
-  echo "==> SEED_COUNT=$SEED_COUNT on a ${GRID}x${GRID} grid (pitch ${PITCH}px), ${FANOUT_N} fan-out accounts"
+  echo "==> SEED_COUNT=$SEED_COUNT scrapbook pile (radius ${SEED_RADIUS}px, rot sigma ${SEED_ROT_SIGMA}°)"
   k=0
-  for ((j = 0; j < GRID; j++)); do
-    for ((i = 0; i < GRID; i++)); do
-      [ "$i" -eq 50 ] && [ "$j" -eq 50 ] && continue        # center cell
-      [ "$k" -lt "$SEED_COUNT" ] || break 2
-      tag="${i}_${j}"
-      [ -f "$SEED_STATE_DIR/cell-$tag.done" ] && { k=$((k + 1)); continue; }
-      # cyclic file choice (never 01-solo: index 1..N_FILES-1)
-      f=${FILES[1 + (k % (N_FILES - 1))]}
-      dims=$(scaled_size "$f"); pw=${dims%x*}; ph=${dims#*x}
-      x=$(( ORIGIN + i * PITCH + (PITCH - pw) / 2 ))
-      y=$(( ORIGIN + j * PITCH + (PITCH - ph) / 2 ))
-      # near-center cells always go to the seed account (index 0)
-      if [ "$i" -ge "$LO" ] && [ "$i" -le "$HI" ] && [ "$j" -ge "$LO" ] && [ "$j" -le "$HI" ]; then
-        ai=0
-      elif [ "$FANOUT_N" -gt 0 ]; then
-        ai=$(( 1 + k % FANOUT_N ))
-      else
-        ai=0
-      fi
-      place_cell "$ai" "$f" "$x" "$y" "$tag" || true # failures counted, not fatal (see abort below)
-      [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || {
-        echo "ABORT: $FAIL_LIMIT consecutive non-201s (resume with the same command)" >&2; exit 1; }
-      [ "$DRY_RUN" = "1" ] || sleep "$SEED_SLEEP"
-      k=$((k + 1))
-    done
+  while [ "$k" -lt "$SEED_COUNT" ]; do
+    tag="$k"
+    if [ -f "$SEED_STATE_DIR/cell-$tag.done" ]; then k=$((k + 1)); continue; fi
+    # cyclic file choice (never 01-solo: index 1..N_FILES-1)
+    f=${FILES[1 + (k % (N_FILES - 1))]}
+    # deterministic geometry per (k, file): uniform point in the disc,
+    # image centered on it, truncated-gaussian rot jitter.
+    read -r x y rot <<GEOEOF
+$(python3 - "$k" "$f" "$SEED_RADIUS" "$SEED_ROT_SIGMA" "$CX" "$CY" "$(original_size "$f")" <<'PYEOF'
+import math, random, sys
+k, f = sys.argv[1], sys.argv[2]
+R, sigma, CX, CY = float(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6])
+dims = sys.argv[7]
+pw, ph = (int(v) for v in dims.split("x"))
+rng = random.Random(f"pile:{k}:{f}")
+r = R * math.sqrt(rng.random())
+theta = 2 * math.pi * rng.random()
+x = int(CX + r * math.cos(theta) - pw / 2)
+y = int(CY + r * math.sin(theta) - ph / 2)
+rot = max(-15.0, min(15.0, rng.gauss(0.0, sigma)))
+print(x, y, f"{rot:.2f}")
+PYEOF
+)
+GEOEOF
+    dims=$(original_size "$f"); pw=${dims%x*}; ph=${dims#*x}
+    size=$pw
+    [ "$ph" -gt "$size" ] && size=$ph
+    place_cell 0 "$f" "$x" "$y" "$tag" "$rot" "$size" || true # failures counted, not fatal
+    [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || {
+      echo "ABORT: $FAIL_LIMIT consecutive non-201s (resume with the same command)" >&2; exit 1; }
+    [ "$DRY_RUN" = "1" ] || sleep "$SEED_SLEEP"
+    k=$((k + 1))
   done
   echo "==> Done: placed $PLACED, failed $FAILED (SEED_COUNT mode)"
   exit 0

@@ -503,10 +503,13 @@ tasks:
         ips=""
         n=0
         while [ -z "$ips" ] && [ "$n" -lt 30 ]; do
+          # `get svc web -o json` returns the bare Service object (no
+          # .items) — iterate .status.loadBalancer.ingress directly and
+          # guard every step: the CCM populates it moments AFTER the
+          # upgrade returns (the jq-null-after-rollout signature).
           ips="$( (kubectl -n idol get svc web -o json 2>/dev/null \
-            || echo '{"items":[]}') \
-            | jq -r '.items[] | select(.status.loadBalancer.ingress)
-            | .status.loadBalancer.ingress[]? | (.ip // .hostname)')"
+            || echo '{}') \
+            | jq -r '.status.loadBalancer.ingress // [] | .[]? | (.ip // .hostname)')"
           [ -n "$ips" ] || sleep 10
           n=$((n + 1))
         done

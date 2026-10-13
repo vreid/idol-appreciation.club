@@ -90,7 +90,7 @@ web/test/contract/contract.test.ts:generic-password:163
 
 # 2026-10-13 late: (1) #89 rebased again — third rewritten generation of
 # the reseed template placeholder (d0da54d0). (2) fix/backend-decode-
-memory-cap branch (issue #83 lane) adds a rate-limit negative test whose
+# The memory-cap branch (issue #83 lane) adds a rate-limit negative test whose
 # login uses the literal wrong-password fixture "definitely-wrong"
 # (asserts 401/429); CI's fetch-depth:0 pulls every branch ref, so its
 # fingerprint trips the git scan from ANY PR. Both verified non-secrets.

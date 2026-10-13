@@ -68,6 +68,13 @@ export interface AppStore {
   setLongEdge(value: number): void;
   setRotation(value: number): void;
   ghostSize(): { w: number; h: number };
+  /** Pins a long-pressed target so the next place lands there. */
+  pinSpot(x: number, y: number): void;
+  /** The long-pressed target, if one is waiting for an image. */
+  get pendingSpot(): { x: number; y: number } | null;
+  /** Places the prepared image at the pinned spot (same auth and
+   * cooldown path as confirmSpot). */
+  confirmPinned(): Promise<PlaceAttempt>;
   enterChoose(): void;
   backToPanel(): void;
   cancelPlace(): void;

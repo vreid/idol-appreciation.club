@@ -57,15 +57,30 @@ export default function PlacePanel(props: { store: AppStore }) {
               }}
             />
           </label>
-          <button
-            class="btn primary wide"
-            type="button"
-            onClick={() => {
-              store.enterChoose();
-            }}
+          <Show
+            when={store.pendingSpot}
+            fallback={
+              <button
+                class="btn primary wide"
+                type="button"
+                onClick={() => {
+                  store.enterChoose();
+                }}
+              >
+                🎯 Choose spot
+              </button>
+            }
           >
-            🎯 Choose spot
-          </button>
+            <button
+              class="btn primary wide"
+              type="button"
+              onClick={() => {
+                void store.confirmPinned();
+              }}
+            >
+              📍 Place at pinned spot
+            </button>
+          </Show>
         </Show>
 
         <Show when={store.placeMode === "choose"}>

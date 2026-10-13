@@ -68,6 +68,11 @@ body {
   position: fixed;
   inset: 0;
   background: #101216;
+  /* Long-press is ours (place flow); never show the native callout or
+     text selection over the map. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .map-root.placing {

@@ -9,6 +9,7 @@ import type {
 } from "./api";
 import { ApiError, MAX_UPLOAD_BYTES } from "./api";
 import { describeApiError, isAuthStatus } from "./apiErrors";
+import { confirmAt, type PlaceConfirmDeps } from "./placeConfirm";
 import {
   clampLongEdge,
   DEFAULT_LONG_EDGE,
@@ -20,7 +21,6 @@ import { createToastHub } from "./toasts";
 import type {
   AppStore,
   AppStoreDeps,
-  PlaceAttempt,
   PlaceMode,
   PreparedImage,
 } from "./stateTypes";
@@ -33,6 +33,9 @@ export type {
   PlaceMode,
   PreparedImage,
 } from "./stateTypes";
+
+/** A world-px point (the long-press pin). */
+type Spot = { x: number; y: number };
 
 export function createAppStore(
   client: ApiClient,
@@ -50,6 +53,7 @@ export function createAppStore(
   const [authChecked, setAuthChecked] = createSignal(false);
   const [center, setCenter] = createSignal<CenterInfo | null>(null);
   const [placeMode, setPlaceMode] = createSignal<PlaceMode>("idle");
+  const [pendingSpot, setPendingSpot] = createSignal<Spot | null>(null);
   const [prepared, setPrepared] = createSignal<PreparedImage | null>(null);
   const [longEdge, setLongEdgeSignal] = createSignal(DEFAULT_LONG_EDGE);
   const [rotation, setRotationSignal] = createSignal(0);
@@ -80,11 +84,26 @@ export function createAppStore(
     setPrepared(null);
   }
 
+  const placeDeps = (): PlaceConfirmDeps => ({
+    prepared: () => prepared(),
+    submitting: () => submittingPlace(),
+    longEdge: () => longEdge(),
+    rot: () => rotation(),
+    place: client.place,
+    pushToast,
+    requireAuth: () => void requireAuth(),
+    onPlaced: doCancelPlace,
+    onFailed: () => void setPlaceMode("panel"),
+    onSubmitting: () => void setSubmittingPlace(true),
+    onSettled: () => void setSubmittingPlace(false),
+  });
+
   function doCancelPlace(): void {
     releasePrepared();
     setRotationSignal(0);
     setPlaceMode("idle");
     setSubmittingPlace(false);
+    setPendingSpot(null);
   }
 
   async function doRefreshMe(): Promise<void> {
@@ -312,6 +331,22 @@ export function createAppStore(
       setLongEdgeSignal(clampLongEdge(value));
     },
 
+    pinSpot(x: number, y: number): void {
+      setPendingSpot(clampToWorldPoint({ x, y }));
+    },
+
+    get pendingSpot() {
+      return pendingSpot();
+    },
+
+    confirmPinned: async () => {
+      const spot = pendingSpot();
+      if (spot === null) return { ok: false };
+      const attempt = await confirmAt(placeDeps(), spot.x, spot.y);
+      if (attempt.ok) setPendingSpot(null);
+      return attempt;
+    },
+
     ghostSize() {
       const image = prepared();
       if (image === null) return { w: longEdge(), h: longEdge() };
@@ -328,43 +363,7 @@ export function createAppStore(
 
     cancelPlace: doCancelPlace,
 
-    async confirmSpot(x, y): Promise<PlaceAttempt> {
-      const image = prepared();
-      if (image === null || submittingPlace()) return { ok: false };
-      const size = longEdgeToSize(image.naturalW, image.naturalH, longEdge());
-      const rot = rotation();
-      const spot = clampToWorldPoint({ x, y });
-      setSubmittingPlace(true);
-      try {
-        const placement = await client.place({
-          image: image.file,
-          fileName: image.fileName,
-          x: spot.x,
-          y: spot.y,
-          size: Math.max(size.w, size.h),
-          rot,
-        });
-        doCancelPlace();
-        pushToast("success", "Image placed!");
-        return { ok: true, placement };
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 429) {
-          const wait =
-            err.retryAfterSeconds === null
-              ? ""
-              : ` Try again in ${err.retryAfterSeconds}s.`;
-          pushToast("error", `Cooldown active.${wait}`);
-        } else if (isAuthStatus(err)) {
-          requireAuth();
-        } else {
-          pushToast("error", describeApiError(err));
-        }
-        setPlaceMode("panel");
-        return { ok: false };
-      } finally {
-        setSubmittingPlace(false);
-      }
-    },
+    confirmSpot: (x, y) => confirmAt(placeDeps(), x, y),
 
     async refreshNear(x, y, r): Promise<Placement[]> {
       try {

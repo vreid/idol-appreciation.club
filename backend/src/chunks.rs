@@ -2,6 +2,16 @@
 //! rasters in `chunks/{cx}/{cy}.webp`. All mutation happens while holding
 //! the chunk-key locks (sorted), so paint order matches `seq` order.
 //!
+//! Two lock tiers protect the S3 read-modify-write window:
+//! 1. in-process per-key locks (`App.chunk_locks`) — cheap same-pod
+//!    serialization, acquired by callers before entering this module;
+//! 2. session-level PG advisory locks (`pg_advisory_lock(class, objid)` on
+//!    a dedicated pooled connection) — cross-instance exclusion. They are
+//!    acquired BEFORE the chunk GET and held through the chunk PUT: the
+//!    object write is not transactional, so a transaction-scoped lock
+//!    would release at commit and leave the read-modify-write window open
+//!    (commit-then-PUT = lost update).
+//!
 //! libvips images are !Send, so all pixel work runs inside
 //! `spawn_blocking` over owned byte buffers.
 
@@ -10,6 +20,71 @@ use crate::img;
 use crate::state::App;
 use crate::world::{chunk_key, Rect, CHUNK_PX};
 use sqlx::Row;
+
+/// Advisory-lock namespace for chunk raster mutation. PG 16 offers the
+/// two-key advisory form only as (int4, int4), which cannot hold the 2^36
+/// chunk-index space — so the class constant lives in the high bits of the
+/// single-bigint key instead: semantics identical to a constant classid
+/// plus a chunk-index objid, in the (bigint) signature that exists.
+const CHUNK_LOCK_CLASS: i64 = 0x10F01;
+
+/// Pack class + chunk index into one advisory key. Chunks are 2^18 per
+/// side (268435456 / 1024); the index needs 36 bits, the class sits above.
+pub fn chunk_lock_objid(cx: i64, cy: i64) -> i64 {
+    (CHUNK_LOCK_CLASS << 40) | ((cx << 18) | cy)
+}
+
+/// Session-level advisory locks over a set of chunk indices, acquired in
+/// sorted-key order (deadlock avoidance for multi-chunk rects: every
+/// contender waits on the lowest index first, so the wait-for graph is
+/// acyclic). Held on a dedicated pooled connection — not a transaction —
+/// so they outlive any surrounding transaction and release only when
+/// [`ChunkAdvisoryLocks::release`] runs or the connection's session ends.
+pub struct ChunkAdvisoryLocks {
+    conn: sqlx::pool::PoolConnection<sqlx::Postgres>,
+    pub objids: Vec<i64>,
+}
+
+impl ChunkAdvisoryLocks {
+    pub async fn acquire(pool: &sqlx::PgPool, mut objids: Vec<i64>) -> AppResult<Self> {
+        objids.sort_unstable();
+        objids.dedup();
+        let mut conn = pool.acquire().await.map_err(internal)?;
+        for oid in &objids {
+            if let Err(e) = sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(oid)
+                .execute(&mut *conn)
+                .await
+            {
+                // Partial acquisition: the connection's session still holds
+                // the earlier locks. Closing it ends the session, which
+                // releases them — never return a locked connection to the
+                // pool.
+                let _ = conn.close().await;
+                return Err(internal(e));
+            }
+        }
+        Ok(Self { conn, objids })
+    }
+
+    /// Release every held lock. Always call this (success or error paths):
+    /// dropping without releasing would return a locked connection to the
+    /// pool. If an unlock fails, the connection is closed instead, ending
+    /// the session and releasing its locks server-side.
+    pub async fn release(mut self) {
+        for oid in &self.objids {
+            let ok = sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(oid)
+                .execute(&mut *self.conn)
+                .await
+                .is_ok();
+            if !ok {
+                let _ = self.conn.close().await;
+                return;
+            }
+        }
+    }
+}
 
 /// Composite an overlay (rotated about its center by `rot` clockwise
 /// degrees) onto every chunk the placement's AABB touches. `aabb` must be
@@ -22,10 +97,29 @@ pub async fn composite_placement(
     overlay: Vec<u8>,
 ) -> AppResult<()> {
     let keys = aabb.chunk_keys();
+    let locks = ChunkAdvisoryLocks::acquire(
+        &app.pool,
+        keys.iter()
+            .map(|(cx, cy)| chunk_lock_objid(*cx, *cy))
+            .collect(),
+    )
+    .await?;
+    let result = composite_locked(app, &keys, aabb, rot, overlay).await;
+    locks.release().await;
+    result
+}
+
+async fn composite_locked(
+    app: &App,
+    keys: &[(i64, i64)],
+    aabb: Rect,
+    rot: f32,
+    overlay: Vec<u8>,
+) -> AppResult<()> {
     // Fetch all current chunk rasters first.
     let mut bases = Vec::with_capacity(keys.len());
     let mut targets = Vec::with_capacity(keys.len());
-    for (cx, cy) in &keys {
+    for (cx, cy) in keys {
         let key = chunk_key(*cx, *cy);
         bases.push(crate::store::get_bytes(&app.store, &key).await?);
         targets.push((aabb.x - cx * CHUNK_PX, aabb.y - cy * CHUNK_PX));
@@ -45,6 +139,28 @@ pub async fn composite_placement(
 /// non-removed placement intersecting the chunk, in seq order. Runs inside
 /// the caller's transaction so it observes the removal that triggered it.
 pub async fn replay_chunks(
+    app: &App,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    chunk_keys: &[(i64, i64)],
+) -> AppResult<()> {
+    // Same cross-instance exclusion as placement compositing: the replay
+    // GETs and PUTs chunk rasters, so it must not interleave with a
+    // concurrent placement's composite on another instance. Locks live on
+    // their own pooled connection, deliberately outside `tx`.
+    let locks = ChunkAdvisoryLocks::acquire(
+        &app.pool,
+        chunk_keys
+            .iter()
+            .map(|(cx, cy)| chunk_lock_objid(*cx, *cy))
+            .collect(),
+    )
+    .await?;
+    let result = replay_chunks_locked(app, tx, chunk_keys).await;
+    locks.release().await;
+    result
+}
+
+async fn replay_chunks_locked(
     app: &App,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     chunk_keys: &[(i64, i64)],
@@ -93,4 +209,54 @@ pub async fn replay_chunks(
         crate::store::put(&app.store, &key, encoded).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn objid_packing_is_bijective_in_range() {
+        // 2^18 chunks per side; packing must be unique across the full grid.
+        let mut seen = std::collections::HashSet::new();
+        for cx in [0i64, 1, 262143, 131072] {
+            for cy in [0i64, 1, 262143, 65535] {
+                assert!(seen.insert(chunk_lock_objid(cx, cy)));
+            }
+        }
+        assert_eq!(
+            chunk_lock_objid(262143, 262143),
+            (CHUNK_LOCK_CLASS << 40) | (262143 << 18) | 262143
+        );
+        // Decodable round-trip (class in the high bits, index below).
+        let oid = chunk_lock_objid(3, 5);
+        assert_eq!(
+            (
+                (oid >> 40),
+                (oid >> 18) & ((1 << 22) - 1),
+                oid & ((1 << 18) - 1)
+            ),
+            (CHUNK_LOCK_CLASS, 3, 5)
+        );
+    }
+
+    #[test]
+    fn acquire_sorts_and_dedups() {
+        // The sort/dedup happens before any DB round-trip; exercise it via
+        // a pool-less path by checking the packed ordering directly.
+        let mut ids: Vec<i64> = [(5i64, 9i64), (1, 2), (5, 9), (0, 262143)]
+            .into_iter()
+            .map(|(cx, cy)| chunk_lock_objid(cx, cy))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids,
+            vec![
+                chunk_lock_objid(0, 262143),
+                chunk_lock_objid(1, 2),
+                chunk_lock_objid(5, 9),
+            ]
+        );
+    }
 }

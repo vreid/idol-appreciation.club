@@ -84,6 +84,68 @@ impl Rect {
     }
 }
 
+/// Placement rotation: float degrees, CLOCKWISE (y-down image
+/// convention), free angle. Stored normalized to `[0, 360)`.
+///
+/// NaN/±inf must be rejected by the API layer before calling this.
+pub fn normalize_rot(rot: f32) -> f32 {
+    if rot.is_finite() {
+        rot.rem_euclid(360.0)
+    } else {
+        0.0
+    }
+}
+
+/// Conservative integer AABB of the rect rotated by `rot` degrees about
+/// its own center, rounded OUTWARD (floor/ceil) so the box always
+/// contains every rotated pixel. This is what the GiST `bbox` column and
+/// chunk-touch ranges use. `rot` must already be normalized.
+pub fn rotated_aabb(x: i64, y: i64, w: i64, h: i64, rot: f32) -> Rect {
+    let (sin, cos) = (rot as f64).to_radians().sin_cos();
+    // Snap quarter turns so 90°/180° boxes stay exact (f64 trig slop
+    // would otherwise add a pixel of outward drift).
+    let (sin, cos) = (snap(sin), snap(cos));
+    let (a, b) = (cos.abs(), sin.abs());
+    let cx = (x as f64) + (w as f64) / 2.0;
+    let cy = (y as f64) + (h as f64) / 2.0;
+    let hw = ((w as f64) * a + (h as f64) * b) / 2.0;
+    let hh = ((w as f64) * b + (h as f64) * a) / 2.0;
+    let x0 = (cx - hw).floor() as i64;
+    let y0 = (cy - hh).floor() as i64;
+    let x1 = (cx + hw).ceil() as i64;
+    let y1 = (cy + hh).ceil() as i64;
+    Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+/// Snap near-zero / near-one magnitudes from quarter-turn trig.
+fn snap(v: f64) -> f64 {
+    if v.abs() < 1e-12 {
+        0.0
+    } else if (v.abs() - 1.0).abs() < 1e-12 {
+        v.signum()
+    } else {
+        v
+    }
+}
+
+/// Rotated hit-test: does the rect rotated by `rot` degrees about its
+/// center contain the point? The point is inverse-rotated into image
+/// space and tested against the unrotated half-open bounds, so it matches
+/// [`Rect::contains`] for `rot == 0`. `rot` must already be normalized.
+pub fn rotated_contains(x: i64, y: i64, w: i64, h: i64, rot: f32, px: i64, py: i64) -> bool {
+    let (sin, cos) = (-(rot as f64)).to_radians().sin_cos();
+    let (sin, cos) = (snap(sin), snap(cos));
+    let dx = (px as f64) - ((x as f64) + (w as f64) / 2.0);
+    let dy = (py as f64) - ((y as f64) + (h as f64) / 2.0);
+    // Rotate the point by -rot about the rect center.
+    let rx = dx * cos - dy * sin;
+    let ry = dx * sin + dy * cos;
+    rx >= -(w as f64) / 2.0
+        && rx < (w as f64) / 2.0
+        && ry >= -(h as f64) / 2.0
+        && ry < (h as f64) / 2.0
+}
+
 /// Object storage key of a chunk raster.
 pub fn chunk_key(cx: i64, cy: i64) -> String {
     format!("chunks/{cx}/{cy}.webp")
@@ -397,5 +459,86 @@ mod proptests {
         } else {
             h
         }
+    }
+}
+
+#[cfg(test)]
+mod rot_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_rot_wraps() {
+        assert_eq!(normalize_rot(0.0), 0.0);
+        assert_eq!(normalize_rot(370.0), 10.0);
+        assert_eq!(normalize_rot(-15.0), 345.0);
+        assert_eq!(normalize_rot(720.0), 0.0);
+        assert_eq!(normalize_rot(359.999), 359.999);
+        assert_eq!(normalize_rot(f32::NAN), 0.0);
+        assert_eq!(normalize_rot(f32::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn aabb_identity_and_quarter_turns() {
+        // rot 0: the rect itself.
+        assert_eq!(
+            rotated_aabb(10, 20, 100, 50, 0.0),
+            Rect::new(10, 20, 100, 50)
+        );
+        // 90° clockwise swaps the edges about the center.
+        let a = rotated_aabb(0, 0, 200, 100, 90.0);
+        assert_eq!((a.w, a.h), (100, 200));
+        assert_eq!(a.x, 50); // center (100, 50) stays put
+        assert_eq!(a.y, -50);
+        // 180°: same box.
+        assert_eq!(
+            rotated_aabb(10, 20, 100, 50, 180.0),
+            Rect::new(10, 20, 100, 50)
+        );
+    }
+
+    #[test]
+    fn aabb_45_degrees_expands() {
+        // 100×100 at 45°: diagonal = 100·√2 ≈ 141.42, rounded outward.
+        let a = rotated_aabb(0, 0, 100, 100, 45.0);
+        assert_eq!((a.w, a.h), (142, 142));
+        assert_eq!(a.x, -21); // center (50, 50); 50 - 142/2 floor
+                              // The unrotated rect must always sit inside the AABB.
+        let r = Rect::new(0, 0, 100, 100);
+        assert!(a.x <= r.x && a.y <= r.y && a.x + a.w >= r.x + r.w && a.y + a.h >= r.y + r.h);
+    }
+
+    #[test]
+    fn contains_matches_unrotated_at_zero() {
+        for (px, py) in [(0, 0), (99, 49), (100, 50), (-1, 0), (50, 25), (50, 26)] {
+            assert_eq!(
+                rotated_contains(0, 0, 100, 50, 0.0, px, py),
+                Rect::new(0, 0, 100, 50).contains(px, py),
+                "point {px},{py}"
+            );
+        }
+    }
+
+    #[test]
+    fn contains_quarter_turn_orientation() {
+        // 100 wide × 50 tall, 90° clockwise: the top edge faces RIGHT
+        // (+x); the body spans x in [25, 75), y in [-25, 75).
+        assert!(rotated_contains(0, 0, 100, 50, 90.0, 55, 25)); // right of center
+        assert!(!rotated_contains(0, 0, 100, 50, 90.0, 20, 25)); // left of the rotated extent
+        assert!(rotated_contains(0, 0, 100, 50, 90.0, 50, 70)); // near the bottom tip
+        assert!(!rotated_contains(0, 0, 100, 50, 90.0, 50, -30)); // above the top tip
+    }
+
+    #[test]
+    fn contains_misses_aabb_corner_at_45() {
+        // The classic false positive: a point in the AABB but outside the
+        // rotated rect's diagonal edge.
+        assert!(rotated_aabb(0, 0, 100, 100, 45.0).contains(-15, -15));
+        assert!(!rotated_contains(0, 0, 100, 100, 45.0, -15, -15));
+        assert!(rotated_contains(0, 0, 100, 100, 45.0, 50, 50)); // center
+                                                                 // On the diagonal, just inside: center + (24, -24) in a 100-box
+                                                                 // rotated 45° has local rx = 0 (along the original x axis), |rx| < 50.
+        assert!(rotated_contains(0, 0, 100, 100, 45.0, 50 + 24, 50 - 24));
+        // Just past the corner along the same diagonal.
+        assert!(!rotated_contains(0, 0, 100, 100, 45.0, 50 + 38, 50 - 38));
     }
 }

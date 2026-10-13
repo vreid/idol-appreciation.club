@@ -3,7 +3,6 @@
 use crate::auth::Authed;
 use crate::error::{AppError, AppResult};
 use crate::state::App;
-use crate::world::{CENTER_X, CENTER_Y};
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
@@ -37,11 +36,14 @@ pub struct NearPlacement {
     pub y: i64,
     pub w: i32,
     pub h: i32,
+    /// Rotation in degrees, clockwise (y-down), normalized to [0, 360).
+    pub rot: f32,
     pub created_at: DateTime<Utc>,
 }
 
-/// GET /api/placements/near?x=&y=&r= — placements whose bbox intersects the
-/// query rect [x−r, x+r) × [y−r, y+r), newest first.
+/// GET /api/placements/near?x=&y=&r= — placements whose bbox (the AABB of
+/// the rotated rect) intersects the query rect [x−r, x+r) × [y−r, y+r),
+/// newest first.
 pub async fn near(
     State(app): State<App>,
     Query(params): Query<HashMap<String, String>>,
@@ -54,7 +56,7 @@ pub async fn near(
     }
     let r = r.min(65536);
     let rows = sqlx::query_as::<_, NearPlacement>(
-        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.created_at
+        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
          WHERE p.removed_at IS NULL
@@ -72,82 +74,103 @@ pub async fn near(
     Ok(Json(rows))
 }
 
-/// GET /api/center — current holder of the world center and the top 10
-/// all-time holders. Held-seconds are derived purely from the manifest:
-/// consecutive covering placements define segments; the newest covering
-/// placement holds until now.
-pub async fn center(State(app): State<App>) -> AppResult<Json<serde_json::Value>> {
-    #[derive(sqlx::FromRow)]
-    struct Current {
-        username: String,
-        created_at: DateTime<Utc>,
-        id: Uuid,
-        x: i64,
-        y: i64,
-        w: i32,
-        h: i32,
+/// A placement that covers the world center (AABB candidate — membership
+/// in the rotated rect is refined in Rust).
+#[derive(sqlx::FromRow)]
+#[allow(dead_code)] // seq documents the ordering contract; kept for clarity
+struct CenterCandidate {
+    username: String,
+    created_at: DateTime<Utc>,
+    id: Uuid,
+    x: i64,
+    y: i64,
+    w: i32,
+    h: i32,
+    rot: f32,
+    seq: i64,
+}
+
+impl CenterCandidate {
+    /// Point-in-rotated-rect hit-test against the world center.
+    fn covers_center(&self) -> bool {
+        crate::world::rotated_contains(
+            self.x,
+            self.y,
+            i64::from(self.w),
+            i64::from(self.h),
+            self.rot,
+            crate::world::CENTER_X,
+            crate::world::CENTER_Y,
+        )
     }
-    let current: Option<Current> = sqlx::query_as(
-        "SELECT a.username, p.created_at, p.id, p.x, p.y, p.w, p.h
+}
+
+/// GET /api/center — current holder of the world center and the top 10
+/// all-time holders. Covering = the point lies inside the ROTATED rect
+/// (candidates come from the GiST bbox, then a rotated hit-test).
+/// Held-seconds are derived purely from the manifest: consecutive
+/// covering placements define segments; the newest covering placement
+/// holds until now.
+pub async fn center(State(app): State<App>) -> AppResult<Json<serde_json::Value>> {
+    let candidates: Vec<CenterCandidate> = sqlx::query_as(
+        "SELECT a.username, p.created_at, p.id, p.x, p.y, p.w, p.h, p.rot, p.seq
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
          WHERE p.removed_at IS NULL
-           AND p.x <= $1 AND p.x + p.w > $1
-           AND p.y <= $2 AND p.y + p.h > $2
-         ORDER BY p.seq DESC
-         LIMIT 1",
+           AND p.bbox @> point($1::float8, $2::float8)
+         ORDER BY p.seq",
     )
-    .bind(CENTER_X)
-    .bind(CENTER_Y)
-    .fetch_optional(&app.pool)
-    .await?;
-
-    #[derive(sqlx::FromRow)]
-    struct Holder {
-        username: String,
-        total: i64,
-    }
-    let all_time: Vec<Holder> = sqlx::query_as::<_, Holder>(
-        "WITH cov AS (
-             SELECT a.username, p.created_at,
-                    lead(p.created_at) OVER (ORDER BY p.seq) AS next_created
-             FROM placements p
-             JOIN accounts a ON a.id = p.account_id
-             WHERE p.removed_at IS NULL
-               AND p.x <= $1 AND p.x + p.w > $1
-               AND p.y <= $2 AND p.y + p.h > $2
-         ),
-         seg AS (
-             SELECT username,
-                    CASE WHEN next_created IS NULL
-                         THEN EXTRACT(EPOCH FROM (now() - created_at))
-                         ELSE EXTRACT(EPOCH FROM (next_created - created_at))
-                    END AS secs
-             FROM cov
-         )
-         SELECT username, COALESCE(sum(secs), 0)::bigint AS total
-         FROM seg
-         GROUP BY username
-         ORDER BY total DESC, username
-         LIMIT 10",
-    )
-    .bind(CENTER_X)
-    .bind(CENTER_Y)
+    .bind(crate::world::CENTER_X as f64)
+    .bind(crate::world::CENTER_Y as f64)
     .fetch_all(&app.pool)
     .await?;
+    let covering: Vec<&CenterCandidate> = candidates.iter().filter(|c| c.covers_center()).collect();
 
-    let current_json = current.map(|c| {
+    // Current = newest covering placement (max seq, candidates are
+    // seq-ascending).
+    let current_json = covering.last().map(|c| {
         json!({
             "username": c.username,
             "since": c.created_at,
-            "placement": { "id": c.id, "x": c.x, "y": c.y, "w": c.w, "h": c.h }
+            "placement": {
+                "id": c.id,
+                "x": c.x,
+                "y": c.y,
+                "w": c.w,
+                "h": c.h,
+                "rot": c.rot,
+            }
         })
     });
+
+    // Held-seconds: segments between consecutive covering seqs; the last
+    // segment runs until now. The covering set is small (a handful of
+    // rects contain the point), so linear aggregation is fine.
+    let mut totals: Vec<(String, f64)> = Vec::new();
+    for (i, c) in covering.iter().enumerate() {
+        let end = covering
+            .get(i + 1)
+            .map(|next| next.created_at)
+            .unwrap_or_else(Utc::now);
+        let secs = (end - c.created_at).num_milliseconds() as f64 / 1000.0;
+        if let Some(entry) = totals.iter_mut().find(|(u, _)| *u == c.username) {
+            entry.1 += secs;
+        } else {
+            totals.push((c.username.clone(), secs));
+        }
+    }
+    let mut all_time: Vec<(String, i64)> = totals
+        .into_iter()
+        .map(|(username, secs)| (username, secs.round() as i64))
+        .collect();
+    all_time.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    all_time.truncate(10);
+
     Ok(Json(json!({
         "current": current_json,
-        "all_time": all_time.iter().map(|hld| json!({
-            "username": hld.username,
-            "seconds": hld.total,
+        "all_time": all_time.iter().map(|(username, seconds)| json!({
+            "username": username,
+            "seconds": seconds,
         })).collect::<Vec<_>>(),
     })))
 }

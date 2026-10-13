@@ -82,7 +82,7 @@ async fn start_server_gated(
         cooldown_empty_secs: empty_secs,
         max_upload_bytes: max_upload,
         min_size: 16,
-        max_size: 2048,
+        max_size: 4096,
         tile_cache_entries: 256,
         registration_approval_required: approval_required,
     };
@@ -966,4 +966,223 @@ async fn cooldown_exempt_skips_both_cooldowns() {
     )
     .await;
     assert_eq!(forbidden.status, 403);
+}
+
+// -------------------------------------------------------------------------
+// Rotation (free-angle placements, AABB bbox, rotated hit-test).
+// -------------------------------------------------------------------------
+
+fn place_rot_body(image: &[u8], x: i64, y: i64, size: i64, rot: Option<f32>) -> (String, Vec<u8>) {
+    let boundary = format!("b{}", uuid::Uuid::now_v7().simple());
+    let mut fields: Vec<(String, String)> = vec![
+        ("x".into(), x.to_string()),
+        ("y".into(), y.to_string()),
+        ("size".into(), size.to_string()),
+    ];
+    if let Some(rot) = rot {
+        fields.push(("rot".into(), rot.to_string()));
+    }
+    let fields: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let body = multipart(&boundary, &fields, image);
+    (boundary, body)
+}
+
+async fn place_rot(
+    server: &Server,
+    cookie: &str,
+    image: &[u8],
+    x: i64,
+    y: i64,
+    size: i64,
+    rot: Option<f32>,
+) -> Resp {
+    let (boundary, body) = place_rot_body(image, x, y, size, rot);
+    request(
+        server,
+        "POST",
+        "/api/place",
+        &[
+            ("Cookie", cookie),
+            (
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            ),
+        ],
+        body,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn rotation_echo_near_and_normalization() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "spinner").await;
+    let img = png(64, 64);
+
+    // rot=405 normalizes to 45; omitted rot defaults to 0. (The 45° AABB
+    // of a 64px image pokes ~14px past the rect corner, so keep clear of
+    // the world edge.)
+    let resp = place_rot(&server, &cookie, &img, 1000, 1000, 64, Some(405.0)).await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+    let placed = resp.json();
+    assert_eq!(placed["rot"], 45.0);
+
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let resp = place_rot(&server, &cookie, &img, 1500, 1000, 64, None).await;
+    assert_eq!(resp.status, 201);
+    assert_eq!(resp.json()["rot"], 0.0);
+
+    // near carries rot; the rotated placement is discoverable via its AABB.
+    let near = request(
+        &server,
+        "GET",
+        "/api/placements/near?x=1250&y=1125&r=1024",
+        &[],
+        vec![],
+    )
+    .await;
+    let rows = near.json();
+    assert_eq!(rows.as_array().unwrap().len(), 2);
+    assert_eq!(rows[0]["rot"], 0.0); // newest first
+    assert_eq!(rows[1]["rot"], 45.0);
+
+    // NaN-ish garbage → 400 (fields precede the image part, so the parse
+    // rejects before the upload matters).
+    let boundary = format!("b{}", uuid::Uuid::now_v7().simple());
+    let body = multipart(
+        &boundary,
+        &[("x", "0"), ("y", "0"), ("size", "64"), ("rot", "nan")],
+        b"",
+    );
+    let resp = request(
+        &server,
+        "POST",
+        "/api/place",
+        &[
+            ("Cookie", &cookie),
+            (
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            ),
+        ],
+        body,
+    )
+    .await;
+    assert_eq!(resp.status, 400);
+}
+
+#[tokio::test]
+async fn rotated_center_hit_and_aabb_miss() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let holder = register(&server, "holder").await; // admin
+    let other = register(&server, "corner").await;
+    let img = png(100, 100);
+
+    // Holder covers 0/0 exactly.
+    let cx: i64 = CENTER;
+    let cy: i64 = CENTER;
+    let resp = place_rot(&server, &holder, &img, cx - 50, cy - 50, 100, Some(0.0)).await;
+    assert_eq!(resp.status, 201);
+
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    // A 45° rect whose AABB contains 0/0 but whose rotated body misses:
+    // 0/0 sits 45px diagonal from the rect center — outside the 45° body
+    // (local |rx| = 63.6 ≥ 50) while well inside the ~71px AABB radius.
+    let resp = place_rot(
+        &server,
+        &other,
+        &img,
+        cx - 50 + 45,
+        cy - 50 + 45,
+        100,
+        Some(45.0),
+    )
+    .await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+
+    let center = request(&server, "GET", "/api/center", &[], vec![])
+        .await
+        .json();
+    assert_eq!(center["current"]["username"], "holder");
+    assert_eq!(center["current"]["placement"]["rot"], 0.0);
+
+    // A FRESH account paints immediately even on overlap (paint cooldown
+    // keys off the account's own last placement).
+    let third = register(&server, "coverer").await;
+    // Now a rotated rect that DOES cover 0/0 (centered on it) takes over.
+    let resp = place_rot(&server, &third, &img, cx - 64, cy - 64, 128, Some(45.0)).await;
+    assert_eq!(resp.status, 201);
+    let center = request(&server, "GET", "/api/center", &[], vec![])
+        .await
+        .json();
+    assert_eq!(center["current"]["username"], "coverer");
+    assert_eq!(center["current"]["placement"]["rot"], 45.0);
+    // all_time aggregates only placements that actually cover 0/0:
+    // holder (rot 0) and coverer (rot 45). corner's rect misses the
+    // center by construction, so it must NOT be there.
+    let names: Vec<&str> = center["all_time"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["username"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"holder"));
+    assert!(names.contains(&"coverer"));
+    assert!(!names.contains(&"corner"));
+}
+
+#[tokio::test]
+async fn rotated_tiles_render_deterministically() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "tiler").await;
+    // Asymmetric image: identical place+rot → identical tile bytes;
+    // different rot → different bytes.
+    let img = img::asymmetric_test_png(128, 64);
+
+    let resp = place_rot(&server, &cookie, &img, 0, 0, 128, Some(0.0)).await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let resp = place_rot(&server, &cookie, &img, 0, 4096, 128, Some(0.0)).await;
+    assert_eq!(resp.status, 201);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let resp = place_rot(&server, &cookie, &img, 0, 8192, 128, Some(90.0)).await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+
+    async fn tile_at(server: &Server, y: i64) -> Vec<u8> {
+        request(
+            server,
+            "GET",
+            &format!("/api/tiles/20/0/{}.webp", y / 256),
+            &[],
+            vec![],
+        )
+        .await
+        .body
+    }
+    let a = tile_at(&server, 0).await;
+    let b = tile_at(&server, 4096).await;
+    let c = tile_at(&server, 8192).await;
+    assert!(!a.is_empty());
+    assert_eq!(a, b, "same image+rot must render byte-identical tiles");
+    assert_ne!(a, c, "rot must change the rendered pixels");
+}
+
+#[tokio::test]
+async fn max_long_edge_is_4096() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "big").await;
+    let img = png(64, 64);
+
+    // 4096 accepted (long edge honored).
+    let resp = place_rot(&server, &cookie, &img, 0, 0, 4096, None).await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+    assert_eq!(resp.json()["w"], 4096);
+    assert_eq!(resp.json()["h"], 4096);
+
+    // 4097 rejected.
+    let resp = place_rot(&server, &cookie, &img, 0, 8192, 4097, None).await;
+    assert_eq!(resp.status, 400);
 }

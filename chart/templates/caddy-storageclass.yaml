@@ -1,4 +1,3 @@
-{{- if .Values.web.enabled }}
 # Chart-owned StorageClass so the caddy PV is always Delete-reclaimed: the
 # CCM-provided upcloud classes are Retain and their reclaimPolicy is
 # immutable, which is how six orphan disks piled up during recreate cycle 3.
@@ -12,4 +11,3 @@ volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
   tier: standard
-{{- end }}

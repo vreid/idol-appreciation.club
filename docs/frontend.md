@@ -19,8 +19,8 @@ Run inside `web/` (pnpm is the enforced package manager via `devEngines`; use
 | `vp test --coverage` | Tests + v8 coverage, fails below 80% lines      |
 | `vp fmt`             | Format code and Markdown (oxfmt)                |
 
-CI runs `vp check` and `vp test --coverage`; the `web/.ci-ready` marker enables
-those jobs once the local tree is green.
+CI runs `vp check` and `vp test --coverage` on every PR that touches `web/`
+(path-filtered; no markers — broken code fails its own PR).
 
 ## Toolchain notes (vp)
 

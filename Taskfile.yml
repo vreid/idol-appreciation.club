@@ -71,7 +71,7 @@ tasks:
       - helm version
       - helm lint chart
       - helm template chart > /dev/null
-      - helm template chart --set web.enabled=false > /dev/null
+      - helm template chart --set-string images.backend.tag=v1.2.3 --set-string images.web.tag=v1.2.3 > /dev/null
       # Client-side K8s schema validation: helm lint/template only parse
       # YAML and miss typed-shape errors (e.g. lifecycle.preStop.exec
       # rendered as an array). kubectl apply/create --dry-run=client need
@@ -153,7 +153,7 @@ tasks:
     deps: [lint:md, lint:workflows, helm:lint, tofu:fmt]
 
   backend:ci:
-    desc: backend lint + test gates, serial (deploy.yml backend-checks)
+    desc: backend lint + test gates, serial in one container (ci.yml backend-checks, deploy.yml backend-checks)
     cmds:
       - task: backend:lint
       - task: backend:test
@@ -253,8 +253,8 @@ tasks:
 
   deploy:k8s:
     desc: >-
-      kubeconfig fetch, tofu state settle, atomic helm upgrade, app-env
-      secret rotation, DNS sync, placeholder removal (deploy.yml deploy)
+      S3 verify-or-rotate + app-env secret, kubeconfig fetch, tofu state
+      settle, atomic helm upgrade, DNS sync (deploy.yml deploy)
     env:
       KUBECONFIG: '{{.KUBECONFIG | default "/tmp/idol-deploy-kubeconfig"}}'
       RELEASE_TAG: '{{.RELEASE_TAG | default ""}}'
@@ -263,15 +263,11 @@ tasks:
         set -euo pipefail
         # InvalidImageName guard (2026-10-13 incident): a dispatch deploy
         # whose image builds were skipped rolled pods with malformed image
-        # refs. Images that will roll MUST carry digests; web is exempt
-        # only while the bootstrap placeholder is the edge (web.enabled
-        # gets set false below and its image is never rendered).
+        # refs. Images that will roll MUST carry digests.
         [ -n "$BACKEND_DIGEST" ] \
           || { echo "BACKEND_DIGEST is empty: image build skipped or produced no digest; refusing to deploy" >&2; exit 1; }
-        if [ "$READY_WEB" == "true" ] && [ -z "$WEB_DIGEST" ]; then
-          echo "WEB_DIGEST is empty: image build skipped or produced no digest; refusing to deploy" >&2
-          exit 1
-        fi
+        [ -n "$WEB_DIGEST" ] \
+          || { echo "WEB_DIGEST is empty: image build skipped or produced no digest; refusing to deploy" >&2; exit 1; }
         uuid="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_TOKEN}" \
           https://api.upcloud.com/1.3/kubernetes \
           | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
@@ -284,45 +280,6 @@ tasks:
         set -euo pipefail
         cd tofu
         tofu apply -auto-approve -refresh-only -input=false || true
-      - |
-        set -euo pipefail
-        cp web/Caddyfile chart/caddy/Caddyfile
-        # Cluster Autoscaler credential — the chart reads it only when
-        # clusterAutoscaler.enabled; provisioning it on every deploy
-        # keeps that flip a values-only change.
-        kubectl -n idol create secret generic upcloud-autoscaler \
-          --from-literal="token=${UPCLOUD_API_TOKEN}" \
-          --dry-run=client -o yaml | kubectl apply -f -
-        ARGS=()
-        if [ "$READY_BACKEND" != "true" ]; then
-          echo "backend not .ci-ready: chart deploys without it is not supported; aborting stack changes" >&2
-          exit 1
-        fi
-        if [ "$READY_WEB" != "true" ]; then
-          echo "web not .ci-ready: bootstrap placeholder is the edge"
-          ARGS+=(--set web.enabled=false)
-        fi
-        # Release semver (audit trail in helm values / rollout annotations;
-        # the digest stays the actual image pin — GHCR tags are mutable).
-        if [ -n "$RELEASE_TAG" ]; then
-          ARGS+=(--set-string images.backend.tag="$RELEASE_TAG" \
-                 --set-string images.web.tag="$RELEASE_TAG")
-        fi
-        # Cluster uuid for the Cluster Autoscaler (unused while
-        # clusterAutoscaler.enabled is false).
-        cluster_id="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_API_TOKEN}" \
-          https://api.upcloud.com/1.3/kubernetes \
-          | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
-        ARGS+=(--set-string clusterAutoscaler.clusterId="$cluster_id")
-        helm upgrade --install idol chart/ \
-          --namespace idol --create-namespace --atomic --wait --timeout 15m \
-          --take-ownership \
-          --set-string images.backend.digest="$BACKEND_DIGEST" \
-          --set-string images.web.digest="$WEB_DIGEST" \
-          "${ARGS[@]}"
-        if [ "$READY_WEB" = "true" ]; then
-          kubectl -n idol delete deploy placeholder svc placeholder --ignore-not-found
-        fi
       - |
         set -euo pipefail
         cd tofu
@@ -367,8 +324,7 @@ tasks:
         # Object storage: trust the UpCloud API, not tofu state. The
         # provider can record a different endpoint or user key than the
         # service actually gets (seen on recreate), so fetch both from the
-        # API, rotate the app user's access key, and refuse to ship an
-        # endpoint that does not resolve.
+        # API, and refuse to ship an endpoint that does not resolve.
         uc os-list GET https://api.upcloud.com/1.3/object-storage-2 /tmp/uc3.json
         osuuid="$(jq -r 'if type == "array" then . else [.object_storages[]?] end | map(select(.name == "idol-canvas-objsto")) | .[0].uuid' /tmp/uc3.json)"
         test -n "$osuuid" || { echo "object storage not found via API" >&2; exit 1; }
@@ -376,17 +332,50 @@ tasks:
         oshost="$(jq -r '.endpoints[0].domain_name' /tmp/uc4.json)"
         test -n "$oshost" || { echo "objsto endpoint missing from API" >&2; exit 1; }
         dig +short "$oshost" | grep -qE '^[0-9]+\.' || { echo "objsto endpoint $oshost does not resolve" >&2; exit 1; }
-        # key limit is 2 per user: delete every existing key BEFORE
-        # creating the fresh one (old keys are dead-by-drift by design)
-        uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc6.json
-        jq -r '.[].access_key_id' /tmp/uc6.json | while read -r old; do
-          uc key-del DELETE "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" /tmp/uc7.json
-        done
-        uc key-create POST "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc5.json
-        newkey="$(cat /tmp/uc5.json)"
-        sak="$(printf '%s' "$newkey" | jq -r .access_key_id)"
-        ssk="$(printf '%s' "$newkey" | jq -r .secret_access_key)"
-        test -n "$ssk" || { echo "access key creation failed" >&2; exit 1; }
+        # INVARIANT: deploys never invalidate working S3 auth. This step
+        # runs BEFORE helm upgrade: the cluster's current creds are probed
+        # with a cheap signed ListObjects and kept when they work
+        # (idempotent deploys, zero key churn); they are rotated ONLY on
+        # 403 — while no pod has rolled yet, so the upgrade itself brings
+        # every pod up on a live key. There is no window where pods hold
+        # deleted keys. Anything other than 200/403 aborts untouched.
+        rotate=true
+        if kubectl -n idol get secret app-env > /dev/null 2>&1; then
+          ak="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ACCESS_KEY_ID}' | base64 -d)"
+          sk="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_SECRET_ACCESS_KEY}' | base64 -d)"
+          pep="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' | base64 -d)"
+          pbucket="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_BUCKET}' | base64 -d)"
+          if [ -n "$ak" ] && [ -n "$sk" ] && [ -n "$pep" ] && [ -n "$pbucket" ]; then
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+              --aws-sigv4 'aws:amz:us-east-1:s3' -u "$ak:$sk" \
+              "$pep/$pbucket?list-type=2&max-keys=1" || echo 000)"
+            case "$code" in
+              200) rotate=false ;;
+              403) rotate=true ;;
+              *)
+                echo "s3 auth probe inconclusive (HTTP $code); refusing to churn or ship" >&2
+                exit 1
+                ;;
+            esac
+          fi
+        fi
+        if [ "$rotate" = true ]; then
+          # key limit is 2 per user: delete every existing key BEFORE
+          # creating the fresh one (rotation is deliberate and pre-roll)
+          uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc6.json
+          jq -r '.[].access_key_id' /tmp/uc6.json | while read -r old; do
+            uc key-del DELETE "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" /tmp/uc7.json
+          done
+          uc key-create POST "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc5.json
+          sak="$(jq -r .access_key_id /tmp/uc5.json)"
+          ssk="$(jq -r .secret_access_key /tmp/uc5.json)"
+          test -n "$ssk" || { echo "access key creation failed" >&2; exit 1; }
+        else
+          sak="$ak"
+          ssk="$sk"
+        fi
+        echo "s3 auth: $([ "$rotate" = true ] && echo rotated || echo verified-working)"
+        echo "$rotate" > /tmp/deploy-s3-rotated
         # prod registration closed until an admin approves the account
         kubectl -n idol create secret generic app-env \
           --from-literal="DATABASE_URL=$db" \
@@ -397,16 +386,47 @@ tasks:
           --from-literal="REGISTRATION_APPROVAL_REQUIRED=true" \
           --from-literal="SESSION_SECRET=$SESSION_SECRET" \
           --dry-run=client -o yaml | kubectl apply -f -
-        # secret-only changes do not restart pods; the S3 key rotation
-        # above would leave running backends on a deleted key
-        kubectl -n idol rollout restart deployment/backend
-        kubectl -n idol rollout status deployment/backend --timeout=180s
+      - |
+        set -euo pipefail
+        cp web/Caddyfile chart/caddy/Caddyfile
+        # Cluster Autoscaler credential — the chart reads it only when
+        # clusterAutoscaler.enabled; provisioning it on every deploy
+        # keeps that flip a values-only change.
+        kubectl -n idol create secret generic upcloud-autoscaler \
+          --from-literal="token=${UPCLOUD_API_TOKEN}" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        ARGS=()
+        # Release semver (audit trail in helm values / rollout annotations;
+        # the digest stays the actual image pin — GHCR tags are mutable).
+        if [ -n "$RELEASE_TAG" ]; then
+          ARGS+=(--set-string images.backend.tag="$RELEASE_TAG" \
+                 --set-string images.web.tag="$RELEASE_TAG")
+        fi
+        # Cluster uuid for the Cluster Autoscaler (unused while
+        # clusterAutoscaler.enabled is false).
+        cluster_id="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_API_TOKEN}" \
+          https://api.upcloud.com/1.3/kubernetes \
+          | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
+        ARGS+=(--set-string clusterAutoscaler.clusterId="$cluster_id")
+        helm upgrade --install idol chart/ \
+          --namespace idol --create-namespace --atomic --wait --timeout 15m \
+          --take-ownership \
+          --set-string images.backend.digest="$BACKEND_DIGEST" \
+          --set-string images.web.digest="$WEB_DIGEST" \
+          "${ARGS[@]}"
+        if [ "$(cat /tmp/deploy-s3-rotated 2>/dev/null || echo false)" = "true" ]; then
+          # The S3 key was rotated above (before the upgrade); if this
+          # upgrade was a no-op for pods, roll the backend so nothing
+          # keeps running on the deleted key.
+          kubectl -n idol rollout restart deployment/backend
+          kubectl -n idol rollout status deployment/backend --timeout=180s
+        fi
       - |
         set -euo pipefail
         ips=""
         n=0
         while [ -z "$ips" ] && [ "$n" -lt 30 ]; do
-          ips="$( (kubectl -n idol get svc web placeholder -o json 2>/dev/null \
+          ips="$( (kubectl -n idol get svc web -o json 2>/dev/null \
             || echo '{"items":[]}') \
             | jq -r '.items[] | select(.status.loadBalancer.ingress)
             | .status.loadBalancer.ingress[]? | (.ip // .hostname)')"
@@ -432,12 +452,6 @@ tasks:
           exit 1
         fi
         ./scripts/sync-dns.sh "$ipv4" ${ipv6:+"$ipv6"}
-      - |
-        set -euo pipefail
-        # Tag is mutable (:main), so rollouts are driven by digest pinning.
-        if [ "$READY_WEB" = "true" ]; then
-          kubectl delete -f deploy/placeholder.yaml --ignore-not-found=true
-        fi
 
   # ---------------- e2e (e2e.yml) ----------------
 

@@ -43,9 +43,6 @@ backend:
       memory: 2Gi
 
 web:
-  # false = bootstrap: placeholder Deployment+Service become a plain-HTTP
-  # edge until the web image exists.
-  enabled: true
   # Caddy edge: resources are tiny (static files + proxy).
   resources:
     requests:

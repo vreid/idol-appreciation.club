@@ -1,4 +1,3 @@
-{{- if .Values.web.enabled }}
 # Caddy's ACME account + issued certs must survive pod restarts: every
 # restart otherwise re-runs ACME and burns Let's Encrypt duplicate-cert
 # budget (5/week per FQDN).
@@ -17,4 +16,3 @@ spec:
   resources:
     requests:
       storage: 1Gi
-{{- end }}

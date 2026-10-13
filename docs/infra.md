@@ -31,8 +31,8 @@ Cloudflare (DNS ONLY, proxied=false)
   plane), 1 worker node, managed PostgreSQL, managed object storage + bucket +
   app credentials.
 - `deploy/` — namespace, backend Deployment/Service, Ingress (apex + www
-  redirect), ClusterIssuer; `deploy/placeholder.yaml` is a bootstrap-only static
-  page (deleted by the deploy workflow).
+  redirect), ClusterIssuer; legacy bootstrap manifests kept for history only
+  (the chart is the deploy surface; the placeholder edge is retired).
 - `scripts/sync-dns.sh` — idempotent Cloudflare record upsert.
 
 ### DNS is deliberately not in tofu
@@ -207,12 +207,24 @@ merge. main stays green by construction. Agents stop pushing to main directly.
 A workflow-dispatch deploy whose image builds had been skipped rolled pods with
 malformed image refs (`InvalidImageName`) and had to be rolled back. Two guards
 now make that state unreachable: `deploy:k8s` fails fast before any cluster
-contact when an image that would roll has an empty digest (web is exempt only
-while the bootstrap placeholder is the edge), and the chart's image helper
-refuses to render — at `helm template` time, so `task helm:lint` catches it
-pre-merge — any `images.*` entry with a missing, malformed digest, or malformed
-tag. Digests remain the source of truth for what actually runs; the semver `tag`
-is an audit trail only, never concatenated into the ref.
+contact when an image that would roll has an empty digest, and the chart's image
+helper refuses to render — at `helm template` time, so `task helm:lint` catches
+it pre-merge — any `images.*` entry with a missing, malformed digest, or
+malformed tag. Digests remain the source of truth for what actually runs; the
+semver `tag` is an audit trail only, never concatenated into the ref.
+
+## Deploy secret choreography (S3 auth invariant)
+
+`deploy:k8s` provisions `app-env` (DB URL, S3 creds, session secret) **before**
+the helm upgrade, and never blindly rotates: the cluster's current S3 creds are
+probed with a cheap signed ListObjects — HTTP 200 keeps them (idempotent
+deploys, zero key churn), HTTP 403 rotates, and anything else aborts the deploy
+with prod untouched. Rotation therefore happens only while no pod has rolled, so
+the upgrade itself brings every pod up on a live key: **deploys never invalidate
+working S3 auth** (no `SignatureDoesNotMatch` windows). A trailing
+`rollout restart` runs only on the rotate branch, and only to cover upgrades
+that were a no-op for pods. The DB password stays fresh-from-API on every deploy
+(UpCloud may rotate managed-DB user passwords; state is not trusted for it).
 
 ## Scaling: the backend chunk writer (MUST read before scaling)
 
@@ -300,17 +312,13 @@ cluster uuid on every deploy, so flipping is a values-only change. Flip notes:
 at most €20/mo (2 nodes) over today's single node; HPA replicas cost nothing
 extra until a second node is actually needed.
 
-## Marker removal checklist (do not forget)
+## Readiness markers: removed
 
-The `backend/.ci-ready` / `web/.ci-ready` markers are a trust-based bootstrap
-gate. Once (a) protection + auto-merge are on and (b) the first green deploy has
-landed via a merged PR:
-
-- [ ] delete both marker files and their `ready`-job references
-- [ ] switch ci.yml/deploy.yml jobs to standard path filters (`backend/**`,
-      `web/**`)
-- [ ] confirm skipped-vs-pending behavior under protection
-- [ ] tell all agents: PRs only; broken code fails its own PR
+The `backend/.ci-ready` / `web/.ci-ready` trust-based bootstrap gate and the
+placeholder edge were retired once branch protection + auto-merge were on: CI
+gates run unconditionally (tier-2 jobs path-filtered by the `changed` job in
+ci.yml), the chart has no `web.enabled` split, and `deploy/placeholder.yaml` is
+gone. Broken code fails its own PR; nothing waits on a marker file.
 
 ## Environment protection (later)
 
@@ -372,8 +380,6 @@ Current edge:
 - ingress-nginx and cert-manager are **not installed** by deploy.yml anymore;
   `deploy/20-ingress.yaml` and `deploy/30-issuer.yaml` are dead files kept only
   for history.
-- Bootstrap without the web image: `deploy/placeholder.yaml` becomes the edge
-  (plain HTTP LoadBalancer) and is deleted once web is ready.
 - Because images are tag-pinned (`:main`), all Deployments set
   `imagePullPolicy: Always` (a node-cached `:main` otherwise masks new pushes;
   the deploy job additionally pins exact digests via

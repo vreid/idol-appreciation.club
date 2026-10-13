@@ -1299,6 +1299,7 @@ dependencies = [
  "libvips",
  "lru",
  "object_store",
+ "parking_lot",
  "proptest",
  "rand_core 0.6.4",
  "serde",

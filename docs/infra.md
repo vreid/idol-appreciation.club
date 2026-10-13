@@ -279,11 +279,11 @@ admin URI.
 | Item                             | Plan                              | Price       |
 | -------------------------------- | --------------------------------- | ----------- |
 | Managed Kubernetes control plane | Development tier                  | EUR 0       |
-| Worker node                      | STARTER-2xCPU-4GB                 | ~EUR 7      |
+| Worker node                      | STARTER-4xCPU-8GB                 | ~EUR 14     |
 | Managed PostgreSQL               | rdb.development.1CPU-1GB          | ~EUR 9      |
 | Managed Object Storage           | 250 GB tier                       | EUR 5       |
 | Load balancer                    | Essentials (via CCM, web Service) | EUR 0       |
-| **Total**                        |                                   | **~EUR 21** |
+| **Total**                        |                                   | **~EUR 28** |
 
 Hourly billing everywhere; a destroy/recreate cycle costs pennies.
 

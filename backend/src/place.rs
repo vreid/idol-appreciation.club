@@ -23,11 +23,12 @@ pub fn cooldown_check(elapsed_secs: f64, threshold_secs: i64) -> Result<(), i64>
     Err(retry.max(1))
 }
 
-async fn read_multipart(app: &App, mut mp: Multipart) -> AppResult<(Vec<u8>, i64, i64, i64)> {
+async fn read_multipart(app: &App, mut mp: Multipart) -> AppResult<(Vec<u8>, i64, i64, i64, f32)> {
     let mut image: Option<Vec<u8>> = None;
     let mut x: Option<i64> = None;
     let mut y: Option<i64> = None;
     let mut size: Option<i64> = None;
+    let mut rot: Option<f32> = None;
     while let Some(field) = mp
         .next_field()
         .await
@@ -68,11 +69,34 @@ async fn read_multipart(app: &App, mut mp: Multipart) -> AppResult<(Vec<u8>, i64
                     _ => size = Some(parsed),
                 }
             }
+            "rot" => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::BadRequest("bad form field"))?;
+                let parsed: f32 = value
+                    .trim()
+                    .parse()
+                    .map_err(|_| AppError::BadRequest("rot must be a number of degrees"))?;
+                if !parsed.is_finite() {
+                    return Err(AppError::BadRequest("rot must be finite"));
+                }
+                if rot.is_some() {
+                    return Err(AppError::BadRequest("duplicate rot field"));
+                }
+                rot = Some(parsed);
+            }
             _ => {} // ignore unknown fields
         }
     }
     match (image, x, y, size) {
-        (Some(image), Some(x), Some(y), Some(size)) => Ok((image, x, y, size)),
+        (Some(image), Some(x), Some(y), Some(size)) => Ok((
+            image,
+            x,
+            y,
+            size,
+            crate::world::normalize_rot(rot.unwrap_or(0.0)),
+        )),
         _ => Err(AppError::BadRequest(
             "fields image, x, y and size are required",
         )),
@@ -85,7 +109,7 @@ pub async fn place(
     Authed(account_id): Authed,
     mp: Multipart,
 ) -> AppResult<Response> {
-    let (image_bytes, x, y, size) = read_multipart(&app, mp).await?;
+    let (image_bytes, x, y, size, rot) = read_multipart(&app, mp).await?;
     if image_bytes.is_empty() {
         return Err(AppError::BadRequest("empty image"));
     }
@@ -118,7 +142,10 @@ pub async fn place(
     .await
     .map_err(internal)??;
     let (stripped, format, (w, h), derivative_bytes) = pipeline;
-    if x < 0 || y < 0 || x + w > WORLD_PX || y + h > WORLD_PX {
+    // Bounds are checked on the AABB of the rotated rect: it contains the
+    // unrotated rect, and the painted bitmap is the AABB.
+    let aabb = crate::world::rotated_aabb(x, y, w, h, rot);
+    if aabb.x < 0 || aabb.y < 0 || aabb.x + aabb.w > WORLD_PX || aabb.y + aabb.h > WORLD_PX {
         return Err(AppError::BadRequest("rect out of world bounds"));
     }
     let rect = Rect::new(x, y, w, h);
@@ -132,7 +159,7 @@ pub async fn place(
     crate::store::put_if_absent(&app.store, &original_key, stripped).await?;
 
     let id = Uuid::now_v7();
-    let chunk_keys = rect.chunk_keys();
+    let chunk_keys = aabb.chunk_keys();
     let lock_keys: Vec<String> = chunk_keys
         .iter()
         .map(|(cx, cy)| crate::world::chunk_key(*cx, *cy))
@@ -156,10 +183,10 @@ pub async fn place(
                    AND bbox && box(point($1::float8, $2::float8),
                                    point($3::float8, $4::float8)))",
         )
-        .bind(rect.x)
-        .bind(rect.y)
-        .bind(rect.x + rect.w - 1)
-        .bind(rect.y + rect.h - 1)
+        .bind(aabb.x)
+        .bind(aabb.y)
+        .bind(aabb.x + aabb.w - 1)
+        .bind(aabb.y + aabb.h - 1)
         .fetch_one(&mut *tx)
         .await?;
         let threshold = if intersects.0 {
@@ -209,7 +236,7 @@ pub async fn place(
 
     // Paint chunks before the row commits: tiles/ETags advance only when
     // the rasters already show the placement.
-    crate::chunks::composite_placement(&app, rect, derivative_bytes).await?;
+    crate::chunks::composite_placement(&app, aabb, rot, derivative_bytes).await?;
 
     let duplicate_count: (i64,) = sqlx::query_as(
         "SELECT count(*) FROM placements
@@ -219,11 +246,15 @@ pub async fn place(
     .fetch_one(&mut *tx)
     .await?;
 
+    // bbox column = AABB of the rotated rect (GiST-indexed); x/y/w/h stay
+    // the unrotated rect top-left and size.
     sqlx::query(
         "INSERT INTO placements
-             (id, account_id, image_key, x, y, w, h, seq,
-              original_sha, derivative_sha)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             (id, account_id, image_key, x, y, w, h, seq, rot,
+              bbox, original_sha, derivative_sha)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                 box(point($10::float8, $11::float8),
+                     point($12::float8, $13::float8)), $14, $15)",
     )
     .bind(id)
     .bind(account_id)
@@ -233,6 +264,11 @@ pub async fn place(
     .bind(rect.w as i32)
     .bind(rect.h as i32)
     .bind(seq)
+    .bind(rot)
+    .bind(aabb.x as f64)
+    .bind(aabb.y as f64)
+    .bind((aabb.x + aabb.w - 1) as f64)
+    .bind((aabb.y + aabb.h - 1) as f64)
     .bind(&original_sha)
     .bind(&derivative_sha)
     .execute(&mut *tx)
@@ -241,7 +277,7 @@ pub async fn place(
     let event = json!({
         "type": "place",
         "seq": seq,
-        "bbox": [rect.x, rect.y, rect.w, rect.h]
+        "bbox": [aabb.x, aabb.y, aabb.w, aabb.h]
     })
     .to_string();
     let _: ((),) = sqlx::query_as("SELECT pg_notify('events', $1)")
@@ -258,6 +294,7 @@ pub async fn place(
             "y": rect.y,
             "w": rect.w,
             "h": rect.h,
+            "rot": rot,
             "seq": seq,
             "duplicate_count": duplicate_count.0,
         })),
@@ -275,17 +312,19 @@ pub async fn admin_delete(
     crate::auth::require_admin(&app, admin_id).await?;
     // Peek the rect first so chunk locks can be acquired before any row
     // locks, matching the placement pipeline's lock order.
-    let peeked: Option<(i64, i64, i64, i64)> = sqlx::query_as(
-        "SELECT x, y, w::bigint, h::bigint FROM placements WHERE id = $1 AND removed_at IS NULL",
+    let peeked: Option<(i64, i64, i64, i64, f32)> = sqlx::query_as(
+        "SELECT x, y, w::bigint, h::bigint, rot FROM placements WHERE id = $1 AND removed_at IS NULL",
     )
     .bind(id)
     .fetch_optional(&app.pool)
     .await?;
-    let Some((x, y, w, h)) = peeked else {
+    let Some((x, y, w, h, rot)) = peeked else {
         return Err(AppError::NotFound);
     };
-    let rect = Rect::new(x, y, w, h);
-    let chunk_keys = rect.chunk_keys();
+    // Replay/notify scope = the AABB of the rotated rect (the painted
+    // bitmap), matching the placement pipeline.
+    let aabb = crate::world::rotated_aabb(x, y, w, h, rot);
+    let chunk_keys = aabb.chunk_keys();
     let lock_keys: Vec<String> = chunk_keys
         .iter()
         .map(|(cx, cy)| crate::world::chunk_key(*cx, *cy))
@@ -312,7 +351,7 @@ pub async fn admin_delete(
     let event = json!({
         "type": "remove",
         "id": id,
-        "bbox": [rect.x, rect.y, rect.w, rect.h]
+        "bbox": [aabb.x, aabb.y, aabb.w, aabb.h]
     })
     .to_string();
     let _: ((),) = sqlx::query_as("SELECT pg_notify('events', $1)")

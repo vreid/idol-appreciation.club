@@ -16,7 +16,6 @@ use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-
 #[tokio::test]
 async fn auth_flows() {
     let server = start_server(300, 1, 10 * 1024 * 1024).await;

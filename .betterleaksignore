@@ -102,6 +102,7 @@ c9a0d42946a22082947257a8f2aa5d4a5580b6c8:backend/tests/integration.rs:generic-pa
 # reseed Secret template placeholder (23d1b94; content unchanged, verified
 # self-labeled "pw-replace-before-apply"). Fetch-depth:0 exposes it to the
 # git scan from every PR until #89 merges.
+d8bf07705d11808c6082cfd28f7881154686c3d0:deploy/reseed-job.yaml:generic-password:60
 23d1b94373e7b2cee1e64b3654447bea153bd684:deploy/reseed-job.yaml:generic-password:60
 # filesystem (dir scan) — batch-import PR fixtures (PR #89): pw-style
 # reseed placeholder + hunter2hunter2/wrong-password test passwords

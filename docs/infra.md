@@ -160,6 +160,18 @@ Once branch protection is on, every change ships via short-lived branch + PR;
 `gh pr create --fill --auto-merge=squash` queues the merge and deploy fires on
 merge. main stays green by construction. Agents stop pushing to main directly.
 
+## Deploy image digests (2026-10-13 incident note)
+
+A workflow-dispatch deploy whose image builds had been skipped rolled pods with
+malformed image refs (`InvalidImageName`) and had to be rolled back. Two guards
+now make that state unreachable: `deploy:k8s` fails fast before any cluster
+contact when an image that would roll has an empty digest (web is exempt only
+while the bootstrap placeholder is the edge), and the chart's image helper
+refuses to render — at `helm template` time, so `task helm:lint` catches it
+pre-merge — any `images.*` entry with a missing, malformed digest, or malformed
+tag. Digests remain the source of truth for what actually runs; the semver `tag`
+is an audit trail only, never concatenated into the ref.
+
 ## Scaling: the backend chunk writer (MUST read before scaling)
 
 Chunk mutation takes PG advisory locks (session-level, sorted lock order — see

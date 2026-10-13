@@ -276,6 +276,13 @@ jobs:
           fi
           db="$(tofu output -raw app_database_uri)"
           test -n "$db" || { echo "app_database_uri missing" >&2; exit 1; }
+          # UpCloud may rotate managed-DB user passwords after the provider
+          # creates them, so trust the API, not tofu state, for the app user's
+          # password. Host/port stay from tofu output.
+          dbuuid="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" https://api.upcloud.com/1.3/database | jq -r '([.database_services[]?] // .) | map(select(.name == "idol-canvas-db")) | .[0].uuid')"
+          apppw="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/database/$dbuuid/users" | jq -r '(.users // .)[] | select(.username == "app") | .password')"
+          test -n "$apppw" || { echo "app user password not found via API" >&2; exit 1; }
+          db="$(printf '%s' "$db" | sed -E "s|//[^@]+@|//app:$apppw@|")"
           # prod registration closed until an admin approves the account
           kubectl -n idol create secret generic app-env \
             --from-literal="DATABASE_URL=$db" \

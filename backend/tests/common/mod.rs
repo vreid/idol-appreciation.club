@@ -123,6 +123,7 @@ pub async fn start_server_full(
         cooldown_paint_secs: paint_secs,
         cooldown_empty_secs: empty_secs,
         max_upload_bytes: max_upload,
+        max_decode_pixels: idol_appreciation_club_backend::img::DEFAULT_MAX_DECODE_PIXELS,
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
@@ -258,6 +259,25 @@ pub async fn register(server: &Server, username: &str) -> String {
 /// A valid small PNG via the image pipeline (opaque red square).
 pub fn png(width: u32, height: u32) -> Vec<u8> {
     img::test_png(width, height)
+}
+
+/// A PNG whose IHDR DECLARES (width, height) but whose pixel data encodes
+/// a 1×1 image: header-probing sees the huge dimensions while a full
+/// decode would fail. Exercise for the decoded-pixel budget, which must
+/// reject on the header before attempting any pixel work.
+pub fn png_with_declared_dims(width: u32, height: u32) -> Vec<u8> {
+    let mut png = png(1, 1);
+    // Layout: 8-byte signature, then chunks of (4-byte BE len, 4-byte
+    // type, data, 4-byte CRC). IHDR is the first chunk and its data
+    // starts with width then height as u32 BE.
+    const IHDR_DATA: usize = 8 + 4 + 4;
+    png[IHDR_DATA..IHDR_DATA + 4].copy_from_slice(&width.to_be_bytes());
+    png[IHDR_DATA + 4..IHDR_DATA + 8].copy_from_slice(&height.to_be_bytes());
+    let chunk_len = u32::from_be_bytes(png[8..12].try_into().expect("chunk len")) as usize;
+    let crc_offset = 12 + 4 + chunk_len;
+    let crc = img::crc32(&png[12..crc_offset]);
+    png[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_be_bytes());
+    png
 }
 
 /// GET /api/metrics parsed into `name{labels} value` lines (HELP/TYPE

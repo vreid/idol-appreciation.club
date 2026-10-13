@@ -67,6 +67,8 @@ pub struct AppState {
     /// Bounded background re-render queue (single worker; see
     /// `tiles::RenderQueue`).
     pub render_queue: crate::tiles::RenderQueue,
+    /// Per-IP and per-(username, IP) token buckets for POST /api/auth/login.
+    pub login_limiter: crate::rate::LoginLimiter,
 }
 
 pub type App = Arc<AppState>;

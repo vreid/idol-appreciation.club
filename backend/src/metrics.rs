@@ -96,6 +96,8 @@ pub struct Metrics {
     s3_duration: [Histogram<12>; 2],
     /// Alpha-composited chunk writes during placements.
     chunk_composites: AtomicU64,
+    /// Login attempts rejected by the per-IP / per-(username, IP) limiter.
+    auth_rate_limited: AtomicU64,
 }
 
 pub const TILE_OUTCOMES: [&str; 6] = [
@@ -117,6 +119,7 @@ pub static METRICS: LazyLock<Metrics> = LazyLock::new(|| Metrics {
     s3_ops: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
     s3_duration: std::array::from_fn(|_| Histogram::new(WIDE_BUCKETS)),
     chunk_composites: AtomicU64::new(0),
+    auth_rate_limited: AtomicU64::new(0),
 });
 
 pub fn place_done(elapsed: Duration) {
@@ -155,6 +158,10 @@ pub const S3_OPS: [&str; 2] = ["get", "put"];
 
 pub fn chunk_composited() {
     METRICS.chunk_composites.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn auth_rate_limited() {
+    METRICS.auth_rate_limited.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Exposition of all series. `pool` supplies the sqlx connection gauges;
@@ -219,6 +226,14 @@ pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> Stri
     out.push_str(&format!(
         "chunk_composites_total {}\n",
         m.chunk_composites.load(Ordering::Relaxed)
+    ));
+
+    out.push_str(
+        "# HELP auth_rate_limited_total Login attempts rejected by the rate limiter.\n# TYPE auth_rate_limited_total counter\n",
+    );
+    out.push_str(&format!(
+        "auth_rate_limited_total {}\n",
+        m.auth_rate_limited.load(Ordering::Relaxed)
     ));
 
     out.push_str(

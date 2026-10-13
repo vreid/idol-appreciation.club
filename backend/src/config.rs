@@ -22,6 +22,11 @@ pub struct Config {
     pub cooldown_empty_secs: i64,
     /// Max accepted upload bytes for the `image` part.
     pub max_upload_bytes: usize,
+    /// Max decoded pixel count accepted for a placement source image.
+    /// Enforced on the image HEADER before any full decode, so tiny but
+    /// hugely-dimensioned uploads (decompression bombs) are rejected
+    /// without materializing their pixels.
+    pub max_decode_pixels: u64,
     pub min_size: i64,
     pub max_size: i64,
     /// Entries in the hot-tile LRU (zooms > 4; zooms <= 4 are unbounded —
@@ -87,6 +92,9 @@ impl Config {
             max_upload_bytes: env_or("MAX_UPLOAD_BYTES", "10485760")
                 .parse()
                 .expect("invalid MAX_UPLOAD_BYTES"),
+            max_decode_pixels: env_or("MAX_DECODE_PIXELS", "16777216")
+                .parse()
+                .expect("invalid MAX_DECODE_PIXELS"),
             min_size: env_or("MIN_SIZE", "16").parse().expect("invalid MIN_SIZE"),
             max_size: env_or("MAX_SIZE", "4096")
                 .parse()

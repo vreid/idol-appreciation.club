@@ -12,7 +12,13 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::LazyLock;
 use uuid::Uuid;
+
+/// Real argon2 verification cost for unknown usernames, so login timing
+/// does not distinguish existing accounts from missing ones.
+static DUMMY_HASH: LazyLock<String> =
+    LazyLock::new(|| hash_password("timing-pad-not-a-password").expect("dummy argon2 hash"));
 
 fn valid_username(u: &str) -> bool {
     let n = u.len();
@@ -143,7 +149,24 @@ pub struct LoginReq {
 }
 
 /// POST /api/auth/login → 200, sets session cookie.
-pub async fn login(State(app): State<App>, Json(req): Json<LoginReq>) -> AppResult<Response> {
+///
+/// Throttled per client IP and per (username, IP) pair: every attempt
+/// spends a token from both buckets; an empty bucket means 429 with
+/// Retry-After (counted in metrics). The per-username bucket bounds
+/// targeted guessing; the per-IP bucket bounds credential spraying.
+pub async fn login(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(req): Json<LoginReq>,
+) -> AppResult<Response> {
+    let ip = crate::rate::client_ip(&headers);
+    // LoginReq.username is not length-validated; clamp the bucket key.
+    let username_key = format!("u:{}", &req.username[..req.username.len().min(64)]);
+    let ip_key = format!("ip:{ip}");
+    if let Err(retry) = app.login_limiter.acquire([&ip_key, &username_key]) {
+        crate::metrics::auth_rate_limited();
+        return Err(AppError::Cooldown(retry));
+    }
     let row: Option<(Uuid, String, bool, bool)> = sqlx::query_as(
         "SELECT id, password_hash, approved, is_admin FROM accounts WHERE username = $1",
     )
@@ -151,6 +174,9 @@ pub async fn login(State(app): State<App>, Json(req): Json<LoginReq>) -> AppResu
     .fetch_optional(&app.pool)
     .await?;
     let Some((id, hash, approved, is_admin)) = row else {
+        // Burn the same argon2 cost a real account would, so response
+        // timing cannot enumerate usernames.
+        verify_password(&DUMMY_HASH, &req.password);
         return Err(AppError::Unauthorized);
     };
     if !verify_password(&hash, &req.password) {

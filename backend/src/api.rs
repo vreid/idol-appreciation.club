@@ -56,6 +56,18 @@ pub struct NearPlacement {
     pub created_at: DateTime<Utc>,
 }
 
+/// Max entries a dig stack returns; a deeper stack reports `truncated`.
+pub const DIG_STACK_CAP: usize = 64;
+
+/// One stratum in a dig stack: the placement plus its 1-based depth
+/// (1 = topmost / newest at the point).
+#[derive(serde::Serialize)]
+pub struct DigEntry {
+    pub depth: u32,
+    #[serde(flatten)]
+    pub placement: NearPlacement,
+}
+
 /// GET /api/placements/near?x=&y=&r= — placements whose bbox (the AABB of
 /// the rotated rect) intersects the query rect [x−r, x+r) × [y−r, y+r),
 /// newest first.
@@ -118,6 +130,72 @@ impl CenterCandidate {
             crate::world::CENTER_Y,
         )
     }
+}
+
+/// GET /api/dig?x=&y= — the wheel-dig stack: every placement whose
+/// ROTATED rect contains the point, newest-first (depth 1 = topmost).
+/// Candidates come from the GiST bbox (`@>` on the AABB), membership is
+/// refined with the exact rotated hit-test. Bounded: at most
+/// [`DIG_STACK_CAP`] entries; `truncated` reports a cut stack. Auth-free
+/// read. ETag = the global placement-seq counter — the same generator the
+/// tile reads' staleness marker derives from — so a revalidation with a
+/// matching If-None-Match is a cheap 304, and any new placement
+/// invalidates every outstanding stack at once.
+pub async fn dig(
+    State(app): State<App>,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let x: i64 = parse_param(&params, "x")?;
+    let y: i64 = parse_param(&params, "y")?;
+    if x < 0 || y < 0 || x >= crate::world::WORLD_PX || y >= crate::world::WORLD_PX {
+        return Err(AppError::BadRequest("x and y must be within world bounds"));
+    }
+    let rows = sqlx::query_as::<_, NearPlacement>(
+        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at
+         FROM placements p
+         JOIN accounts a ON a.id = p.account_id
+         WHERE p.removed_at IS NULL
+           AND p.bbox @> point($1::float8, $2::float8)
+         ORDER BY p.seq DESC",
+    )
+    .bind(x as f64)
+    .bind(y as f64)
+    .fetch_all(&app.pool)
+    .await?;
+    let covering: Vec<NearPlacement> = rows
+        .into_iter()
+        .filter(|p| {
+            crate::world::rotated_contains(p.x, p.y, i64::from(p.w), i64::from(p.h), p.rot, x, y)
+        })
+        .collect();
+    let total = covering.len();
+    let truncated = total > DIG_STACK_CAP;
+    let stack: Vec<DigEntry> = covering
+        .into_iter()
+        .take(DIG_STACK_CAP)
+        .enumerate()
+        .map(|(i, placement)| DigEntry {
+            depth: (i + 1) as u32,
+            placement,
+        })
+        .collect();
+    let (seq,): (i64,) = sqlx::query_as("SELECT last_value FROM placement_seq")
+        .fetch_one(&app.pool)
+        .await?;
+    let etag = format!("\"{seq}\"");
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        == Some(&etag)
+    {
+        return Ok(StatusCode::NOT_MODIFIED.into_response());
+    }
+    let body = json!({ "stack": stack, "total": total, "truncated": truncated });
+    let mut resp = (StatusCode::OK, Json(body)).into_response();
+    resp.headers_mut()
+        .insert(header::ETAG, etag.parse().expect("etag header"));
+    Ok(resp)
 }
 
 /// GET /api/center — current holder of the world center and the top 10

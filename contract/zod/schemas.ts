@@ -89,6 +89,28 @@ export const placementSchema = z.object({
 
 export const placementsNearSchema = z.array(placementSchema);
 
+/** One stratum in a /api/dig stack: a placement plus its 1-based dig
+ * depth (1 = topmost / newest at the point). */
+export const digEntrySchema = z.object({
+  id: z.string(),
+  username: z.string(),
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+  rot: z.number(),
+  created_at: z.string(),
+  depth: z.number(),
+});
+
+/** GET /api/dig response. `stack` is newest-first, capped at 64 entries;
+ * `total` is the full stack size; `truncated` reports a cut stack. */
+export const digStackSchema = z.object({
+  stack: z.array(digEntrySchema),
+  total: z.number(),
+  truncated: z.boolean(),
+});
+
 /** 201 response of POST /api/place. */
 export const placedPlacementSchema = z.object({
   id: z.string(),

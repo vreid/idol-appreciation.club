@@ -1004,6 +1004,123 @@ async fn max_long_edge_is_4096() {
     assert_eq!(resp.status, 400);
 }
 
+// -------------------------------------------------------------------------
+// GET /api/dig — the wheel-dig stack
+
+async fn dig(server: &Server, x: i64, y: i64) -> Resp {
+    request(server, "GET", &format!("/api/dig?x={x}&y={y}"), &[], vec![]).await
+}
+
+/// Newest-first stack with 1-based depth: three overlapping placements at
+/// a point dig as 3-of-3 with depth 1 = last placed; a rect whose AABB
+/// covers the point but whose rotated pixels do not is excluded; removal
+/// drops a stratum; out-of-world points are 400.
+#[tokio::test]
+async fn dig_returns_newest_first_stack() {
+    let server = start_server(0, 0, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "digger").await;
+    let img = png(32, 32);
+
+    let first = place(&server, &cookie, &img, 1000, 1000, 32).await;
+    assert_eq!(
+        first.status,
+        201,
+        "{}",
+        String::from_utf8_lossy(&first.body)
+    );
+    let second = place(&server, &cookie, &img, 1000, 1000, 32).await;
+    assert_eq!(second.status, 201);
+    // Same AABB (45° rotation of a 32x32 covers a superset region), but
+    // the exact hit-test must decide: the point (1031, 1000) lies inside
+    // the axis-aligned rects yet OUTSIDE both 0-rot rects (x .. x+32 ends
+    // at 1031, half-open) — use a point all three truly cover instead.
+    let rotated = place_rot(&server, &cookie, &img, 1000, 1000, 32, Some(45.0)).await;
+    assert_eq!(rotated.status, 201);
+
+    // (1016, 1016) is the center region: inside all three rects.
+    let resp = dig(&server, 1016, 1016).await;
+    assert_eq!(resp.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+    let stack = body["stack"].as_array().unwrap();
+    assert_eq!(body["total"], 3);
+    assert_eq!(body["truncated"], false);
+    assert_eq!(stack.len(), 3);
+    assert_eq!(stack[0]["depth"], 1);
+    assert_eq!(stack[0]["seq"], rotated.json()["seq"], "topmost = newest");
+    assert_eq!(stack[2]["depth"], 3);
+    assert_eq!(stack[2]["seq"], first.json()["seq"], "bottom = oldest");
+    assert_eq!(stack[0]["username"], "digger");
+    for entry in stack {
+        assert!(entry["id"].is_string());
+        assert!(entry["created_at"].is_string());
+    }
+
+    // AABB-covers-but-rotated-misses: (1000, 1031) is inside the 45°
+    // rect's AABB corner but outside its rotated pixels; both unrotated
+    // 32x32 rects still cover it, so exactly the two of them dig up.
+    let corner = dig(&server, 1000, 1031).await;
+    let corner_body: serde_json::Value = serde_json::from_slice(&corner.body).unwrap();
+    assert_eq!(corner_body["total"], 2);
+
+    // Off-world coordinates are rejected.
+    assert_eq!(dig(&server, -1, 0).await.status, 400);
+    assert_eq!(dig(&server, 0, 1 << 30).await.status, 400);
+}
+
+/// Removal drops the stratum; ETag follows the placement seq: matching
+/// If-None-Match is a 304, a new placement changes it.
+#[tokio::test]
+async fn dig_etag_tracks_placement_seq() {
+    let server = start_server(0, 0, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "etagdig").await;
+    let img = png(32, 32);
+    let first = place(&server, &cookie, &img, 500, 500, 32).await;
+    assert_eq!(first.status, 201);
+
+    let resp = dig(&server, 516, 516).await;
+    let etag = resp.header("etag").expect("etag").to_string();
+    assert_eq!(resp.header("etag"), Some(etag.as_str()));
+    let again = request(
+        &server,
+        "GET",
+        "/api/dig?x=516&y=516",
+        &[("If-None-Match", &etag)],
+        vec![],
+    )
+    .await;
+    assert_eq!(again.status, 304);
+
+    // A new placement moves the global seq → fresh stack, new etag.
+    let second = place(&server, &cookie, &img, 516, 500, 32).await;
+    assert_eq!(second.status, 201);
+    let resp = request(
+        &server,
+        "GET",
+        "/api/dig?x=516&y=516",
+        &[("If-None-Match", &etag)],
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+    assert_eq!(body["total"], 2);
+
+    // Admin removal drops the removed stratum from the stack.
+    let id = first.json()["id"].as_str().unwrap().to_string();
+    let del = request(
+        &server,
+        "DELETE",
+        &format!("/api/admin/placements/{id}"),
+        &[("Cookie", &cookie)],
+        vec![],
+    )
+    .await;
+    assert_eq!(del.status, 204, "{}", String::from_utf8_lossy(&del.body));
+    let resp = dig(&server, 516, 516).await;
+    let body: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+    assert_eq!(body["total"], 1);
+}
+
 // Ignored by default: cold-pyramid render timing for the parallel-children
 // change (`-- --ignored --nocapture`). Places one image near the center,
 // then times the first GET of the z0 tile — the spine render resolves 4

@@ -213,7 +213,7 @@ PYEOF
   else
     echo "==> Center not covered — placing 01-solo on 0/0 from the seed account"
     dims=$(scaled_size "$F01"); pw=${dims%x*}; ph=${dims#*x}
-    place_cell 0 "$F01" $(( CX - pw / 2 )) $(( CY - ph / 2 )) "center"
+    place_cell 0 "$F01" $(( CX - pw / 2 )) $(( CY - ph / 2 )) "center" || true
     [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || { echo "ABORT: $FAIL_LIMIT consecutive failures" >&2; exit 1; }
   fi
 
@@ -238,7 +238,7 @@ PYEOF
       else
         ai=0
       fi
-      place_cell "$ai" "$f" "$x" "$y" "$tag"
+      place_cell "$ai" "$f" "$x" "$y" "$tag" || true # failures counted, not fatal (see abort below)
       [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || {
         echo "ABORT: $FAIL_LIMIT consecutive non-201s (resume with the same command)" >&2; exit 1; }
       [ "$DRY_RUN" = "1" ] || sleep "$SEED_SLEEP"

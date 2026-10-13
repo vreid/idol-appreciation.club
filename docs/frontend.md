@@ -123,6 +123,20 @@ lines**.
   ETag/no-cache, so the refetch is a cheap conditional GET.
 - Popup query radius: `256 * 2^(16 - z)` clamped to `[256, 65536]`.
 
+## URL view state (`#z/x/y`)
+
+- The map view is linkable: `#16/0/0` = zoom 16 centred on the world centre;
+  `#18/-1280/512` = 1280 px left of and 512 px below 0/0 (signed world-px
+  offsets, y down). Encoder/decoder: `src/lib/urlView.ts`.
+- On load a valid hash beats the default centred view; malformed/missing falls
+  back to it. Zoom is clamped to 0..20 on both parse and encode.
+- After move/zoom settles (250 ms debounce) the view is written back with
+  `history.replaceState` — integer px, no history spam.
+- `hashchange`/`popstate` (manual hash edits, Back/Forward) re-apply the hash to
+  the map; the write-back skips the view it just applied. Wiring lives in
+  `src/lib/urlViewState.ts` (`wireUrlViewState(map)`), invoked from
+  `createWorldMap`.
+
 ## Rotation semantics
 
 - `Placement.rot` is degrees clockwise, 0 = upright; `x, y, w, h` stay the

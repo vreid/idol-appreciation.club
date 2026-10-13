@@ -16,6 +16,7 @@ import {
   worldToLatLng,
   type BBox,
 } from "./world";
+import { wireUrlViewState } from "./urlViewState";
 import {
   makeGhostState,
   positionGhost,
@@ -292,7 +293,7 @@ export function createWorldMap(
   }).addTo(map);
 
   const stopCentering = wireWorldCentering(map);
-  map.setView(worldToLatLng(WORLD_CENTER, WORLD_CENTER), 16);
+  const stopUrlView = wireUrlViewState(map);
 
   const internal: MapInternals = {
     map,
@@ -350,6 +351,7 @@ export function createWorldMap(
 
     destroy(): void {
       stopCentering();
+      stopUrlView();
       ghost.el?.remove();
       ghost.el = null;
       map.remove();

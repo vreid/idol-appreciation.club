@@ -57,6 +57,9 @@ export function createAppStore(
   const [registrationPending, setRegistrationPending] = createSignal(false);
   const [authError, setAuthError] = createSignal("");
   const [adminPending, setAdminPending] = createSignal<PendingAccount[]>([]);
+  const [selectedPlace, setSelectedPlace] = createSignal<Placement | null>(
+    null,
+  );
 
   const toastHub = createToastHub(deps);
   const { push: pushToast, dismiss: dismissToast } = toastHub;
@@ -172,6 +175,15 @@ export function createAppStore(
     },
     get placeMode() {
       return placeMode();
+    },
+    get selectedPlace() {
+      return selectedPlace();
+    },
+    selectPlace(placement: Placement): void {
+      setSelectedPlace(placement);
+    },
+    deselectPlace(): void {
+      setSelectedPlace(null);
     },
     get prepared() {
       return prepared();

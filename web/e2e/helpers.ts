@@ -35,11 +35,16 @@ export async function backendHealthy(
 export const SKIP_UNHEALTHY =
   "backend /api/health is not ok:true — skipping live E2E";
 
-/** Registers (or reuses) the bot account and logs in. Returns the username. */
+/**
+ * Registers (or reuses) the bot account and logs in. Returns the username.
+ * Pass `name` to share one identity across tests (e.g. to keep first-account
+ * admin rights); defaults to a stable per-run unique name.
+ */
 export async function registerAndLogin(
   request: APIRequestContext,
+  name: string = uniqueBotName(),
 ): Promise<string> {
-  const username = uniqueBotName();
+  const username = name;
   const register = await request.post("/api/auth/register", {
     data: { username, password: BOT_PASSWORD },
   });

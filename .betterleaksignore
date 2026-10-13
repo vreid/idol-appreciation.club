@@ -1,0 +1,35 @@
+# betterleaks fingerprint allowlist (generated from scan reports).
+# Git-history entries: commit:file:rule:line (immutable).
+# Filesystem entries: file:rule:line (regenerate after fixture edits —
+# see .betterleaks.toml for the commands). All allowlisted values are
+# committed test fixtures verified not to be real credentials.
+
+# git history
+5579629ce491dd17b11d8d8db8b5c400ff0f00c0:web/e2e/helpers.ts:generic-password:9
+5937089ae9615814b8e8a6378bc44990b7126e97:docs/backend.md:generic-credential-uri:184
+6979de675d54e809cca4cc4c8f46eba7ef1ac922:web/src/lib/api.test.ts:generic-password:56
+6f577d8ff7a1486cf163bf6388ae99f23fc883f4:backend/tests/integration.rs:generic-password:186
+6f577d8ff7a1486cf163bf6388ae99f23fc883f4:backend/tests/integration.rs:generic-password:223
+6f577d8ff7a1486cf163bf6388ae99f23fc883f4:backend/tests/integration.rs:generic-password:232
+6f577d8ff7a1486cf163bf6388ae99f23fc883f4:backend/tests/integration.rs:generic-password:244
+7debc7b3da047c71151e7ccb4bcda4d310399b8d:backend/tests/integration.rs:generic-password:722
+7debc7b3da047c71151e7ccb4bcda4d310399b8d:backend/tests/integration.rs:generic-password:733
+b63925c2c749aa6774f8814919cec61ead00dcfc:backend/scripts/smoke.sh:generic-password:122
+b63925c2c749aa6774f8814919cec61ead00dcfc:backend/scripts/smoke.sh:generic-password:72
+d4829c8b63c735108d84ba75aa4b1fbd2e3271be:backend/tests/integration.rs:generic-password:722
+d4829c8b63c735108d84ba75aa4b1fbd2e3271be:backend/tests/integration.rs:generic-password:733
+e8d22d8e528fa273483e1d20916380daadfc6e40:backend/tests/integration.rs:generic-password:722
+e8d22d8e528fa273483e1d20916380daadfc6e40:backend/tests/integration.rs:generic-password:733
+
+# working tree
+backend/scripts/smoke.sh:generic-password:122
+backend/scripts/smoke.sh:generic-password:72
+backend/tests/integration.rs:generic-password:206
+backend/tests/integration.rs:generic-password:243
+backend/tests/integration.rs:generic-password:252
+backend/tests/integration.rs:generic-password:264
+backend/tests/integration.rs:generic-password:737
+backend/tests/integration.rs:generic-password:748
+docs/backend.md:generic-credential-uri:216
+web/e2e/helpers.ts:generic-password:14
+web/src/lib/api.test.ts:generic-password:76

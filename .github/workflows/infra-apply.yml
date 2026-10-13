@@ -31,19 +31,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      # mise first: the composite's tofu init needs tofu on PATH.
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      # Restores the tofu local backend (state + plugins) from the Actions
+      # cache and runs tofu init.
       - uses: ./.github/actions/tofu-setup
-      - name: tofu validate
-        run: tofu validate
-        working-directory: tofu
-      - name: tofu apply
-        # First apply can abort on provider read races (e.g. managed DB
-        # "waiting for service name to propagate") after resources were
-        # created; a second pass converges. Honest retry, not masking:
-        # a second failure still fails the job.
-        run: |
-          tofu apply -auto-approve -input=false || \
-            tofu apply -auto-approve -input=false
-        working-directory: tofu
+      - name: tofu validate + apply
+        run: task tofu:apply
       - name: Report non-sensitive outputs
         run: |
           {

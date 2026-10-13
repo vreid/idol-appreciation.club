@@ -26,6 +26,7 @@ use std::sync::Arc;
 /// bus) and return the app state plus the fully wired router.
 pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum::Router)> {
     img::init()?;
+    img::set_max_decode_bytes(cfg.max_decode_bytes);
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(20)
         .acquire_timeout(std::time::Duration::from_secs(10))

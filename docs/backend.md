@@ -92,7 +92,15 @@ are `!Send`, so no image ever crosses an `.await`):
 1. Decode upload (magic-byte sniffing via the loader name; jpeg/png/webp/
    gif/avif-heif accepted; unknown → 400). Animated input collapses to frame 0;
    EXIF orientation is applied manually (the crate has no autorotate binding);
-   result normalized to RGBA sRGB.
+   result normalized to RGBA sRGB. **Decompression-bomb guard:**
+   `MAX_UPLOAD_BYTES` bounds only the _compressed_ upload, so the decode is
+   gated on the image's _declared_ dimensions (read from the lazy header, before
+   `image_copy_memory` materializes anything): `w × h × 4` over
+   `MAX_DECODE_BYTES` (default 256 MiB ≈ 64 MPx) is a `413`. A 8000×6000 (48
+   MPx) phone source passes; a 20000×20000 (400 MPx) header is rejected without
+   decoding a pixel. Chunk/tile blobs read back from object storage go through
+   `new_from_buffer` directly rather than `decode`, and are deliberately NOT
+   gated here: they are written by this server at fixed 1024²/256² sizes.
 2. **Strip + re-save in the source codec**: jpeg → `.jpg[Q=90,strip=TRUE]`, png
    → `.png[strip=TRUE]`, webp → `.webp[Q=90,strip=TRUE]`, gif →
    `.gif[strip=TRUE]`, avif → `.avif[Q=90,compression=av1,strip=TRUE]`. sha256
@@ -352,9 +360,9 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `S3_SECRET_ACCESS_KEY`, `SESSION_SECRET` (≥ 32 bytes). Optional with defaults:
 `LISTEN_ADDR=0.0.0.0:8080`, `PUBLIC_BASE_URL`, `STATIC_DIR=../web/dist`,
 `COOLDOWN_PAINT_SECS=300`, `COOLDOWN_EMPTY_SECS=1`, `MAX_UPLOAD_BYTES=10485760`,
-`MIN_SIZE=16`, `MAX_SIZE=4096`, `TILE_CACHE_ENTRIES=2048`,
-`TILE_RENDER_QUIET_SECS=4`, `TILE_RENDER_MAX_DELAY_SECS=12`,
-`TILE_RENDER_QUEUE_CAP=512`, `RUST_LOG=info`,
+`MAX_DECODE_BYTES=268435456`, `MIN_SIZE=16`, `MAX_SIZE=4096`,
+`TILE_CACHE_ENTRIES=2048`, `TILE_RENDER_QUIET_SECS=4`,
+`TILE_RENDER_MAX_DELAY_SECS=12`, `TILE_RENDER_QUEUE_CAP=512`, `RUST_LOG=info`,
 `REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
 signups behind admin approval).
 

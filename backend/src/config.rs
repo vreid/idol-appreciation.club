@@ -22,6 +22,10 @@ pub struct Config {
     pub cooldown_empty_secs: i64,
     /// Max accepted upload bytes for the `image` part.
     pub max_upload_bytes: usize,
+    /// Max decoded raster size of one upload, in bytes (`w × h × 4`, RGBA).
+    /// This bounds what a small upload may expand to, i.e. it is the
+    /// decompression-bomb defense; default 256 MiB ≈ 64 MPx.
+    pub max_decode_bytes: u64,
     pub min_size: i64,
     pub max_size: i64,
     /// Entries in the hot-tile LRU (zooms > 4; zooms <= 4 are unbounded —
@@ -87,6 +91,9 @@ impl Config {
             max_upload_bytes: env_or("MAX_UPLOAD_BYTES", "10485760")
                 .parse()
                 .expect("invalid MAX_UPLOAD_BYTES"),
+            max_decode_bytes: env_or("MAX_DECODE_BYTES", "268435456")
+                .parse()
+                .expect("invalid MAX_DECODE_BYTES"),
             min_size: env_or("MIN_SIZE", "16").parse().expect("invalid MIN_SIZE"),
             max_size: env_or("MAX_SIZE", "4096")
                 .parse()

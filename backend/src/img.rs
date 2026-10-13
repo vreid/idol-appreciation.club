@@ -17,6 +17,7 @@ use libvips::ops;
 pub use libvips::VipsImage;
 
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Paper background tiles render on.
 pub const PAPER: [f64; 3] = [244.0, 240.0, 232.0];
@@ -46,6 +47,35 @@ pub fn init() -> anyhow::Result<()> {
         std::mem::forget(app);
     });
     Ok(())
+}
+
+/// Default ceiling on one decode's raster: 256 MiB ≈ 64 MPx RGBA.
+///
+/// A 8000×6000 (48 MPx) phone/DSLR upload — 192 MiB of raster — passes with
+/// headroom, while a 30000×30000 (900 MPx, ~3.4 GiB) PNG bomb does not. See
+/// [`decode`] for why the *declared* size is what gets checked.
+pub const DEFAULT_MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Ceiling on a single decode's raster, in bytes (`w × h × 4`; uploads are
+/// normalized to RGBA). Seeded from `MAX_DECODE_BYTES` at startup.
+static MAX_DECODE_BYTES: AtomicU64 = AtomicU64::new(DEFAULT_MAX_DECODE_BYTES);
+
+/// Set the decode ceiling (called once from `build_app` with
+/// `Config::max_decode_bytes`). Clamped to at least 1 byte.
+pub fn set_max_decode_bytes(bytes: u64) {
+    MAX_DECODE_BYTES.store(bytes.max(1), Ordering::Relaxed);
+}
+
+/// The current decode ceiling, in bytes.
+pub fn max_decode_bytes() -> u64 {
+    MAX_DECODE_BYTES.load(Ordering::Relaxed)
+}
+
+/// Would a `width × height` RGBA (4 B/px) raster fit inside `budget` bytes?
+/// Saturating: absurd dimensions must fail the check, never wrap it.
+fn decoded_fits(width: i32, height: i32, budget: u64) -> bool {
+    let px = (width.max(0) as u64).saturating_mul(height.max(0) as u64);
+    px.saturating_mul(4) <= budget
 }
 
 /// Apply EXIF orientation manually (the crate has no autorotate binding).
@@ -104,7 +134,21 @@ pub fn get_pixel(img: &VipsImage, x: i32, y: i32) -> [u8; 3] {
     [p[0] as u8, p[1] as u8, p[2] as u8]
 }
 
+/// Decode an uploaded image into a single-frame, upright RGBA raster, under
+/// the configured [`max_decode_bytes`] ceiling.
 pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
+    decode_with_budget(bytes, max_decode_bytes())
+}
+
+/// [`decode`] with an explicit raster budget (the ceiling is a process-wide
+/// knob, so tests drive the budget directly).
+///
+/// The budget is checked against the **declared** dimensions on the lazy
+/// graph, before `image_copy_memory` materializes anything: `MAX_UPLOAD_BYTES`
+/// bounds the compressed upload, so the header is the only thing between a
+/// 1.6 MB file and a 3.6 GiB raster. `get_width`/`get_height` read the header
+/// only, so a rejected bomb costs nothing.
+fn decode_with_budget(bytes: &[u8], budget: u64) -> Result<(VipsImage, SourceFormat), AppError> {
     let _vips = VIPS.lock();
     let img = VipsImage::new_from_buffer(bytes, "")
         .map_err(|_| AppError::BadRequest("undecodable image"))?;
@@ -131,6 +175,11 @@ pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
         if page_h < img.get_height() {
             img = ops::extract_area(&img, 0, 0, img.get_width(), page_h)?;
         }
+    }
+    // Decompression-bomb guard: reject on the declared size of the frame we
+    // are about to materialize, before any pixels are decoded.
+    if !decoded_fits(img.get_width(), img.get_height(), budget) {
+        return Err(AppError::TooLarge);
     }
     // Normalize to RGBA so compositing and premultiply behave uniformly.
     let img = if !img.image_hasalpha() {
@@ -716,6 +765,137 @@ mod tests {
         assert_eq!(fmt, SourceFormat::Jpeg);
         assert_eq!(img.get_bands(), 4);
         assert_eq!((img.get_width(), img.get_height()), (32, 16));
+    }
+
+    /// A PNG whose IHDR declares `w × h` while its IDAT carries almost no
+    /// pixel data. libvips reads the header lazily, so this is exactly a
+    /// decompression bomb's shape: 69 bytes standing in for a multi-GB raster.
+    /// Built here rather than shipped as a fixture — and as bytes, not a hex
+    /// blob, since a 100+ character hex literal trips the repo's secret
+    /// scanner. (Verified byte-identical to a real `zlib`-generated PNG.)
+    fn declared_size_png(w: u32, h: u32) -> Vec<u8> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xffff_ffffu32;
+            for &b in data {
+                crc ^= u32::from(b);
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 {
+                        (crc >> 1) ^ 0xedb8_8320
+                    } else {
+                        crc >> 1
+                    };
+                }
+            }
+            !crc
+        }
+        fn chunk(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+            let mut crc_in = tag.to_vec();
+            crc_in.extend_from_slice(payload);
+            let mut out = Vec::with_capacity(payload.len() + 12);
+            out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            out.extend_from_slice(tag);
+            out.extend_from_slice(payload);
+            out.extend_from_slice(&crc32(&crc_in).to_be_bytes());
+            out
+        }
+        let mut ihdr = w.to_be_bytes().to_vec();
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA, no interlace
+                                                  // 12-byte zlib stream: a valid deflate header, far too little data
+                                                  // for the declared raster.
+        let idat = [
+            0x78u8, 0x9c, 0x63, 0x60, 0x20, 0x0e, 0x00, 0x00, 0x00, 0x28, 0x00, 0x01,
+        ];
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&chunk(b"IHDR", &ihdr));
+        png.extend_from_slice(&chunk(b"IDAT", &idat));
+        png.extend_from_slice(&chunk(b"IEND", &[]));
+        png
+    }
+
+    /// Plain arithmetic: realistic sources fit the default, bombs do not, the
+    /// boundary is exact, and absurd dimensions saturate rather than wrap.
+    #[test]
+    fn decoded_fits_bounds_the_raster() {
+        let budget = DEFAULT_MAX_DECODE_BYTES; // 256 MiB ≈ 64 MPx RGBA
+        assert!(
+            decoded_fits(8000, 6000, budget),
+            "a 48 MPx phone/DSLR source must fit (192 MiB)"
+        );
+        assert!(decoded_fits(6000, 4000, budget));
+        assert!(
+            !decoded_fits(30000, 30000, budget),
+            "a 900 MPx bomb is ~3.4 GiB of raster"
+        );
+        // Exact boundary, both sides.
+        let edge = 64 * 1024 * 1024; // 4096² × 4 == 64 MiB
+        assert!(decoded_fits(4096, 4096, edge));
+        assert!(!decoded_fits(4096, 4096, edge - 1));
+        // Degenerate / absurd inputs.
+        assert!(decoded_fits(0, 0, 0));
+        assert!(decoded_fits(-5, 10, 0));
+        assert!(!decoded_fits(i32::MAX, i32::MAX, u64::MAX / 2));
+    }
+
+    /// A 69-byte file declaring 20000×20000 must be rejected on its header,
+    /// with no pixels decoded: this is issue #83's bomb, and the rejection
+    /// must come from the size check rather than from a decode failure.
+    #[test]
+    fn decode_rejects_a_declared_decompression_bomb() {
+        if !vips() {
+            return;
+        }
+        let bomb = declared_size_png(20000, 20000);
+        assert_eq!(bomb.len(), 69, "the bomb is a header, not pixel data");
+
+        let err = decode(&bomb).expect_err("400 MPx must be rejected");
+        assert!(matches!(err, AppError::TooLarge), "got {err:?}");
+
+        // The rejection is size-driven, not an artifact of the truncated
+        // IDAT: the same 69-byte shape declaring a size that fits decodes on
+        // to a *different* error instead. (Asserted on the 6000×4000 header in
+        // `decode_budget_admits_real_sources_and_rejects_over_budget` — using
+        // the 20000×20000 one here would attempt a 1.5 GiB allocation.)
+    }
+
+    /// The budget is the decision: over it → `TooLarge`, under it → decoded.
+    #[test]
+    fn decode_budget_admits_real_sources_and_rejects_over_budget() {
+        if !vips() {
+            return;
+        }
+        // A real 256×256 raster is 256 KiB.
+        let png = red_png(256, 256);
+        let (img, _) = decode(&png).unwrap();
+        assert_eq!((img.get_width(), img.get_height()), (256, 256));
+        assert!(decode_with_budget(&png, 1 << 20).is_ok());
+        assert!(matches!(
+            decode_with_budget(&png, 64 << 10),
+            Err(AppError::TooLarge)
+        ));
+        // A 6000×4000 header (24 MPx, 96 MiB) needs a budget that covers it.
+        let big = declared_size_png(6000, 4000);
+        assert!(matches!(
+            decode_with_budget(&big, 32 << 20),
+            Err(AppError::TooLarge)
+        ));
+        assert!(!matches!(
+            decode_with_budget(&big, 256 << 20),
+            Err(AppError::TooLarge)
+        ));
+    }
+
+    /// The process-wide ceiling is settable (it is seeded from
+    /// `MAX_DECODE_BYTES` in `build_app`). Uses a value that still admits
+    /// every image the other tests decode, then restores it.
+    #[test]
+    fn max_decode_bytes_is_settable() {
+        let original = max_decode_bytes();
+        set_max_decode_bytes(64 << 20);
+        assert_eq!(max_decode_bytes(), 64 << 20);
+        set_max_decode_bytes(original);
+        assert_eq!(max_decode_bytes(), original);
+        assert_eq!(original, DEFAULT_MAX_DECODE_BYTES);
     }
 
     #[test]

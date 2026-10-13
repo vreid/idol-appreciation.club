@@ -1,221 +1,20 @@
 //! Full-flow integration tests against a real Postgres (testcontainers)
 //! and a filesystem object store. Skipped (with a loud message) when
-//! Docker is unavailable.
+//! Docker is unavailable. Harness lives in `tests/common`.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
+mod common;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
+use common::*;
 use idol_appreciation_club_backend::build_app;
 use idol_appreciation_club_backend::config::Config;
 use idol_appreciation_club_backend::img;
-use idol_appreciation_club_backend::state::App;
 use testcontainers_modules::postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-
-const WORLD: i64 = 268_435_456;
-const CENTER: i64 = 134_217_728;
-
-struct Server {
-    addr: SocketAddr,
-    _store_dir: PathBuf,
-    #[allow(dead_code)] // dropped at test end; container stops with it
-    container: testcontainers_modules::testcontainers::ContainerAsync<postgres::Postgres>,
-}
-
-struct Resp {
-    status: u16,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
-
-impl Resp {
-    fn json(&self) -> serde_json::Value {
-        serde_json::from_slice(&self.body).unwrap_or_default()
-    }
-    fn cookie(&self) -> Option<String> {
-        self.headers
-            .get("set-cookie")
-            .map(|v| v.split(';').next().unwrap_or_default().to_string())
-    }
-}
-
-async fn start_server(paint_secs: i64, empty_secs: i64, max_upload: usize) -> Server {
-    start_server_gated(false, paint_secs, empty_secs, max_upload).await
-}
-
-/// `approval_required = true` gates new signups behind admin approval.
-async fn start_server_gated(
-    approval_required: bool,
-    paint_secs: i64,
-    empty_secs: i64,
-    max_upload: usize,
-) -> Server {
-    // Pin a modern postgres: the module default is 11-alpine, too old for
-    // generated columns.
-    let container = postgres::Postgres::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start postgres container");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("container port");
-    let store_dir =
-        std::env::temp_dir().join(format!("idol-test-store-{}", uuid::Uuid::now_v7().simple()));
-    let cfg = Config {
-        listen_addr: "127.0.0.1:0".parse().unwrap(),
-        database_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
-        s3_endpoint: Some(format!("file://{}", store_dir.display())),
-        s3_bucket: "test-bucket".to_string(),
-        s3_access_key_id: None,
-        s3_secret_access_key: None,
-        session_secret: vec![b'x'; 32],
-        public_base_url: "http://localhost:8080".to_string(),
-        static_dir: PathBuf::from("/nonexistent-web-dist-for-tests"),
-        cooldown_paint_secs: paint_secs,
-        cooldown_empty_secs: empty_secs,
-        max_upload_bytes: max_upload,
-        min_size: 16,
-        max_size: 4096,
-        tile_cache_entries: 256,
-        registration_approval_required: approval_required,
-    };
-    let (state, app): (App, _) = build_app(cfg).await.expect("build app (pool + migrations)");
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await });
-    let _ = state; // kept alive by the spawned server
-    Server {
-        addr,
-        _store_dir: store_dir,
-        container,
-    }
-}
-
-/// Minimal HTTP/1.1 client over a raw socket (Connection: close).
-async fn request(
-    server: &Server,
-    method: &str,
-    path: &str,
-    headers: &[(&str, &str)],
-    body: Vec<u8>,
-) -> Resp {
-    let mut stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
-    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n");
-    if !body.is_empty() || method == "POST" || method == "DELETE" {
-        req.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    for (k, v) in headers {
-        req.push_str(&format!("{k}: {v}\r\n"));
-    }
-    req.push_str("\r\n");
-    stream.write_all(req.as_bytes()).await.unwrap();
-    stream.write_all(&body).await.unwrap();
-    let mut raw = Vec::new();
-    tokio::time::timeout(Duration::from_secs(20), stream.read_to_end(&mut raw))
-        .await
-        .expect("response within 20s")
-        .unwrap();
-    parse_response(&raw)
-}
-
-fn parse_response(raw: &[u8]) -> Resp {
-    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-    let head = String::from_utf8_lossy(&raw[..split]).to_string();
-    let body = raw[split + 4..].to_vec();
-    let mut lines = head.lines();
-    let status: u16 = lines
-        .next()
-        .unwrap()
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
-        }
-    }
-    Resp {
-        status,
-        headers,
-        body,
-    }
-}
-
-fn multipart(boundary: &str, fields: &[(&str, &str)], file: &[u8]) -> Vec<u8> {
-    let mut body = Vec::new();
-    for (name, value) in fields {
-        body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
-    }
-    body.extend_from_slice(
-        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"i.png\"\r\nContent-Type: image/png\r\n\r\n").as_bytes(),
-    );
-    body.extend_from_slice(file);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    body
-}
-
-fn place_body(image: &[u8], x: i64, y: i64, size: i64) -> (String, Vec<u8>) {
-    let boundary = format!("b{}", uuid::Uuid::now_v7().simple());
-    let body = multipart(
-        &boundary,
-        &[
-            ("x", &x.to_string()),
-            ("y", &y.to_string()),
-            ("size", &size.to_string()),
-        ],
-        image,
-    );
-    (boundary, body)
-}
-
-async fn place(server: &Server, cookie: &str, image: &[u8], x: i64, y: i64, size: i64) -> Resp {
-    let (boundary, body) = place_body(image, x, y, size);
-    let resp = request(
-        server,
-        "POST",
-        "/api/place",
-        &[
-            ("Cookie", cookie),
-            (
-                "Content-Type",
-                &format!("multipart/form-data; boundary={boundary}"),
-            ),
-        ],
-        body,
-    )
-    .await;
-    resp
-}
-
-async fn register(server: &Server, username: &str) -> String {
-    let resp = request(
-        server,
-        "POST",
-        "/api/auth/register",
-        &[("Content-Type", "application/json")],
-        format!(r#"{{"username":"{username}","password":"hunter2hunter2"}}"#).into_bytes(),
-    )
-    .await;
-    assert_eq!(resp.status, 201, "register {username}: {}", resp.body.len());
-    resp.cookie().expect("session cookie")
-}
-
-/// A valid small PNG via the image pipeline (opaque red square).
-fn png(width: u32, height: u32) -> Vec<u8> {
-    img::test_png(width, height)
-}
-
-// -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn auth_flows() {
@@ -480,12 +279,30 @@ async fn tiles_etag_staleness() {
     .await;
     assert_eq!(still.status, 304);
 
-    // Overlapping placement → ETag bumps to 2, bytes differ.
+    // Overlapping placement → the stored tile (seq 1) serves STALE
+    // immediately with the stored ETag + marker, and one background
+    // re-render converges the tile to seq 2.
     let second = place(&server, &c2, &png(96, 96), x + 16, x + 16, 96).await;
     assert_eq!(second.status, 201);
-    let t2 = request(&server, "GET", &tile20, &[], vec![]).await;
-    assert_eq!(t2.headers["etag"], "\"2\"");
+    let t2_stale = request(&server, "GET", &tile20, &[], vec![]).await;
+    assert_eq!(t2_stale.status, 200);
+    assert_eq!(t2_stale.headers["etag"], "\"1\"");
+    assert_eq!(t2_stale.headers["x-tile-stale"], "true");
+    assert_eq!(t2_stale.body, t1.body, "stale bytes are the stored ones");
+    // A conditional GET in the stale window still 304s against the stored
+    // ETag (bytes match — no waste), and the re-render is queued.
+    let still_cached = request(
+        &server,
+        "GET",
+        &tile20,
+        &[("If-None-Match", "\"1\"")],
+        vec![],
+    )
+    .await;
+    assert_eq!(still_cached.status, 304);
+    let t2 = tile_fresh(&server, &tile20, "\"2\"", Duration::from_secs(5)).await;
     assert_ne!(t2.body, t1.body);
+    assert_eq!(t2.headers.get("x-tile-stale"), None);
     // Old ETag no longer 304s.
     assert_eq!(
         request(
@@ -656,11 +473,11 @@ async fn admin_removal_updates_everything() {
         .json();
     assert_eq!(center["current"]["username"], "root");
 
-    // Tile freshness: the removed placement's chunk-region tile drops back.
+    // Tile freshness: the removed placement's chunk-region tile drops back
+    // (first GET serves stored stale bytes and queues the re-render).
     let tile20 = format!("/api/tiles/20/{}/{}.webp", CENTER / 256, CENTER / 256);
-    let tile = request(&server, "GET", &tile20, &[], vec![]).await;
+    let tile = tile_fresh(&server, &tile20, "\"1\"", Duration::from_secs(5)).await; // only the admin's placement remains
     assert_eq!(tile.status, 200);
-    assert_eq!(tile.headers["etag"], "\"1\""); // only the admin's placement remains
 
     // SSE delivered the remove event.
     let mut buf = vec![0u8; 8192];
@@ -1258,6 +1075,9 @@ async fn two_instance_composite_no_lost_update() {
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
+        tile_render_quiet_secs: 4,
+        tile_render_max_delay_secs: 12,
+        tile_render_queue_cap: 512,
         registration_approval_required: false,
     };
     let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");
@@ -1345,6 +1165,9 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
+        tile_render_quiet_secs: 4,
+        tile_render_max_delay_secs: 12,
+        tile_render_queue_cap: 512,
         registration_approval_required: false,
     };
     let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");

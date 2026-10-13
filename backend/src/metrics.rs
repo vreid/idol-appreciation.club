@@ -85,8 +85,12 @@ pub struct Metrics {
     place_requests: AtomicU64,
     place_duration: Histogram<12>,
     /// GET /api/tiles by resolution path.
-    tile_requests: [AtomicU64; 4],
-    tile_duration: [Histogram<12>; 4],
+    tile_requests: [AtomicU64; 6],
+    tile_duration: [Histogram<12>; 6],
+    /// Background re-render queue entries the worker completed (actual
+    /// renders and cheap already-fresh rechecks alike).
+    background_renders: AtomicU64,
+    background_render_duration: Histogram<12>,
     /// Object storage calls: [op=get, put][ok=false, true].
     s3_ops: [[AtomicU64; 2]; 2],
     s3_duration: [Histogram<12>; 2],
@@ -94,13 +98,22 @@ pub struct Metrics {
     chunk_composites: AtomicU64,
 }
 
-pub const TILE_OUTCOMES: [&str; 4] = ["hit_mem", "hit_s3", "render", "empty"];
+pub const TILE_OUTCOMES: [&str; 6] = [
+    "hit_mem",
+    "hit_s3",
+    "render",
+    "empty",
+    "stale_served",
+    "shed",
+];
 
 pub static METRICS: LazyLock<Metrics> = LazyLock::new(|| Metrics {
     place_requests: AtomicU64::new(0),
     place_duration: Histogram::new(WIDE_BUCKETS),
     tile_requests: std::array::from_fn(|_| AtomicU64::new(0)),
     tile_duration: std::array::from_fn(|_| Histogram::new(WIDE_BUCKETS)),
+    background_renders: AtomicU64::new(0),
+    background_render_duration: Histogram::new(WIDE_BUCKETS),
     s3_ops: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
     s3_duration: std::array::from_fn(|_| Histogram::new(WIDE_BUCKETS)),
     chunk_composites: AtomicU64::new(0),
@@ -125,6 +138,13 @@ pub fn tile_outcome(outcome: &str) -> usize {
         .expect("known tile outcome")
 }
 
+/// One background render-queue entry processed to completion.
+pub fn background_render_done(elapsed: Duration) {
+    let m = &*METRICS;
+    m.background_renders.fetch_add(1, Ordering::Relaxed);
+    m.background_render_duration.observe(elapsed);
+}
+
 pub fn s3_done(op: usize, ok: bool, elapsed: Duration) {
     let m = &*METRICS;
     m.s3_ops[op][usize::from(ok)].fetch_add(1, Ordering::Relaxed);
@@ -137,8 +157,9 @@ pub fn chunk_composited() {
     METRICS.chunk_composites.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Exposition of all series. `pool` supplies the sqlx connection gauges.
-pub fn render(pool: &sqlx::PgPool) -> String {
+/// Exposition of all series. `pool` supplies the sqlx connection gauges;
+/// the render-queue stats come straight from the live queue.
+pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> String {
     let m = &*METRICS;
     let mut out = String::with_capacity(4096);
 
@@ -201,6 +222,32 @@ pub fn render(pool: &sqlx::PgPool) -> String {
     ));
 
     out.push_str(
+        "# HELP tile_background_renders_total Background render-queue entries completed (renders and cheap already-fresh rechecks).\n# TYPE tile_background_renders_total counter\n",
+    );
+    out.push_str(&format!(
+        "tile_background_renders_total {}\n",
+        m.background_renders.load(Ordering::Relaxed)
+    ));
+    out.push_str(
+        "# HELP tile_background_render_duration_seconds Background render-queue entry processing time.\n# TYPE tile_background_render_duration_seconds histogram\n",
+    );
+    out.push_str(
+        &m.background_render_duration
+            .render("tile_background_render_duration_seconds", ""),
+    );
+
+    out.push_str(
+        "# HELP tile_render_queue_depth Background re-render queue length (coords waiting).\n# TYPE tile_render_queue_depth gauge\n",
+    );
+    out.push_str(&format!("tile_render_queue_depth {queue_depth}\n"));
+    out.push_str(
+        "# HELP tile_render_queue_dropped_total Enqueue attempts shed by the queue cap (retried by the next stale GET).\n# TYPE tile_render_queue_dropped_total counter\n",
+    );
+    out.push_str(&format!(
+        "tile_render_queue_dropped_total {queue_dropped}\n"
+    ));
+
+    out.push_str(
         "# HELP db_pool_connections sqlx connection pool state.\n# TYPE db_pool_connections gauge\n",
     );
     let idle = pool.num_idle();
@@ -230,7 +277,7 @@ mod tests {
         m.tile_duration[0].observe(Duration::from_millis(480));
         m.s3_ops[1][1].store(9, Ordering::Relaxed);
 
-        let text = render(&render_pool_stub());
+        let text = render(&render_pool_stub(), 3, 1);
 
         let mut histogram_inf = std::collections::HashMap::new();
         let mut histogram_count = std::collections::HashMap::new();
@@ -278,6 +325,11 @@ mod tests {
         assert!(text.contains("# TYPE place_duration_seconds histogram"));
         assert!(text.contains("# TYPE tile_requests_total counter"));
         assert!(text.contains("tile_requests_total{outcome=\"empty\"} 0"));
+        assert!(text.contains("tile_requests_total{outcome=\"stale_served\"} 0"));
+        assert!(text.contains("tile_requests_total{outcome=\"shed\"} 0"));
+        assert!(text.contains("tile_render_queue_depth 3"));
+        assert!(text.contains("tile_render_queue_dropped_total 1"));
+        assert!(text.contains("# TYPE tile_background_renders_total counter"));
         // The two observed samples must appear in the +Inf bucket, which
         // must equal _count for every series.
         let hit_mem_inf = histogram_inf

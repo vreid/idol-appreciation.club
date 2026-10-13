@@ -167,27 +167,110 @@ order always matches `seq` order):
 Both cooldown knobs (`COOLDOWN_PAINT_SECS`, `COOLDOWN_EMPTY_SECS`) are env-
 configurable with spec defaults.
 
-## Tile serving and staleness
+## Tile serving and admission control
 
 `GET /api/tiles/{z}/{x}/{y}.webp` (axum 0.8 has no suffix captures, so the last
-segment is a wildcard parsed as `<n>.webp`):
+segment is a wildcard parsed as `<n>.webp`). Resolution order:
 
-1. `maxSeq` over the tile bbox (GiST-backed) = expected ETag.
+1. `maxSeq` over the tile bbox (GiST-backed) = the expected ETag.
 2. In-memory cache keyed `(z, x, y, seq)` — `z ≤ 4` never evicts (341 tiles
    max), higher zooms use an LRU (`TILE_CACHE_ENTRIES`, 2048).
 3. Object-stored tiles are trusted only if the `tiles` table row's seq matches
-   the live maxSeq; otherwise render (leaf: chunk crop/scale; parent: four
-   children) and write through object + row + memory.
+   the live maxSeq.
+4. Render (leaf: chunk crop/scale; parent: four children — children always
+   resolve fresh, a parent render never bakes stale child bytes) and write
+   through object + row + memory.
 
 `ETag: "maxSeq"`, `Cache-Control: public, max-age=1, stale-while-revalidate=30`
-— three cooperating parts: `max-age=1` stops per-tile revalidation storms during
+— four cooperating parts: `max-age=1` stops per-tile revalidation storms during
 placement bursts, `stale-while-revalidate` serves tiles instantly while
-refreshing them in the background, and the SSE-driven client refetch bounds
-visible staleness to ~1s past a place/remove commit; the ETag keeps every
-revalidation a cheap 304 while the seq is unchanged. A GET computed after a
-placement commit always re-renders before serving, so a stale tile is never
-served _after_ the placement is visible. Removed art lowers maxSeq ⇒ ETag drops
-back and content re-renders from chunks.
+refreshing them in the background, the SSE-driven client refetch bounds visible
+staleness to ~1s past a place/remove commit, and (this change) the SERVER now
+stale-serves from stored bytes instead of rendering on the request path; the
+ETag keeps every revalidation a cheap 304 while the seq is unchanged. Removed
+art lowers maxSeq ⇒ the ETag drops back and content re-renders from chunks.
+
+### Server-side stale-while-revalidate (the pile-wedge fix)
+
+Motivation (prod, 2026-10-13): at a ~700-placement pile, every placement bumped
+the seq of every intersecting tile, so tile GETs over the dense area at low zoom
+required _fresh renders on the request path_. Four concurrent center-tile
+renders (z0/z8/z20) each pinned vips + a `spawn_blocking` thread for 15s+ and
+starved the placement pipeline: place latency went 4.3 s → 60 s timeouts while
+clients held the map open. Renders were unbounded and competed directly with
+placements for CPU and blocking-pool slots.
+
+Rule now: **a GET that has stale bytes available never renders.** When the
+stored tile exists but its seq is behind, the handler serves the stored bytes
+immediately with the stored seq as ETag plus `X-Tile-Stale: true`, and records
+demand for a re-render. Only a first-ever tile (no stored bytes at all) renders
+inline — a cold tile must produce something — see _shedding_ below for the flood
+exception. Conditional GETs keep working in the stale window: the stored ETag
+still 304s (bytes match), so a poller that already has the stale bytes costs
+nothing.
+
+### The render queue (`tile_render_jobs`)
+
+Demand is persisted in the `tile_render_jobs` table (migration 0005), one row
+per tile coord with `state ∈ pending | rendering | done`, `enqueued_at` (the
+max-delay anchor) and `last_bump_at` (the quiet anchor):
+
+- **Enqueue** (one CTE roundtrip from a stale GET): pending row → bump
+  `last_bump_at` (quiet reset, cap anchor preserved); `done` or absent →
+  (re-)insert fresh; `rendering` → no-op (the running render already covers
+  everything committed before it started; the next stale GET after it finishes
+  re-enqueues).
+- **Firing rule per coord: `min(quiet window, max delay)`.**
+  `TILE_RENDER_QUIET_SECS` (default 4 s): a tile no stale GET has re-requested
+  for this long fires — a burst of placements in one window folds into ONE
+  render at the latest seq. `TILE_RENDER_MAX_DELAY_SECS` (default 12 s): hard
+  cap since first enqueue, so a tile under _continuous_ bumps (a soak writing
+  into one area forever) still renders at a bounded rate instead of starving.
+  Tuning: raise the quiet window when placements cluster in bursts and clients
+  poll aggressively (more folding); keep `max_delay` ≈ 2–3× the quiet window —
+  it doubles as the worst-case staleness bound, and the background render
+  duration histogram should sit comfortably under it. A worker crash mid-render
+  leaves the row `rendering`; a 60 s lease makes it reclaimable, which is the
+  retry (natural backoff — failed renders are not hot-looped).
+- **One worker, one executor interface.** `spawn_render_worker` runs the default
+  in-process executor (`tiles::RenderExecutor`) — a single task, so at most ONE
+  background render runs at a time and renders can never monopolize vips or the
+  blocking pool. Pool-sizing math: tokio's blocking pool defaults to 512
+  threads; after the fix background renders occupy at most one slot, placement
+  composites stay bounded by the chunk locks (in-process keys + PG advisory
+  locks, see chunks), and vips eval runs with `concurrency_set(1)` per op (see
+  the libvips hardening rules above) — so placement pixel work always has
+  headroom; renders go through the queue ONLY, never a placement's path. The
+  deployment's `VIPS_CONCURRENCY=2` clamp (#68) bounds threads per pipeline
+  env-side; `concurrency_set(1)` overrides it for this service's in-process ops
+  and remains the belt to the env's suspenders — the env is the binding cap for
+  any future render-role worker that does not call `concurrency_set`. Render
+  preemption is deliberately not implemented: a single render's wall-time damage
+  is bounded by one worker slot + per-op vips concurrency.
+- **Bounds and drop policy.** `TILE_RENDER_QUEUE_CAP` (default 512) bounds
+  pending rows. Enqueue attempts beyond the cap are dropped — harmless, the next
+  stale GET re-enqueues, and tiles WITH stored bytes are immune (they were
+  already served stale on the spot). Tiles WITHOUT stored bytes use the depth as
+  a congestion signal: at capacity, a first-ever tile GET is shed with
+  `202 Accepted` + `Retry-After: 2` instead of rendering inline, so a
+  render-storm flood of unique cold tiles can't turn into an unbounded render
+  stampede (`no-store`, so nothing caches the 202). Empty tiles (`maxSeq` 0) are
+  a zero-cost constant and are served instantly even under congestion. The cap
+  is soft under enqueue races (a pre-statement snapshot count) — it is a flood
+  guard, not an accounting invariant.
+
+The table IS the queue so a future dedicated render node group (out-of-process
+worker Deployment, same image, render role, cheap 2c/2G nodes scaling 0..9) can
+consume the identical claim query — `state` + `FOR UPDATE SKIP LOCKED` is the
+entire coordination protocol, no advisory locks, and the read/serve path stays
+untouched. To migrate, stop spawning the in-process worker in that deployment
+and run the same loop from a render-role binary; multi-writer safety comes from
+the claim query, per-tile write races are last-write-wins on identical-content
+bytes (the same benignness that already makes cross-instance cold renders safe).
+
+Public flood surfaces, for the record: SSE connections and tile GETs are the
+unauthenticated surfaces a flood hits; placement writes stay bounded by the
+per-account cooldowns (and admin exemption is an explicit, auditable flag).
 
 ## Moderation
 
@@ -215,9 +298,18 @@ series is a pre-created atomic (no registry, no locks on the hot path) and
 
 - `place_requests_total`, `place_duration_seconds` histogram — full placement
   pipeline (multipart through NOTIFY), 201s only.
-- `tile_requests_total{outcome=hit_mem|hit_s3|render|empty}` +
+- `tile_requests_total{outcome=hit_mem|hit_s3|render|empty|stale_served|shed}` +
   `tile_duration_seconds{outcome}` histograms — counts every tile resolution
-  including parent-tile child fetches, not just HTTP GETs.
+  including parent-tile child fetches, not just HTTP GETs. `stale_served` =
+  stale-but-stored bytes served on the spot; `shed` = cold GETs answered `202`
+  by the render-queue cap.
+- `tile_background_renders_total` + `tile_background_render_duration_seconds` —
+  render-queue entries the worker completed (real renders and cheap
+  already-fresh rechecks). Keep the duration histogram comfortably under
+  `TILE_RENDER_MAX_DELAY_SECS`.
+- `tile_render_queue_depth` (gauge, pending rows) /
+  `tile_render_queue_dropped_total` (enqueue attempts shed by the cap or raced
+  with an in-flight render — the next stale GET retries them).
 - `s3_ops_total{op=get|put,ok=true|false}` + `s3_duration_seconds{op}`.
 - `chunk_composites_total` — chunk alpha-composites while placing.
 - `db_pool_connections{state=idle|in_use}` gauges from sqlx (`num_idle()` /
@@ -260,7 +352,9 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `S3_SECRET_ACCESS_KEY`, `SESSION_SECRET` (≥ 32 bytes). Optional with defaults:
 `LISTEN_ADDR=0.0.0.0:8080`, `PUBLIC_BASE_URL`, `STATIC_DIR=../web/dist`,
 `COOLDOWN_PAINT_SECS=300`, `COOLDOWN_EMPTY_SECS=1`, `MAX_UPLOAD_BYTES=10485760`,
-`MIN_SIZE=16`, `MAX_SIZE=4096`, `TILE_CACHE_ENTRIES=2048`, `RUST_LOG=info`,
+`MIN_SIZE=16`, `MAX_SIZE=4096`, `TILE_CACHE_ENTRIES=2048`,
+`TILE_RENDER_QUIET_SECS=4`, `TILE_RENDER_MAX_DELAY_SECS=12`,
+`TILE_RENDER_QUEUE_CAP=512`, `RUST_LOG=info`,
 `REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
 signups behind admin approval).
 
@@ -298,6 +392,10 @@ Tests:
   postgres 11, so the tests pin 16-alpine for generated columns).
 - `backend/scripts/smoke.sh [IMAGE]` — boots postgres + minio + the built image
   and proves register → place → 429 → tiles → center → SSE end to end.
+- `backend/scripts/load_tile_swr.sh [N]` — dense-pile load test (default 700
+  placements in one area): builds the pile, then hammers z0 while placing
+  concurrently; prints phase latency stats and asserts placements stay sub-2s
+  and z0 stale-serves at ms latency (the pile-wedge regression test).
 - `S3_LIVE_CHECK=1 cargo test --test s3_live -- --ignored` — roundtrip against
   the REAL bucket (plus normal `S3_*` env); exercises the production buffered
   known-length PUT path (UpCloud rejects streamed/chunked SigV4 PUTs). Skipped

@@ -26,7 +26,11 @@ pub async fn metrics(State(state): State<App>) -> impl IntoResponse {
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        crate::metrics::render(&state.pool),
+        crate::metrics::render(
+            &state.pool,
+            state.render_queue.depth().await,
+            state.render_queue.dropped(),
+        ),
     )
 }
 

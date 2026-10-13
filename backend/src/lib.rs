@@ -35,6 +35,7 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
     let store = store::from_config(&cfg)?;
     let (events_tx, _) = tokio::sync::broadcast::channel(1024);
 
+    let render_queue = tiles::RenderQueue::new(pool.clone(), cfg.tile_render_queue_cap);
     let state = Arc::new(AppState {
         tile_cache: tiles::TileCache::new(cfg.tile_cache_entries),
         pool,
@@ -42,6 +43,7 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         chunk_locks: KeyLocks::new(),
         events_tx: events_tx.clone(),
         tile_locks: KeyLocks::new(),
+        render_queue,
         cfg,
     });
 
@@ -49,6 +51,7 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         state.pool.clone(),
         events_tx.clone(),
     ));
+    tiles::spawn_render_worker(&state);
 
     Ok((state.clone(), router::router(state)))
 }

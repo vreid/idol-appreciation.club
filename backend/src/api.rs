@@ -166,16 +166,17 @@ pub async fn admin_list_accounts(
 ) -> AppResult<Response> {
     crate::auth::require_admin(&app, admin_id).await?;
     let sql = if q.pending == Some(true) {
-        "SELECT username, created_at FROM accounts WHERE NOT approved ORDER BY created_at ASC, id ASC"
+        "SELECT username, created_at, cooldown_exempt FROM accounts WHERE NOT approved ORDER BY created_at ASC, id ASC"
     } else {
-        "SELECT username, created_at FROM accounts ORDER BY created_at ASC, id ASC"
+        "SELECT username, created_at, cooldown_exempt FROM accounts ORDER BY created_at ASC, id ASC"
     };
-    let rows: Vec<(String, DateTime<Utc>)> = sqlx::query_as(sql).fetch_all(&app.pool).await?;
+    let rows: Vec<(String, DateTime<Utc>, bool)> = sqlx::query_as(sql).fetch_all(&app.pool).await?;
     Ok(Json(json!(rows
         .into_iter()
-        .map(|(username, created_at)| json!({
+        .map(|(username, created_at, cooldown_exempt)| json!({
             "username": username,
             "created_at": created_at,
+            "cooldown_exempt": cooldown_exempt,
         }))
         .collect::<Vec<_>>()))
     .into_response())
@@ -202,6 +203,32 @@ pub async fn admin_approve(
         return Err(AppError::NotFound);
     }
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+/// POST /api/admin/accounts/{username}/cooldown-exempt with
+/// {"exempt": true|false} → 204 (idempotent; 404 unknown user). Exempt
+/// accounts skip both placement cooldowns.
+pub async fn admin_cooldown_exempt(
+    State(app): State<App>,
+    Authed(admin_id): Authed,
+    axum::extract::Path(username): axum::extract::Path<String>,
+    Json(req): Json<ExemptReq>,
+) -> AppResult<Response> {
+    crate::auth::require_admin(&app, admin_id).await?;
+    let result = sqlx::query("UPDATE accounts SET cooldown_exempt = $1 WHERE username = $2")
+        .bind(req.exempt)
+        .bind(&username)
+        .execute(&app.pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ExemptReq {
+    pub exempt: bool,
 }
 
 /// POST /api/reports → 204.

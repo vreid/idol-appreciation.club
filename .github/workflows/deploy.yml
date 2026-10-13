@@ -293,7 +293,7 @@ jobs:
           dbuuid="$(jq -r 'if type == "array" then . else [.database_services[]?] end | map(select(.name == "idol-canvas-db")) | .[0].uuid' /tmp/uc1.json)"
           test -n "$dbuuid" || { echo "database service not found via API" >&2; exit 1; }
           uc db-users GET "https://api.upcloud.com/1.3/database/$dbuuid/users" /tmp/uc2.json
-          apppw="$(jq -r '(.users // .)[] | select(.username == "app") | .password' /tmp/uc2.json)"
+          apppw="$(jq -r '(.users? // .)[] | select(.username == "app") | .password' /tmp/uc2.json)"
           test -n "$apppw" || { echo "app user password not found via API" >&2; exit 1; }
           db="$(printf '%s' "$db" | sed -E "s|//[^@]+@|//app:$apppw@|")"
           # Object storage: trust the UpCloud API, not tofu state. The

@@ -38,24 +38,6 @@ env:
   CLUSTER: idol-canvas
 
 jobs:
-  ready:
-    name: owner readiness markers
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    outputs:
-      backend: ${{ steps.r.outputs.backend }}
-      web: ${{ steps.r.outputs.web }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-      - id: r
-        run: |
-          echo "backend=$([ -f backend/.ci-ready ] && echo true || echo false)" \
-            >> "$GITHUB_OUTPUT"
-          echo "web=$([ -f web/.ci-ready ] && echo true || echo false)" \
-            >> "$GITHUB_OUTPUT"
-
   lint:
     name: lint (fast universal)
     runs-on: ubuntu-latest
@@ -69,8 +51,6 @@ jobs:
 
   backend-checks:
     name: backend cargo gates
-    needs: ready
-    if: needs.ready.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -85,8 +65,6 @@ jobs:
 
   web-checks:
     name: web vp gates
-    needs: ready
-    if: needs.ready.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -101,11 +79,9 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: [lint, ready, backend-checks]
-    # Owner gate: backend/.ci-ready implies a working Dockerfile.
+    needs: [lint, backend-checks]
     if: >-
       always() && !failure() && !cancelled() &&
-      needs.ready.outputs.backend == 'true' &&
       needs.backend-checks.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -136,11 +112,9 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: [lint, ready, web-checks]
-    # Owner gate: web/.ci-ready implies a working web/Dockerfile.
+    needs: [lint, web-checks]
     if: >-
       always() && !failure() && !cancelled() &&
-      needs.ready.outputs.web == 'true' &&
       needs.web-checks.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -168,7 +142,7 @@ jobs:
 
   deploy:
     name: deploy to k8s
-    needs: [lint, ready, backend-build, web-build]
+    needs: [lint, backend-build, web-build]
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -199,8 +173,6 @@ jobs:
           RELEASE_TAG: ${{ inputs.semver }}
           BACKEND_DIGEST: ${{ needs.backend-build.outputs.digest }}
           WEB_DIGEST: ${{ needs.web-build.outputs.digest }}
-          READY_BACKEND: ${{ needs.ready.outputs.backend }}
-          READY_WEB: ${{ needs.ready.outputs.web }}
 
       - name: Dispatch e2e
         if: success()

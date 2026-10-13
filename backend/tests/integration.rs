@@ -1218,3 +1218,220 @@ async fn z0_cold_render_timing() {
     assert!(!resp.body.is_empty());
     println!("cold z0 four-spine render: {elapsed:?}");
 }
+
+// -------------------------------------------------------------------------
+// Cross-instance advisory locks (chunk raster read-modify-write)
+
+use idol_appreciation_club_backend::chunks;
+use idol_appreciation_club_backend::chunks::ChunkAdvisoryLocks;
+use idol_appreciation_club_backend::store;
+use idol_appreciation_club_backend::world;
+
+/// Two "instances": separate pools over the same DB + shared object store
+/// directory, compositing into the SAME chunk concurrently. The session-
+/// level advisory locks must close the S3 read-modify-write window so no
+/// composite is lost, across 30 interleaved rounds.
+#[tokio::test]
+async fn two_instance_composite_no_lost_update() {
+    let container = postgres::Postgres::default()
+        .with_tag("16-alpine")
+        .start()
+        .await
+        .expect("start postgres container");
+    let port = container.get_host_port_ipv4(5432).await.unwrap();
+    let db_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let store_dir =
+        std::env::temp_dir().join(format!("idol-advisory-{}", uuid::Uuid::now_v7().simple()));
+    let mk_cfg = || Config {
+        listen_addr: "127.0.0.1:0".parse().unwrap(),
+        database_url: db_url.clone(),
+        s3_endpoint: Some(format!("file://{}", store_dir.display())),
+        s3_bucket: "test-bucket".to_string(),
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
+        session_secret: vec![b'x'; 32],
+        public_base_url: "http://localhost:8080".to_string(),
+        static_dir: PathBuf::from("/nonexistent-web-dist-for-tests"),
+        cooldown_paint_secs: 300,
+        cooldown_empty_secs: 1,
+        max_upload_bytes: 10 * 1024 * 1024,
+        min_size: 16,
+        max_size: 4096,
+        tile_cache_entries: 256,
+        registration_approval_required: false,
+    };
+    let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");
+    let (app2, _) = build_app(mk_cfg()).await.expect("instance 2");
+
+    let red = img::solid_png(256, 256, [220, 40, 40]);
+    let blue = img::solid_png(256, 256, [40, 40, 220]);
+    // Same chunk (0,0), disjoint probe points.
+    let rect_red = crate_rect(64, 64, 256, 256);
+    let rect_blue = crate_rect(600, 600, 256, 256);
+
+    for _ in 0..30 {
+        let a = chunks::composite_placement(&app1, rect_red, 0.0, red.clone());
+        let b = chunks::composite_placement(&app2, rect_blue, 0.0, blue.clone());
+        let (ra, rb) = tokio::join!(a, b);
+        ra.expect("instance 1 composite");
+        rb.expect("instance 2 composite");
+    }
+
+    // Both overlays must be present in the final raster.
+    let chunk = store::get_bytes(&app1.store, &world::chunk_key(0, 0))
+        .await
+        .unwrap()
+        .expect("chunk 0/0 exists");
+    let probes = tokio::task::spawn_blocking(move || {
+        let (img, _) = img::decode(&chunk).unwrap();
+        (pixel_at(&img, 100, 100), pixel_at(&img, 700, 700))
+    })
+    .await
+    .unwrap();
+    // Chunk rasters re-encode lossy webp (Q90) on every composite, so 30
+    // serialized rounds drift chroma — assert channel dominance, not exact
+    // equality. A lost update would leave one overlay FULLY absent
+    // (transparent), which dominance still catches.
+    let (r, g, b) = (probes.0[0], probes.0[1], probes.0[2]);
+    assert!(
+        r > 140 && r > g + 40 && r > b + 40,
+        "red overlay lost — update race: {probes:?}"
+    );
+    let (r, g, b) = (probes.1[0], probes.1[1], probes.1[2]);
+    assert!(
+        b > 140 && b > r + 40 && b > g + 40,
+        "blue overlay lost — update race: {probes:?}"
+    );
+}
+
+fn crate_rect(x: i64, y: i64, w: i64, h: i64) -> world::Rect {
+    world::Rect { x, y, w, h }
+}
+
+fn pixel_at(img: &img::VipsImage, x: i32, y: i32) -> [u8; 3] {
+    img::get_pixel(img, x, y)
+}
+
+/// Deadlock-ordering probe: two instances acquire the SAME two chunk locks
+/// in opposite given orders. Sorted acquisition inside `acquire` must make
+/// both take the lower index first; a regression back to given-order
+/// acquisition deadlocks and trips the timeout.
+#[tokio::test]
+async fn advisory_lock_opposite_orders_no_deadlock() {
+    let container = postgres::Postgres::default()
+        .with_tag("16-alpine")
+        .start()
+        .await
+        .expect("start postgres container");
+    let port = container.get_host_port_ipv4(5432).await.unwrap();
+    let db_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let store_dir = std::env::temp_dir().join(format!(
+        "idol-advisory-deadlock-{}",
+        uuid::Uuid::now_v7().simple()
+    ));
+    let mk_cfg = || Config {
+        listen_addr: "127.0.0.1:0".parse().unwrap(),
+        database_url: db_url.clone(),
+        s3_endpoint: Some(format!("file://{}", store_dir.display())),
+        s3_bucket: "test-bucket".to_string(),
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
+        session_secret: vec![b'x'; 32],
+        public_base_url: "http://localhost:8080".to_string(),
+        static_dir: PathBuf::from("/nonexistent-web-dist-for-tests"),
+        cooldown_paint_secs: 300,
+        cooldown_empty_secs: 1,
+        max_upload_bytes: 10 * 1024 * 1024,
+        min_size: 16,
+        max_size: 4096,
+        tile_cache_entries: 256,
+        registration_approval_required: false,
+    };
+    let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");
+    let (app2, _) = build_app(mk_cfg()).await.expect("instance 2");
+
+    let x = chunks::chunk_lock_objid(1, 0);
+    let y = chunks::chunk_lock_objid(2, 0);
+    // Instance A takes both locks (given order Y,X — stored sorted).
+    let la = ChunkAdvisoryLocks::acquire(&app1.pool, vec![y, x])
+        .await
+        .expect("A acquire");
+    // Instance B requests the same locks in the opposite given order while
+    // A holds them: it must stay EXCLUDED (not interleave), then resolve
+    // promptly once A releases — no deadlock in either phase.
+    let pool2 = app2.pool.clone();
+    let waiter = tokio::spawn(async move {
+        ChunkAdvisoryLocks::acquire(&pool2, vec![x, y])
+            .await
+            .expect("B acquire")
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !waiter.is_finished(),
+        "B acquired while A still holds — exclusion broken"
+    );
+    la.release().await;
+    let lb = tokio::time::timeout(std::time::Duration::from_secs(10), waiter)
+        .await
+        .expect("B never resolved after A released — deadlock")
+        .expect("B acquire");
+    lb.release().await;
+
+    // Re-acquiring the same locks must succeed immediately (proves the
+    // release path actually let them go).
+    let again = ChunkAdvisoryLocks::acquire(&app1.pool, vec![x, y]);
+    tokio::time::timeout(std::time::Duration::from_secs(10), again)
+        .await
+        .expect("locks not released")
+        .unwrap()
+        .release()
+        .await;
+}
+
+// Ignored perf probe (run with `-- --ignored --nocapture`): 200 placements
+// against a fresh server, then the place_duration_seconds percentiles read
+// back from /api/metrics. Run on both refs for the advisory-lock A/B.
+#[tokio::test]
+#[ignore = "perf probe: run explicitly for the advisory-lock A/B numbers"]
+async fn place_load_metrics_200() {
+    let server = start_server(300, 0, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "loader").await;
+    let img = png(384, 384);
+    // Straddle chunk boundaries every other placement (multi-chunk lock
+    // cost) while keeping placements disjoint (empty-area pacing).
+    for i in 0..200i64 {
+        let x = (i % 20) * 1536;
+        let y = (i / 20) * 1024 + 268_435_456 / 2 - 20 * 1024;
+        let resp = place_rot(&server, &cookie, &img, x, y, 384, Some(0.0)).await;
+        assert_eq!(resp.status, 201, "placement {i} failed");
+    }
+    let metrics = request(&server, "GET", "/api/metrics", &[], vec![])
+        .await
+        .body;
+    let text = String::from_utf8(metrics).unwrap();
+    let mut buckets: Vec<(String, u64)> = vec![];
+    let mut count = 0u64;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("place_duration_seconds_bucket") {
+            let le = rest
+                .split("le=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .unwrap_or("?")
+                .to_string();
+            let v: u64 = rest.rsplit(' ').next().unwrap().parse().unwrap();
+            buckets.push((le, v));
+        }
+        if let Some(rest) = line
+            .strip_prefix("place_duration_seconds_count")
+            .map(|r| r.trim_start_matches("{}").trim())
+        {
+            count = rest.parse().unwrap();
+        }
+    }
+    assert_eq!(count, 200, "histogram must have observed every placement");
+    println!("place_duration_seconds cumulative buckets (n={count}):");
+    for (le, v) in &buckets {
+        println!("  le={le}: {v}");
+    }
+}

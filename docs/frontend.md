@@ -1,48 +1,93 @@
 # Frontend Runbook — idol-appreciation.club/web
 
-Svelte 5 (runes) + Leaflet SPA on the Vite+ (`vp`) toolchain. Static SPA, no
-SSR: `vp build` emits `web/dist` (index.html + hashed assets).
+SolidJS + Leaflet SPA on the Vite+ (`vp`) toolchain, styled with Chota on top of
+the app's own design tokens, with every wire payload validated by the shared Zod
+contract (`contract/zod`, repo level). Static SPA, no SSR: `vp build` emits
+`web/dist` (index.html + hashed assets).
+
+## Architecture
+
+- **SolidJS 1.9** — `src/index.tsx` mounts `App.tsx`. State lives in two plain
+  factories over Solid signals, not in components:
+  - `src/lib/state.ts` — the `AppStore` (auth, place flow, toasts, admin). The
+    full type is in `src/lib/stateTypes.ts`; every behavior is covered by
+    `state.test.ts`. Components read the store through its getters — signal
+    tracking works through the plain-property getters.
+  - `src/lib/toasts.ts` — the toast hub: dedupe by (kind, message), hard cap of
+    3 visible pills, auto-dismiss (4s info / 6s error).
+- **Leaflet** — untouched. `src/lib/worldMap.ts` (controller), `world.ts`
+  (coordinates), `tileRefresh.ts`/`tileDom.ts` (SSE-driven live tile refetch),
+  `urlView.ts`/`urlViewState.ts` (`#z/x/y` links) and `ghost.ts` (rotated
+  placement ghost + AABB outline) are framework-neutral modules carried over
+  verbatim from the Svelte app; Solid only mounts the map container via a ref
+  and feeds callbacks in `App.tsx`.
+- **Components** (`src/lib/components/`): `TopBar` (brand + auth), with
+  `AuthPopover`/`AdminPopover` split out, `PlacePanel` (long-edge + rotation
+  sliders, client 4096px long-edge cap, live rotated ghost with AABB outline on
+  the map), `Toasts`, `Modal`/`AboutModal` (native keydown listeners so Escape
+  closes while other keys are swallowed).
+- **SSE** — `src/lib/sse.ts`: reconnect with capped exponential backoff; the
+  purple `pulse-rect` blip on every place/remove event is unchanged. Events that
+  fail the contract schema are dropped with a console warning and an error toast
+  ("Live update ignored — bad payload") — never a crash. Empty-canvas clicks
+  stay silent (no toast).
+
+## The wire contract (`contract/zod`, repo level)
+
+`contract/zod/schemas.ts` is the single source of truth for every JSON payload
+crossing the web↔backend boundary: SSE place/remove events (with a documented
+TODO slot for the upcoming batch event), `/api/center`, `/api/placements/near`,
+`/api/health`, plus auth/place/admin shapes. See `contract/README.md` for the
+update rules and the phase-2 schemars-codegen plan (`contract/generated/`).
+
+- Parse-on-receive: `src/lib/api.ts` runs every REST response through a schema
+  (`parseOk`) and `src/lib/sse.ts` runs every event through `worldEventSchema`.
+  Failure ⇒ `console.warn` + toast, never a crash.
+- Because staggered deploys run old bundles against new payloads, the contract
+  makes that window explicit: additive fields are stripped and safe; breaking
+  ones are caught by the gates below before merge.
+- **Unit fixtures**: `contract/zod/schemas.test.ts` (valid/invalid per schema)
+  runs inside `task web:test`.
+- **Integration suite**: `web/test/contract/contract.test.ts` boots a REAL
+  backend (pinned libvips gate image + Postgres via
+  `web/scripts/contract-harness.sh`, task `web:contract`, RUNNER=docker in CI)
+  and asserts that every endpoint response and ≥3 live SSE events parse clean,
+  plus a negative case. It runs as its own ci.yml job (`web-contract`) alongside
+  web-test and is part of the `ci-ok` gate.
 
 ## Commands
 
 Run inside `web/` (pnpm is the enforced package manager via `devEngines`; use
-`vp` wrappers, not bare `npm run`):
+`vp` wrappers, not bare `npm run`). The Taskfile entrypoints are the same ones
+CI runs:
 
-| Command              | Purpose                                         |
-| -------------------- | ----------------------------------------------- |
-| `vp dev`             | Dev server, proxies `/api` to localhost:8080    |
-| `vp build`           | Production build into `web/dist`                |
-| `vp preview`         | Serve `dist`, also proxies `/api`               |
-| `vp check`           | oxfmt + oxlint + tsgo type check (gate, exit 0) |
-| `vpr check`          | npm script: svelte-check + tsc (second net)     |
-| `vp test`            | Vitest unit tests                               |
-| `vp test --coverage` | Tests + v8 coverage, fails below 80% lines      |
-| `vp fmt`             | Format code and Markdown (oxfmt)                |
-
-CI runs `vp check` and `vp test --coverage`; the `web/.ci-ready` marker enables
-those jobs once the local tree is green.
+| Task                 | Purpose                                             |
+| -------------------- | --------------------------------------------------- |
+| `task web:lint`      | `vp check`: oxfmt + oxlint + tsgo type check (gate) |
+| `task web:test`      | `vp test --coverage` incl. contract fixtures (gate) |
+| `task web:contract`  | Real-backend contract suite (gate, `web-contract`)  |
+| `task web:e2e`       | Playwright e2e: @smoke, then the full suite         |
+| `vp dev`             | Dev server, proxies `/api` to localhost:8080        |
+| `vp build`           | Production build into `web/dist`                    |
+| `vp preview`         | Serve `dist`, also proxies `/api`                   |
+| `vp test`            | Vitest unit + component tests                       |
+| `vp test --coverage` | Tests + v8 coverage, fails below 80% lines          |
 
 ## Toolchain notes (vp)
 
-- Installed via `curl -fsSL https://vite.plus | bash`; `vp` v1.1.0. Project
-  scaffolded with `vp create vite -- web --template svelte-ts` (plain Vite
-  Svelte SPA; the `svelte`/`sv create` template yields SvelteKit + adapter-auto,
-  which does not match the "static SPA in web/dist" requirement, so the closest
-  supported path was used — `vp install` / `vp build` remain the canonical
-  commands).
-- Bundled toolchain (see `vp toolchain`): vite 8.3.3 (rolldown/oxc), vitest
-  5.0.3, oxlint 1.87.0, oxfmt 0.72.0, **oxlint-tsgolint 7.0.2003**.
-- **Type checking uses tsgo (TypeScript 7 native preview)**: `vp check` with
-  `lint.options.typeAware + typeCheck` routes type checks through tsgolint, the
-  oxc-project's TypeScript-Go power checker. There is no
-  `@typescript/native-preview` devDep because vite-plus bundles the binary.
-  tsgolint version: **7.0.2003**.
-- A second, independent type net runs svelte-check + tsc (`vpr check`); both are
-  clean.
-- tsconfig.app.json: `strict`, `noUncheckedIndexedAccess`,
-  `exactOptionalPropertyTypes` (on top of `@tsconfig/svelte`). No `any`, no
-  non-null `!` bypasses; library-internal access goes through runtime-validated
-  narrowing (see `src/lib/tileDom.ts`).
+- `vp` v1.1.0; bundled toolchain: vite 8.3.3 (rolldown/oxc), vitest 5.0.3,
+  oxlint 1.87.0, oxfmt 0.72.0, oxlint-tsgolint 7.0.2003.
+- **Type checking is tsgo (TypeScript 7 native preview)** via `vp check`
+  (`lint.options.typeAware + typeCheck`). No `@typescript/native-preview` devDep
+  — vite-plus bundles the binary.
+- `tsconfig.app.json`: `strict`, `noUncheckedIndexedAccess`,
+  `exactOptionalPropertyTypes`, `jsx: preserve` + `jsxImportSource: solid-js`.
+  `@contract/*` maps to `../contract/zod/*`.
+- vite/vitest resolve `@contract` with a `resolve.alias` to the contract
+  sources; the contract package resolves its own `zod` from
+  `contract/node_modules` (no alias, no copy). `vp build` therefore requires
+  `pnpm install` in `contract/` too (the Taskfile web gates and web/Dockerfile
+  both do it).
 
 ## Lint policy (aggressive)
 
@@ -51,55 +96,34 @@ Configured in `web/vite.config.ts` under `lint`:
 - Categories: `correctness: error`, `suspicious: error`, `pedantic: warn`,
   `perf: warn`; `options.denyWarnings: true` — any warning fails `vp check`.
 - Documented deviations, each with an inline comment in vite.config.ts:
-  - `typescript/prefer-readonly-parameter-types: off` — DOM, Leaflet and Svelte
-    event/props params have no readonly types; everything else stays strict.
-  - `max-lines-per-function: 120` (50 is unworkable for DI-heavy factories),
-    `max-lines: 400` per file.
-  - `no-underscore-dangle` allows `_tiles` — Leaflet's internal tile index,
-    accessed through validated widening (`worldMap.ts`).
-  - One inline `eslint-disable-next-line unicorn/no-array-callback-reference` on
-    `L.map(...)` — Leaflet's map factory trips the Array#map heuristic.
-- oxlint has no `unsafe` category (that is Clippy vocabulary); the strictest
-  supported groups are enabled as described above.
+  - `typescript/prefer-readonly-parameter-types: off` — DOM, Leaflet and Solid
+    event/props params have no readonly types.
+  - `max-lines-per-function: 120`, `max-lines: 400` (file cap); `createAppStore`
+    has a 400-line override as one cohesive state machine.
+  - `no-underscore-dangle` allows `_tiles` (Leaflet internal tile index).
+  - tsx override `no-unassigned-vars: off` — Solid template refs assign `let x`
+    variables from compiled JSX; oxlint cannot see that write.
 - Formatting: oxfmt everywhere, `printWidth 80`, `semi`, double quotes,
-  `proseWrap: always` — including Markdown. Verified empirically against
-  Prettier on prose-heavy samples: outputs are byte-identical, so the repo-wide
-  Prettier markdown gate and oxfmt agree; Prettier is being retired as the
-  markdown authority (infra removes the root gate).
+  `proseWrap: always` (also enforced repo-wide over Markdown).
 
 ## Tests & coverage
 
-`vp test` (Vitest, node env). Test files: `src/lib/*.test.ts`.
+`vp test` (Vitest). Node environment by default; component tests opt into
+happy-dom via a `// @vitest-environment happy-dom` docblock.
 
-- Coordinate helpers (`world.ts`): world↔latLng round-trips, CRS.Simple y-flip,
-  scale at z=0/16/20, tile bboxes at z=0/16/20, tile URL building,
-  `parseTileKey` (Leaflet's `x:y:z`), rotated-AABB → tile selection, viewport
-  bbox conversion, query-radius clamps, world clamps.
-- Tile refresh (`tileRefresh.ts`): fake timers — ~500 ms coalescing window,
-  tile-coord dedupe across overlapping events, viewport filtering, manual flush,
-  dispose semantics.
-- API client (`api.ts`): mock-fetch tests for register/login/logout, me (200 +
-  401→null), place() multipart construction (x/y/size/rot FormData), 429 with
-  Retry-After, 400 message, near/center parsing (incl. null current, rot),
-  report/DELETE admin removal, network-failure → status 0.
-- SSE (`sse.ts`): fake EventSource — event parsing, garbage dropping,
-  bbox→center check, reconnect scheduling with doubling backoff capped at 30 s,
-  backoff reset on open, browser-retry passthrough (non-CLOSED errors), stop()
-  semantics.
-- Cooldown (`cooldown.ts`): remaining-ms math, countdown formatting, live
-  Countdown ticking/expiry with fake timers.
-- Sizing (`sizing.ts`): long-edge clamp 16..4096, aspect math (ghost rect), 10
-  MB upload check.
-- Rotation (`rotAABB` in `world.ts`): cardinal identity, 90° swap, 45° √2
-  growth, area/edge invariants.
-- Format (`format.ts`): time-ago buckets, duration formatting.
-- Store (`state.svelte.ts`): auth flows, toasts lifecycle, full place flow incl.
-  429 cooldown toast, auth prompts, report/remove rules.
-
-Coverage gate: `vp test --coverage` fails below **80% lines** on the logic
-modules (`src/lib/*.ts`; `.svelte` components are render-only glue). DOM-only
-helpers excluded: `worldMap.ts`, `confetti.ts`, `images.ts`. Latest run: **93.5%
-lines**.
+- Logic modules (`world`, `tileRefresh`, `api`, `sse`, `cooldown`, `sizing`,
+  `format`, `toasts`, `state`) unchanged in behavior; `state.ts` and `toasts.ts`
+  are Solid-signal ports of the former runes stores with the same observable
+  API, and their original tests pass untouched.
+- Component tests (`@solidjs/testing-library` + happy-dom): `Toasts.test.tsx`
+  (render/dismiss/dedupe/cap/auto-dismiss), `Modal.test.tsx`
+  (Escape/backdrop/focus), `PlacePanel.test.tsx` (sliders, rotation clamp ±180°,
+  choose/adjust/cancel flow).
+- Contract fixtures: `contract/zod/schemas.test.ts`.
+- Coverage gate: `vp test --coverage` fails below **80% lines** on the logic
+  modules (`src/lib/*.ts`; components are render-only glue). DOM-only helpers
+  excluded like `worldMap.ts`: `ghost.ts`, `tileDom.ts`, `urlViewState.ts`,
+  `confetti.ts`, `images.ts`, `guards.ts`. Latest run: **92.87% lines**.
 
 ## Coordinate system (read before touching the map)
 
@@ -107,8 +131,8 @@ lines**.
   0..20, tiles at `/api/tiles/{z}/{x}/{y}.webp`. y grows DOWN (image convention,
   y=0 is the top row). Center "0/0" is `(134217728, 134217728)`.
 - **The CRS.Simple y-flip pitfall**: Leaflet's `L.CRS.Simple` maps screen px as
-  `x = lng * 256 * 2^z`, `y = -lat * 256 * 2^z` (lat grows UP). We keep all app
-  math in native world px and convert only at the Leaflet boundary
+  `x = lng * 256 * 2^z`, `y = -lat * 256 * 2^z` (lat grows UP). All app math
+  stays in native world px and converts only at the Leaflet boundary
   (`src/lib/world.ts`):
 
   ```
@@ -116,99 +140,98 @@ lines**.
   latLngToWorld(lat, lng) => { x: lng * 2^28, y: -lat * 2^28 }
   ```
 
-  which renders native px one-to-one at zoom 20 (scale `2^(z-20)`). Map bounds:
-  latLng `[-1, 0]..[0, 1]` with viscosity 1.0; tile layer bounds match, so no
-  wrap and no out-of-world tiles.
+  which renders native px one-to-one at zoom 20 (scale `2^(z-20)`).
 
 - SSE invalidation: `place`/`remove` events carry `bbox: [x, y, w, h]` (the
   rotated AABB). Events queue in a ~500 ms coalescing window (`tileRefresh.ts`);
   each flush intersects the buffered bboxes against visible tile keys (Leaflet's
-  internal `_tiles`, format `x:y:z`) restricted to the current viewport and
+  internal `_tiles`, format `x:y:z`), restricted to the current viewport, and
   reassigns each matching `<img>.src` once, deduped. The refetch URL is
-  cache-busted (`?r=`): same-URL reloads would be answered from the HTTP cache's
-  stale-while-revalidate grace and lag a refresh behind, while a unique query
-  gets 200-with-current-bytes immediately — the old bitmap stays on screen until
-  the new bytes decode, so tiles never blank or flicker. `invalidateBBox`
-  remains the immediate single-shot path for optimistic local changes (e.g.
-  admin removal).
+  cache-busted (`?r=`) so stale-while-revalidate cannot serve the old bitmap —
+  the old pixels stay on screen until the new bytes decode: no blanking, no
+  flicker.
 - Popup query radius: `256 * 2^(16 - z)` clamped to `[256, 65536]`.
 
 ## URL view state (`#z/x/y`)
 
-- The map view is linkable: `#16/0/0` = zoom 16 centred on the world centre;
-  `#18/-1280/512` = 1280 px left of and 512 px below 0/0 (signed world-px
-  offsets, y down). Encoder/decoder: `src/lib/urlView.ts`.
-- On load a valid hash beats the default centred view; malformed/missing falls
-  back to it. Zoom is clamped to 0..20 on both parse and encode.
-- After move/zoom settles (250 ms debounce) the view is written back with
-  `history.replaceState` — integer px, no history spam.
-- `hashchange`/`popstate` (manual hash edits, Back/Forward) re-apply the hash to
-  the map; the write-back skips the view it just applied. Wiring lives in
-  `src/lib/urlViewState.ts` (`wireUrlViewState(map)`), invoked from
-  `createWorldMap`.
+- `#16/0/0` = zoom 16 centred on the world centre; `#18/-1280/512` = 1280 px
+  left of and 512 px below 0/0 (signed world-px offsets, y down).
+  Encoder/decoder: `src/lib/urlView.ts`; wiring: `src/lib/urlViewState.ts`.
+- Valid hash beats the default view on load; move/zoom writes back with a
+  debounced `history.replaceState`; `hashchange`/`popstate` re-apply.
 
 ## Rotation semantics
 
 - `Placement.rot` is degrees clockwise, 0 = upright; `x, y, w, h` stay the
-  UNROTATED rect (top-left + long-edge dims). The rect rotates about its own
-  centre, so the centre is always `(x + w/2, y + h/2)`.
-- Overlays that need a screen box (ghost footprint outline, placement highlight)
-  use the axis-aligned footprint `rotAABB(w, h, rot)` — centred on the rect
-  centre, sized `w·|cos|+h·|sin| × w·|sin|+h·|cos|`. Hit-testing is server-side
-  (`placements/near` bbox), so the client never re-implements it.
-- Ghost rendering: CSS `translate(pointer) rotate(rot)` on the `<img>`
-  (transform-origin centre = rect centre); the outline is a sibling div sized to
-  the AABB at the current zoom.
+  UNROTATED rect. Overlays size to `rotAABB(w, h, rot)` — the axis-aligned
+  footprint, centred on the rect centre.
+- Ghost rendering (place flow): CSS `translate(pointer) rotate(rot)` on the
+  `<img>`; the dashed outline is a sibling div sized to the AABB at the current
+  zoom. The long edge is clamped client-side to 16..4096 px.
 
 ## API usage map
 
-Cookie auth, same-origin. `src/lib/api.ts` is the only fetch site (fetch
-injectable for tests). Endpoints per contract: auth register/login/logout/me,
-place (multipart x/y/size/rot), placements/near, center, events (SSE), reports,
-admin placements delete. The store (`state.svelte.ts`) owns UX rules: 429 →
-cooldown toast with Retry-After; 401/403 → login popover; center chip polls
-`/api/center` every 30 s and refreshes early when an SSE bbox covers the center.
+Cookie auth, same-origin. `src/lib/api.ts` is the only fetch site (fetch +
+optional `base` injectable; the contract suite passes the booted backend's
+origin). Endpoints: auth register/login/logout/me, place (multipart
+x/y/size/rot), placements/near, center, events (SSE), reports, admin placements
+delete, admin accounts list/approve. UX rules live in `state.ts`: 429 → cooldown
+toast with Retry-After; 401/403 → login popover; `/api/center` polls every 30 s
+and refreshes early when an SSE bbox covers the center.
 
-Dev/demo mocking: none — `vp dev` proxies `/api` to `http://localhost:8080`
-(`server.proxy` + `preview.proxy` in vite.config.ts). Point the backend there.
+## Design tokens (Chota)
+
+`chota/dist/chota.min.css` is imported before `src/app.css` and supplies the
+structural layer (base reset, forms, `.card`). `app.css` keeps the design tokens
+as CSS variables and re-points Chota's own variables at them
+(`--color-primary: var(--accent)`, `--bg-color: var(--bg)`, …):
+
+- flat pink `--accent: #ff5fa2` — the single accent, no gradients anywhere (the
+  old checkerboard conic-gradient preview became a flat surface);
+- exactly ONE radius token, `--radius: 8px`, used by `.card` and controls;
+- dark flat surfaces (`--bg`, `--bg-2`, `--bg-3`), hairline `--line`;
+- one floating control cluster per corner: topbar, place panel (bottom right),
+  footer chip (bottom left), toasts (top center), zoom (map).
+
+App CSS retains component rules (`.btn`, `.topbar`, `.place-panel`, popups,
+toasts, keyframes); Chota owns base typography, inputs, and the card box
+(restyled with the tokens above). Never introduce a second radius or a gradient.
 
 ## Docker
 
-`docker build -t idol-web . && docker run -p 8080:8080 idol-web` (from `web/`;
-context is `web/`).
+`task image:web` builds from the REPO ROOT with `-f web/Dockerfile` (the bundle
+imports `contract/zod`, so the image build copies web/ + contract/ and installs
+the contract lockfile). Multi-stage: node:24-alpine (vp install/build) →
+`caddy:2-alpine` serving `/app/dist`.
 
-- Multi-stage: `node:24-alpine` installs vp, `vp install --frozen-lockfile`,
-  `vp build`; `caddy:2-alpine` serves `/app/dist` from `/usr/share/caddy` as uid
-  1000 (writable `/data`, `/config`).
-- `Caddyfile`: `encode zstd gzip`; `try_files {path} /index.html` SPA fallback;
-  `/assets/*` → `Cache-Control: public, max-age=31536000, immutable` (hashed
-  filenames); `/index.html` → `no-cache`. Port 8080.
+- `Caddyfile`: `encode zstd gzip`; SPA fallback; `/assets/*` immutable;
+  `/index.html` no-cache. Port 8080.
 
-## Bundle size (vp build, this tree)
+## Bundle size (vp build)
 
-| Asset             | Raw      | Gzip    |
-| ----------------- | -------- | ------- |
-| JS (index-*.js)   | 216.7 kB | 67.6 kB |
-| CSS (index-*.css) | 25.1 kB  | 8.8 kB  |
-| index.html        | 0.7 kB   | 0.4 kB  |
+Measured on the final tree (`gzip -9`, same method both sides):
 
-JS gzipped is 68 kB against the 150 kB target; the only runtime deps are Svelte
-5 and Leaflet 1.9.4.
+| Asset             | Svelte 5 (before)             | Solid + Zod + Chota (after)   |
+| ----------------- | ----------------------------- | ----------------------------- |
+| JS (index-*.js)   | 218,524 B raw / 69,356 B gzip | 214,085 B raw / 65,162 B gzip |
+| CSS (index-*.css) | 25,099 B raw / 8,781 B gzip   | 41,582 B raw / 11,627 B gzip  |
+| index.html        | 0.7 kB raw / 0.4 kB gzip      | 0.7 kB raw / 0.4 kB gzip      |
+
+JS gzip: **65.2 kB** against the 76 kB budget (69.4 kB before) — Solid's core
+replaces the Svelte 5 runtime and `zod/mini` contributes only the validators
+used. CSS grows by Chota's ~3 kB gzip. Leaflet is unchanged by this rewrite.
+Chunk attribution (single JS chunk; share of bundled source bytes per
+sourcemap): Leaflet ~51%, `zod/mini` ~30% raw (a few kB after min+gzip — only
+used validators survive tree-shaking), app ~10%, solid-js ~10%.
 
 ## Verified
 
-- `vp check` exit 0 (fmt + oxlint + tsgo type check); `vpr check`: svelte-check
-  0 errors/0 warnings + tsc clean.
-- `vp test`: 104 passing; `vp test --coverage`: 85.7% lines (gate: 80%).
+- `task web:lint` → `vp check` exit 0 (oxfmt + oxlint + tsgo, denyWarnings).
+- `task web:test` → `vp test --coverage`: 153 tests passing (unit + component +
+  contract fixtures), 92.87% lines (gate 80%).
+- `task web:contract` → real-backend suite green (health, auth, place, near,
+  center, ≥3 SSE events, negative case) against the pinned gate image.
 - `vp build` produces `web/dist` with hashed assets (sizes above).
-- `vp dev` smoke: page compiles and boots with zero console errors; browser
-  check confirmed topbar, 0/0 chip, center reticle, modals, auth popover,
-  Escape-to-close. Rotation: place flow DOM-verified against a static replica
-  (ghost `rotate(45deg)` at the pointer, dashed AABB outline √2-scaled at 45°,
-  Rotation slider label live) and pixel-verified via magnified screenshot.
-  `/api` 502s with no backend running, surfaced as toasts — expected without the
-  backend.
-- Docker: image builds (multi-stage, 93.6 MB); HTTP-verified — `/` and
-  `/index.html` send `no-cache`, `/assets/*` send
-  `public, max-age=31536000, immutable` + gzip, unknown routes fall back to
-  index.html with 200.
+- Playwright: all existing specs green against the rewrite served by
+  `vp preview` + the harness backend, plus the new `e2e/malformed-sse.spec.ts`
+  (malformed injected event → toast + warning, app alive, map navigable).

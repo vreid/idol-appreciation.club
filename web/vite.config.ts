@@ -1,7 +1,18 @@
-import { svelte } from "@sveltejs/vite-plugin-svelte";
+import solid from "vite-plugin-solid";
+import { fileURLToPath } from "node:url";
 import { defineConfig, lazyPlugins } from "vite-plus";
 
+// The wire contract lives at the repo level (contract/zod) and is imported
+// as source by both the app and the tests. It resolves its own zod from
+// contract/node_modules — no alias needed here.
+const contractDir = fileURLToPath(new URL("../contract/zod", import.meta.url));
+
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@contract": contractDir,
+    },
+  },
   server: {
     proxy: {
       "/api": { target: "http://localhost:8080", changeOrigin: true },
@@ -17,7 +28,6 @@ export default defineConfig({
     proseWrap: "always",
     semi: true,
     singleQuote: false,
-    svelte: true,
   },
   lint: {
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
@@ -31,7 +41,7 @@ export default defineConfig({
       // 400: these modules are cohesive single-responsibility units.
       "max-lines-per-function": ["error", { max: 120 }],
       "max-lines": ["error", { max: 400 }],
-      // DOM/Leaflet/Svelte event params have no readonly counterparts.
+      // DOM/Leaflet/Solid event params have no readonly counterparts.
       "typescript/prefer-readonly-parameter-types": "off",
     },
     categories: {
@@ -46,12 +56,18 @@ export default defineConfig({
     options: { typeAware: true, typeCheck: true, denyWarnings: true },
     overrides: [
       {
+        // Solid template refs assign `let x` variables from compiled JSX
+        // (`ref={x}`); oxlint cannot see the generated assignment.
+        files: ["src/**/*.tsx"],
+        rules: { "no-unassigned-vars": "off" },
+      },
+      {
         // createAppStore is one cohesive reactive state machine; splitting
         // the getters/actions apart would obscure the shared state.
-        files: ["src/lib/state.svelte.ts"],
+        files: ["src/lib/state.ts"],
         rules: { "max-lines-per-function": ["error", { max: 400 }] },
       },
     ],
   },
-  plugins: lazyPlugins(() => [svelte()]),
+  plugins: lazyPlugins(() => [solid()]),
 });

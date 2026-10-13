@@ -5,7 +5,7 @@ import type {
   Placement,
   PlacedPlacement,
 } from "./api";
-import type { Toast } from "./toasts.svelte";
+import type { Toast } from "./toasts";
 
 /** idle: nothing happening; panel: preview ready; choose: picking a spot. */
 export type PlaceMode = "idle" | "panel" | "choose";
@@ -34,9 +34,13 @@ export interface AppStore {
   readonly submittingPlace: boolean;
   readonly authPrompt: boolean;
 
-  dismissToast(id: number): void;
+  // Property syntax: the implementation is a hub closure, never a bound
+  // method (components may pass the reference around directly).
+  readonly dismissToast: (id: number) => void;
   /** App-level informational toast (empty placements, bad file, ...). */
   notify(message: string): void;
+  /** App-level error toast (malformed live data, ...). */
+  notifyError(message: string): void;
   refreshMe(): Promise<void>;
   refreshCenter(): Promise<void>;
   login(username: string, password: string): Promise<boolean>;

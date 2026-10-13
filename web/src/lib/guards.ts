@@ -1,7 +1,8 @@
 /**
- * The app's single canonical object guard. Response shapes are validated
- * field-by-field with typeof checks in api.ts on top of this guard; a
- * schema-validation dependency would cost more than it saves at this size.
+ * The app's single canonical object guard. REST and SSE payloads are
+ * validated at the boundary with the wire-contract Zod schemas
+ * (contract/zod, via `@contract`); this guard remains for Leaflet-internal
+ * and DOM-adjacent objects that no schema covers (see tileDom.ts).
  */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

@@ -8,7 +8,7 @@ PostgreSQL, S3-compatible object storage, and a DNS-only Cloudflare zone in
 front of a Kubernetes LoadBalancer.
 
 - `backend/` — Rust API service
-- `web/` — Vite + Svelte frontend
+- `web/` — Vite + SolidJS frontend
 - `tofu/` — OpenTofu infrastructure (cluster, PostgreSQL, object storage)
 - `deploy/` — Kubernetes manifests for the `idol` namespace
 - `scripts/` — operational helpers (DNS sync, admin bootstrap, credential

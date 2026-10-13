@@ -8,7 +8,7 @@ import {
 } from "vite-plus/test";
 import { ApiError, type ApiClient, type PlaceRequest } from "./api";
 import { DEFAULT_LONG_EDGE } from "./sizing";
-import { createAppStore } from "./state.svelte";
+import { createAppStore } from "./state";
 
 interface ClientProbe {
   placeCalls: { x: number; y: number; size: number }[];

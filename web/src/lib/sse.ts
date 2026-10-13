@@ -2,13 +2,17 @@
  * Server-sent events for world changes, with manual reconnect + exponential
  * backoff when the browser gives up (readyState CLOSED). The EventSource is
  * injectable so tests can drive the manager with a fake.
+ *
+ * Every message is parsed against the wire contract (contract/zod); events
+ * that fail the schema are dropped here and reported through
+ * `onMalformed` (console.warn + toast at the app layer), never thrown.
  */
 
+import { worldEventSchema } from "@contract";
+import type { WorldEvent } from "@contract";
 import { bboxContainsPoint, WORLD_CENTER } from "./world";
 
-export type WorldEvent =
-  | { type: "place"; seq: number; bbox: [number, number, number, number] }
-  | { type: "remove"; id: string; bbox: [number, number, number, number] };
+export type { WorldEvent };
 
 export interface EventSourceLike {
   readyState: number;
@@ -24,6 +28,8 @@ export type EventSourceFactory = (url: string) => EventSourceLike;
 
 export interface SseClientOptions {
   onEvent: (event: WorldEvent) => void;
+  /** Called with the raw payload of every message the contract rejects. */
+  onMalformed?: (raw: string) => void;
   sourceFactory?: EventSourceFactory;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
@@ -42,34 +48,8 @@ export function parseWorldEvent(raw: string): WorldEvent | null {
   } catch {
     return null;
   }
-  if (typeof data !== "object" || data === null) return null;
-  const bbox = readBBox(data);
-  if (bbox === null) return null;
-  if ("type" in data && data.type === "place" && "seq" in data) {
-    const seq = data.seq;
-    if (typeof seq === "number") return { type: "place", seq, bbox };
-    return null;
-  }
-  if ("type" in data && data.type === "remove" && "id" in data) {
-    const id = data.id;
-    if (typeof id === "string" && id.length > 0) {
-      return { type: "remove", id, bbox };
-    }
-    return null;
-  }
-  return null;
-}
-
-function readBBox(data: object): [number, number, number, number] | null {
-  if (!("bbox" in data) || !Array.isArray(data.bbox)) return null;
-  const bbox = data.bbox;
-  if (
-    bbox.length === 4 &&
-    bbox.every((n: unknown): n is number => typeof n === "number")
-  ) {
-    return [bbox[0] ?? 0, bbox[1] ?? 0, bbox[2] ?? 0, bbox[3] ?? 0];
-  }
-  return null;
+  const parsed = worldEventSchema.safeParse(data);
+  return parsed.success ? parsed.data : null;
 }
 
 /** True when an event bbox covers the 0/0 world center point. */
@@ -82,6 +62,7 @@ export function eventTouchesCenter(
 
 export class SseClient {
   private readonly onEvent: (event: WorldEvent) => void;
+  private readonly onMalformed: ((raw: string) => void) | null;
   private readonly sourceFactory: EventSourceFactory;
   private readonly initialBackoffMs: number;
   private readonly maxBackoffMs: number;
@@ -94,6 +75,7 @@ export class SseClient {
 
   constructor(options: SseClientOptions) {
     this.onEvent = options.onEvent;
+    this.onMalformed = options.onMalformed ?? null;
     this.sourceFactory =
       options.sourceFactory ?? ((url) => new EventSource(url));
     this.initialBackoffMs =
@@ -138,7 +120,12 @@ export class SseClient {
     });
     source.addEventListener("message", (event) => {
       const parsed = parseWorldEvent(event.data);
-      if (parsed !== null) this.onEvent(parsed);
+      if (parsed === null) {
+        console.warn("[sse] malformed event ignored:", event.data);
+        this.onMalformed?.(event.data);
+      } else {
+        this.onEvent(parsed);
+      }
     });
     source.addEventListener("error", () => {
       // Non-CLOSED means the browser is retrying on its own.

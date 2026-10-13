@@ -207,6 +207,23 @@ jobs:
       - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
       - run: task web:test
 
+  web-contract:
+    name: web-contract (real-backend contract suite)
+    # Boots the pinned backend gate image + Postgres (RUNNER=docker, same
+    # container convention as the backend gates) and parses every live
+    # response/SSE event against contract/zod.
+    needs: [lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RUNNER: docker
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8
+      - run: task web:contract
+
   # ---------------- merge gate: skipped jobs fail here ----------------
 
   ci-ok:
@@ -217,6 +234,7 @@ jobs:
       - tofu
       - backend-test
       - web-test
+      - web-contract
       - leaks
     if: always()
     runs-on: ubuntu-latest

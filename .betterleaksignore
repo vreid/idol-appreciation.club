@@ -33,3 +33,5 @@ backend/tests/integration.rs:generic-password:748
 docs/backend.md:generic-credential-uri:216
 web/e2e/helpers.ts:generic-password:14
 web/src/lib/api.test.ts:generic-password:76
+web/src/lib/components/AuthPopover.tsx:generic-password:89
+web/test/contract/contract.test.ts:generic-password:126

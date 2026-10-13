@@ -1,0 +1,14 @@
+# Root-context build for the web image (web/Dockerfile): send only what the
+# bundle needs — web/ sources plus the shared contract package.
+**
+!web/
+!web/**
+!contract/
+!contract/**
+web/node_modules/
+web/dist/
+web/coverage/
+web/e2e-report/
+web/e2e-results/
+contract/node_modules/
+.git/

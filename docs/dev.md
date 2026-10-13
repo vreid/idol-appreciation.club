@@ -53,6 +53,8 @@ CI gate entrypoints (one per ci.yml job):
 | --------------------- | -------------- | -------------------------------------------- |
 | `task lint:md`        | md-lint        | oxfmt check over all Markdown                |
 | `task lint:workflows` | workflows-lint | jactionlint over `.github/workflows`         |
+| `task lint:pr-title`  | lint:pr-title  | Conventional Commits check on the PR title   |
+| `task release`        | release.yml    | semantic-release: tag + GitHub Release       |
 | `task web:lint`       | web-lint       | `vp check` (oxfmt + oxlint + tsgo)           |
 | `task web:test`       | web-test       | `vp test` (vitest, >=80% coverage gate)      |
 | `task backend:lint`   | backend-lint   | `cargo fmt --check` + clippy `-D warnings`   |

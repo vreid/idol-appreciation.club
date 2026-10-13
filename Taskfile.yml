@@ -22,6 +22,37 @@ tasks:
     cmds:
       - oxfmt --check "**/*.md"
 
+  lint:pr-title:
+    desc: enforce Conventional Commits v1.0.0 PR title (ci.yml lint:pr-title)
+    cmds:
+      - |
+        set -euo pipefail
+        title="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title)"
+        # Conventional Commits 1.0.0: <type>(<scope>)?!: <subject>
+        # - type: the eleven spec types (angular lineage)
+        # - scope: repo areas, optional
+        # - ! marks breaking (major bump)
+        # - subject: required, no leading/trailing whitespace; no trailing
+        #   period (checked separately so single-character subjects pass)
+        cc='^(feat|fix|perf|refactor|docs|chore|test|ci|build|style)(\((backend|web|tofu|chart|ci|deps|release|api|seed|docs)\))?(!)?: [^[:space:]](.*[^[:space:]])?$'
+        if ! printf '%s\n' "$title" | grep -qE "$cc"; then
+          echo "PR title is not strict Conventional Commits: \"$title\"" >&2
+          echo 'expected: <type>(<scope>)?!: <subject>' >&2
+          echo '  types:  feat|fix|perf|refactor|docs|chore|test|ci|build|style' >&2
+          echo '  scopes: backend|web|tofu|chart|ci|deps|release|api|seed|docs (optional)' >&2
+          echo '  subject: non-empty, no trailing period, no trailing whitespace' >&2
+          exit 1
+        fi
+        case "$title" in
+          *.) echo "PR title subject must not end with a period: \"$title\"" >&2; exit 1 ;;
+        esac
+
+  release:
+    desc: semantic-release — tag + GitHub Release + notes from conventional commits (no npm publish)
+    cmds:
+      # ARGS escapes hatch: task release ARGS="--dry-run"
+      - semantic-release {{.ARGS}}
+
   lint:workflows:
     desc: jactionlint over all workflows (ci.yml workflows-lint)
     cmds:
@@ -167,10 +198,16 @@ tasks:
     dir: backend
     # Requires a prior registry login and docker buildx (both provided by
     # the deploy.yml job). Prints the pushed image digest on the last line.
+    # SEMVER (optional, e.g. v1.2.3): set by the release flow so images
+    # carry the immutable digest AND the semver tag.
     cmds:
       - |
-        docker buildx build --platform linux/amd64 --push \
-          -t "$BACKEND_IMAGE" --metadata-file /tmp/backend-image-metadata.json .
+        tags=("$BACKEND_IMAGE")
+        if [ -n "${SEMVER:-}" ]; then tags+=("${BACKEND_IMAGE%:*}:$SEMVER"); fi
+        args=()
+        for t in "${tags[@]}"; do args+=(-t "$t"); done
+        docker buildx build --platform linux/amd64 --push "${args[@]}" \
+          --metadata-file /tmp/backend-image-metadata.json .
         jq -r '."containerimage.digest"' /tmp/backend-image-metadata.json
 
   image:web:
@@ -179,8 +216,12 @@ tasks:
     # Same contract as image:backend.
     cmds:
       - |
-        docker buildx build --platform linux/amd64 --push \
-          -t "$WEB_IMAGE" --metadata-file /tmp/web-image-metadata.json .
+        tags=("$WEB_IMAGE")
+        if [ -n "${SEMVER:-}" ]; then tags+=("${WEB_IMAGE%:*}:$SEMVER"); fi
+        args=()
+        for t in "${tags[@]}"; do args+=(-t "$t"); done
+        docker buildx build --platform linux/amd64 --push "${args[@]}" \
+          --metadata-file /tmp/web-image-metadata.json .
         jq -r '."containerimage.digest"' /tmp/web-image-metadata.json
 
   # ---------------- deploy choreography (deploy.yml deploy job) ----------
@@ -191,6 +232,7 @@ tasks:
       secret rotation, DNS sync, placeholder removal (deploy.yml deploy)
     env:
       KUBECONFIG: '{{.KUBECONFIG | default "/tmp/idol-deploy-kubeconfig"}}'
+      RELEASE_TAG: '{{.RELEASE_TAG | default ""}}'
     cmds:
       - |
         set -euo pipefail
@@ -217,6 +259,12 @@ tasks:
         if [ "$READY_WEB" != "true" ]; then
           echo "web not .ci-ready: bootstrap placeholder is the edge"
           ARGS+=(--set web.enabled=false)
+        fi
+        # Release semver (audit trail in helm values / rollout annotations;
+        # the digest stays the actual image pin — GHCR tags are mutable).
+        if [ -n "$RELEASE_TAG" ]; then
+          ARGS+=(--set-string images.backend.tag="$RELEASE_TAG" \
+                 --set-string images.web.tag="$RELEASE_TAG")
         fi
         helm upgrade --install idol chart/ \
           --namespace idol --create-namespace --atomic --wait --timeout 15m \

@@ -1,5 +1,10 @@
 # Digests are injected by deploy.yml (helm --set-string) from the image
-# build jobs; plain tags are the local-dev fallback only.
+# build jobs; plain tags are the local-dev fallback only. On releases,
+# deploy.yml also sets `tag` to the release semver: it is an AUDIT TRAIL
+# (see the deployment annotations) and enables redeploy-by-tag
+# (helm upgrade --set-string images.*.digest="" --set-string images.*.tag=vX.Y.Z).
+# The DIGEST remains the source of truth for what actually runs: GHCR tags
+# are mutable, digests are not.
 images:
   backend:
     repository: ghcr.io/vreid/idol-appreciation.club-backend
@@ -15,13 +20,16 @@ domain: idol-appreciation.club
 backend:
   registrationApprovalRequired: true
   replicaCount: 1
+  # Requests sized for HPA math + scheduling; limits generous so parallel
+  # chunk composites (libvips) never throttle: 6-way placement bursts
+  # OOMKilled at the old 1536Mi limit (2026-10-13 soak).
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 500m
+      memory: 512Mi
     limits:
-      cpu: 1500m
-      memory: 1536Mi
+      cpu: "4"
+      memory: 2Gi
 
 web:
   # false = bootstrap: placeholder Deployment+Service become a plain-HTTP

@@ -4,6 +4,7 @@ import {
   bboxContainsPoint,
   clampToWorldPoint,
   clampToWorld,
+  latLngBoundsToWorldBBox,
   latLngToWorld,
   nativeTileBBox,
   parseTileKey,
@@ -19,6 +20,7 @@ import {
   worldToLatLng,
   tileIndexAt,
   rotAABB,
+  type BBox,
 } from "./world";
 
 describe("world <-> latLng conversion", () => {
@@ -114,25 +116,101 @@ describe("tiles", () => {
     });
   });
 
-  it("parses Leaflet tile keys and rejects junk", () => {
-    expect(parseTileKey("16:42:7")).toEqual({ z: 16, x: 42, y: 7 });
-    expect(parseTileKey("16:4.2:7")).toBeNull();
-    expect(parseTileKey("16:42")).toBeNull();
+  it("parses Leaflet tile keys (x:y:z, z last) and rejects junk", () => {
+    expect(parseTileKey("42:7:16")).toEqual({ z: 16, x: 42, y: 7 });
+    expect(parseTileKey("4.2:7:16")).toBeNull();
+    expect(parseTileKey("42:16")).toBeNull();
     expect(parseTileKey("a:b:c")).toBeNull();
-    expect(parseTileKey("-1:0:0")).toBeNull();
+    expect(parseTileKey("42:7:-1")).toBeNull();
   });
 
   it("selects exactly the tiles hit by a bbox", () => {
-    const keys = ["16:65535:65535", "16:65534:65535", "16:65535:65534"];
+    const keys = ["65535:65535:16", "65534:65535:16", "65535:65534:16"];
     const hit = nativeTileBBox(16, 65535, 65535);
-    expect(tilesIntersecting(keys, hit)).toEqual(["16:65535:65535"]);
+    expect(tilesIntersecting(keys, hit)).toEqual(["65535:65535:16"]);
   });
 
   it("selects nothing when bbox is outside visible tiles", () => {
-    expect(tilesIntersecting(["5:3:7"], { x: -5, y: -5, w: 1, h: 1 })).toEqual(
+    expect(tilesIntersecting(["3:7:5"], { x: -5, y: -5, w: 1, h: 1 })).toEqual(
       [],
     );
     expect(tilesIntersecting(["junk"], { x: 0, y: 0, w: 9, h: 9 })).toEqual([]);
+  });
+});
+
+describe("latLngBoundsToWorldBBox", () => {
+  it("converts a lat/lng viewport to native px (y-flip aware)", () => {
+    const u = 2 ** 20;
+    expect(latLngBoundsToWorldBBox(-64, 192, -128, 64)).toEqual({
+      x: 64 * u,
+      y: 64 * u,
+      w: 128 * u,
+      h: 64 * u,
+    });
+  });
+});
+
+/** SSE event bbox: the rotAABB footprint centred on (cx, cy). */
+function eventBBox(cx: number, cy: number, rot: number): BBox {
+  const aabb = rotAABB(256, 64, rot);
+  return { x: cx - aabb.w / 2, y: cy - aabb.h / 2, w: aabb.w, h: aabb.h };
+}
+
+describe("rotated AABB → tiles at zoom", () => {
+  const Z = 20;
+
+  /** Leaflet-style rendered keys for tiles [x0..x1]×[y0..y1] at z20. */
+  function renderedKeys(x0: number, x1: number, y0: number, y1: number) {
+    const keys: string[] = [];
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) keys.push(`${x}:${y}:${Z}`);
+    }
+    return keys;
+  }
+
+  /** Tile keys covering a bbox, from the server tile formula (half-open). */
+  function coveringKeys(bbox: BBox) {
+    const keys: string[] = [];
+    const x1 = tileIndexAt(Z, bbox.x + bbox.w - 1e-9);
+    const y1 = tileIndexAt(Z, bbox.y + bbox.h - 1e-9);
+    for (let x = tileIndexAt(Z, bbox.x); x <= x1; x++) {
+      for (let y = tileIndexAt(Z, bbox.y); y <= y1; y++) {
+        keys.push(`${x}:${y}:${Z}`);
+      }
+    }
+    return keys.toSorted();
+  }
+
+  it("a 45° rotation reaches tiles the unrotated rect misses", () => {
+    const keys = renderedKeys(6, 9, 6, 9);
+    const flat = eventBBox(2048, 2140, 0);
+    const spin = eventBBox(2048, 2140, 45);
+    expect(tilesIntersecting(keys, flat).toSorted()).toEqual(
+      coveringKeys(flat),
+    );
+    expect(tilesIntersecting(keys, spin).toSorted()).toEqual(
+      coveringKeys(spin),
+    );
+    expect(tilesIntersecting(keys, flat).toSorted()).toEqual([
+      "7:8:20",
+      "8:8:20",
+    ]);
+    expect(tilesIntersecting(keys, spin).toSorted()).toEqual([
+      "7:7:20",
+      "7:8:20",
+      "8:7:20",
+      "8:8:20",
+    ]);
+  });
+
+  it("quarter turns transpose the covered span exactly", () => {
+    const keys = renderedKeys(6, 9, 6, 9);
+    expect(
+      tilesIntersecting(keys, eventBBox(2080, 2140, 0)).toSorted(),
+    ).toEqual(["7:8:20", "8:8:20"]);
+    expect(
+      tilesIntersecting(keys, eventBBox(2080, 2140, 90)).toSorted(),
+    ).toEqual(["8:7:20", "8:8:20"]);
   });
 });
 

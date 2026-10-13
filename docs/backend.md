@@ -167,10 +167,15 @@ segment is a wildcard parsed as `<n>.webp`):
    the live maxSeq; otherwise render (leaf: chunk crop/scale; parent: four
    children) and write through object + row + memory.
 
-`ETag: "maxSeq"`, `Cache-Control: no-cache` ⇒ clients revalidate and get cheap
-304s; a GET computed after a placement commit always re-renders before serving,
-so a stale tile is never served _after_ the placement is visible. Removed art
-lowers maxSeq ⇒ ETag drops back and content re-renders from chunks.
+`ETag: "maxSeq"`, `Cache-Control: public, max-age=1, stale-while-revalidate=30`
+— three cooperating parts: `max-age=1` stops per-tile revalidation storms during
+placement bursts, `stale-while-revalidate` serves tiles instantly while
+refreshing them in the background, and the SSE-driven client refetch bounds
+visible staleness to ~1s past a place/remove commit; the ETag keeps every
+revalidation a cheap 304 while the seq is unchanged. A GET computed after a
+placement commit always re-renders before serving, so a stale tile is never
+served _after_ the placement is visible. Removed art lowers maxSeq ⇒ ETag drops
+back and content re-renders from chunks.
 
 ## Moderation
 
@@ -303,6 +308,14 @@ CI note: fmt/clippy/test all need `libvips-dev` installed on the runner.
 - Stateless logout cannot revoke a presented cookie (accepted; no session store
   by design).
 - Concurrent place requests serialize per chunk set — by design, to keep paint
-  order == seq order.
-- Single-instance deployment assumed for in-process caches/locks; scale by shard
-  or move tile locks to a shared store if that changes.
+  order == seq order. Serialization is two-tier: in-process per-key locks (cheap
+  same-pod) then session-level PG advisory locks on a dedicated connection held
+  across the chunk GET→composite→PUT window (`chunks.rs`). Sorted-key
+  acquisition keeps multi-chunk rects deadlock-free cross-instance; the lock
+  must outlive the transaction because the object PUT is not transactional
+  (commit-then-PUT would leave the read-modify-write window open).
+- Tile render locks stay in-process only: cross-instance duplicate cold renders
+  are benign (same seq ⇒ byte-identical output; last PUT wins with identical
+  bytes). Multi-replica is now structurally safe for the write path but still
+  needs validation at `replicas: 2` (in-memory tile cache hit rates, pool sizing
+  under advisory-lock waits) before raising the replica count.

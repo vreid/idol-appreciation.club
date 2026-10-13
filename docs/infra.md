@@ -233,6 +233,13 @@ cluster uuid on every deploy, so flipping is a values-only change. Flip notes:
   `chart/values.yaml`, not `var.node_count`.
 - The `dev-md` control-plane plan caps the cluster at 30 nodes — not a binding
   constraint at max 2.
+- FIRST-HOUR WATCH (flip day): the pending-pod signal can be spoofed by
+  kube-system pods that can never schedule on a 1-node group — coredns (topology
+  spread wants a second node) and cilium-operator (hostPort conflicts) sit
+  Pending forever (live-verified). Cluster Autoscaler does scheduling simulation
+  — it only scales for pods that would fit post-scale-up — but watch its first
+  hour against exactly these two; a group pinned at max with no app load is this
+  failure mode.
 
 **Cost**: the worker plan `STARTER-4xCPU-8GB` is €20/mo per node (hourly-billed,
 ~€0.03/h; billed hours cap at a 28-day month), so the autoscaling ceiling adds

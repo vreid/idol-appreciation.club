@@ -31,10 +31,10 @@ jobs:
           persist-credentials: false
       - uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af
       - run: vp install
-      - run: npx playwright install --with-deps chromium
+      - run: ./node_modules/.bin/playwright install --with-deps chromium
       # @smoke always runs; @full self-skips if /api/health is not green.
-      - run: npx playwright test --config e2e/playwright.config.ts --grep @smoke
-      - run: npx playwright test --config e2e/playwright.config.ts
+      - run: ./node_modules/.bin/playwright test --config e2e/playwright.config.ts --grep @smoke
+      - run: ./node_modules/.bin/playwright test --config e2e/playwright.config.ts
       - name: Upload e2e artifacts
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

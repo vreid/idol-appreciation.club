@@ -73,6 +73,18 @@ export function latLngToWorld(lat: number, lng: number): WorldPoint {
   return { x: lng * WORLD_UNITS, y: lat === 0 ? 0 : -lat * WORLD_UNITS };
 }
 
+/** Native-px bbox of a Leaflet viewport (y-flip aware, w/h > 0). */
+export function latLngBoundsToWorldBBox(
+  north: number,
+  east: number,
+  south: number,
+  west: number,
+): BBox {
+  const nw = latLngToWorld(north, west);
+  const se = latLngToWorld(south, east);
+  return { x: nw.x, y: nw.y, w: se.x - nw.x, h: se.y - nw.y };
+}
+
 /**
  * Axis-aligned footprint (native px) of a w×h rect rotated by rot degrees
  * clockwise about its centre. The placement x/y/w/h stay the unrotated rect;
@@ -132,13 +144,16 @@ export function bboxesIntersect(a: BBox, b: BBox): boolean {
   );
 }
 
-/** Leaflet tile keys look like "z:x:y". Returns null for other shapes. */
+/**
+ * Leaflet tile keys (Grid._tileCoordsToKey) look like "x:y:z" — x first, z
+ * LAST. Returns null for other shapes.
+ */
 export function parseTileKey(key: string): (WorldPoint & { z: number }) | null {
   const parts = key.split(":");
   if (parts.length !== 3) return null;
-  const z = Number(parts[0]);
-  const x = Number(parts[1]);
-  const y = Number(parts[2]);
+  const x = Number(parts[0]);
+  const y = Number(parts[1]);
+  const z = Number(parts[2]);
   if (![z, x, y].every((n) => Number.isInteger(n) && n >= 0)) return null;
   return { z, x, y };
 }

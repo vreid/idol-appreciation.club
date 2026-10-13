@@ -34,12 +34,12 @@ tasks:
         # - ! marks breaking (major bump)
         # - subject: required, no leading/trailing whitespace; no trailing
         #   period (checked separately so single-character subjects pass)
-        cc='^(feat|fix|perf|refactor|docs|chore|test|ci|build|style)(\((backend|web|tofu|chart|ci|deps|release|api|seed|docs)\))?(!)?: [^[:space:]](.*[^[:space:]])?$'
+        cc='^(feat|fix|perf|refactor|docs|chore|test|ci|build|style)(\((backend|web|tofu|chart|ci|deps|release|api|seed|docs|infra)\))?(!)?: [^[:space:]](.*[^[:space:]])?$'
         if ! printf '%s\n' "$title" | grep -qE "$cc"; then
           echo "PR title is not strict Conventional Commits: \"$title\"" >&2
           echo 'expected: <type>(<scope>)?!: <subject>' >&2
           echo '  types:  feat|fix|perf|refactor|docs|chore|test|ci|build|style' >&2
-          echo '  scopes: backend|web|tofu|chart|ci|deps|release|api|seed|docs (optional)' >&2
+          echo '  scopes: backend|web|tofu|chart|ci|deps|release|api|seed|docs|infra (optional)' >&2
           echo '  subject: non-empty, no trailing period, no trailing whitespace' >&2
           exit 1
         fi
@@ -72,6 +72,12 @@ tasks:
       - helm lint chart
       - helm template chart > /dev/null
       - helm template chart --set web.enabled=false > /dev/null
+      # Client-side K8s schema validation: helm lint/template only parse
+      # YAML and miss typed-shape errors (e.g. lifecycle.preStop.exec
+      # rendered as an array). kubectl apply/create --dry-run=client need
+      # an API server for REST mapping, so offline kubeconform with pinned
+      # upstream schemas is the gate.
+      - helm template chart | kubeconform -strict -summary -kubernetes-version 1.32.0
 
   tofu:fmt:
     desc: tofu fmt check, recursive (ci.yml tofu)

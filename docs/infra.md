@@ -143,6 +143,12 @@ circular dependency. `tofu init -migrate-state` moves existing state.
 To restore state locally from a CI run: `actions/cache` keys are
 `tofu-state-<run-id>`; restore with `tofu-state-` prefix fallback.
 
+### Retrieving account credentials
+
+`scripts/account-password.sh [admin-account|seed-account]` prints the stored
+username + password for either account secret (namespace idol; passwords are
+initial-only until the change-password endpoint lands).
+
 ### Rotating SESSION_SECRET
 
 `gh secret set SESSION_SECRET --env production` (64 hex chars). The deploy

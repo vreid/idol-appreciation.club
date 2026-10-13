@@ -238,10 +238,11 @@ separate web pod.
 ```sh
 sudo apt install libvips-dev postgresql        # build + test deps
 sudo service postgresql start
-sudo -u postgres createuser -d idol && sudo -u postgres createdb -O idol idol
-export DATABASE_URL=postgres://idol:idol@localhost:5432/idol
+sudo -u postgres createuser -d -s idol   # local trust auth, no password
+sudo -u postgres createdb -O idol idol
+export DATABASE_URL=postgres://localhost/idol
 export S3_ENDPOINT=file:///tmp/idol-s3 S3_BUCKET=dev
-export SESSION_SECRET=0123456789abcdef0123456789abcdef
+export SESSION_SECRET=$(head -c 32 /dev/urandom | xxd -p -c 64)
 cargo run                                       # API on :8080
 ```
 

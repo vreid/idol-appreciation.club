@@ -55,6 +55,10 @@ tasks:
       - tofu init -backend=false -input=false
       - tofu validate
 
+  tofu:ci:
+    desc: tofu fmt + validate (ci.yml tofu)
+    deps: [tofu:fmt, tofu:validate]
+
   # ---------------- test ----------------
 
   web:test:
@@ -374,6 +378,10 @@ tasks:
     desc: install web dependencies with the pinned pnpm (frozen lockfile)
     dir: web
     cmds:
+      # node/pnpm resolve from devEngines here (not the root mise.toml), so
+      # materialize them before pnpm runs — CI shims only exist for
+      # root-config tools until this happens.
+      - mise install
       - pnpm install --frozen-lockfile
 
   ci:

@@ -64,7 +64,7 @@ describe("auth flows", () => {
       jsonResponse(201, { username: "liz", pending: true }),
     );
     const api = createApiClient({ fetch: mock.fetch });
-    const created = await api.register("liz", "pw123456");
+    const created = await api.register("liz", "pw");
     expect(created).toEqual({ username: "liz", pending: true });
     expect(mock.calls[0]?.url).toBe("/api/auth/register");
     expect(mock.calls[0]?.init.method).toBe("POST");
@@ -74,7 +74,7 @@ describe("auth flows", () => {
     });
     expect(jsonBody(mock.calls[0])).toEqual({
       username: "liz",
-      password: "pw123456",
+      password: "pw",
     });
   });
 

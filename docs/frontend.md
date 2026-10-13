@@ -128,20 +128,19 @@ lines**.
 - `Placement.rot` is degrees clockwise, 0 = upright; `x, y, w, h` stay the
   UNROTATED rect (top-left + long-edge dims). The rect rotates about its own
   centre, so the centre is always `(x + w/2, y + h/2)`.
-- Overlays that need a screen box (ghost footprint outline, placement
-  highlight) use the axis-aligned footprint `rotAABB(w, h, rot)` — centred on
-  the rect centre, sized `w·|cos|+h·|sin| × w·|sin|+h·|cos|`. Hit-testing is
-  server-side (`placements/near` bbox), so the client never re-implements it.
+- Overlays that need a screen box (ghost footprint outline, placement highlight)
+  use the axis-aligned footprint `rotAABB(w, h, rot)` — centred on the rect
+  centre, sized `w·|cos|+h·|sin| × w·|sin|+h·|cos|`. Hit-testing is server-side
+  (`placements/near` bbox), so the client never re-implements it.
 - Ghost rendering: CSS `translate(pointer) rotate(rot)` on the `<img>`
-  (transform-origin centre = rect centre); the outline is a sibling div sized
-  to the AABB at the current zoom.
+  (transform-origin centre = rect centre); the outline is a sibling div sized to
+  the AABB at the current zoom.
 
 ## API usage map
 
 Cookie auth, same-origin. `src/lib/api.ts` is the only fetch site (fetch
 injectable for tests). Endpoints per contract: auth register/login/logout/me,
-place (multipart x/y/size/rot), placements/near, center, events (SSE),
-reports,
+place (multipart x/y/size/rot), placements/near, center, events (SSE), reports,
 admin placements delete. The store (`state.svelte.ts`) owns UX rules: 429 →
 cooldown toast with Retry-After; 401/403 → login popover; center chip polls
 `/api/center` every 30 s and refreshes early when an SSE bbox covers the center.
@@ -182,8 +181,9 @@ JS gzipped is 68 kB against the 150 kB target; the only runtime deps are Svelte
   check confirmed topbar, 0/0 chip, center reticle, modals, auth popover,
   Escape-to-close. Rotation: place flow DOM-verified against a static replica
   (ghost `rotate(45deg)` at the pointer, dashed AABB outline √2-scaled at 45°,
-  Rotation slider label live) and pixel-verified via magnified screenshot. `/api` 502s with no backend running, surfaced as toasts —
-  expected without the backend.
+  Rotation slider label live) and pixel-verified via magnified screenshot.
+  `/api` 502s with no backend running, surfaced as toasts — expected without the
+  backend.
 - Docker: image builds (multi-stage, 93.6 MB); HTTP-verified — `/` and
   `/index.html` send `no-cache`, `/assets/*` send
   `public, max-age=31536000, immutable` + gzip, unknown routes fall back to

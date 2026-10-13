@@ -140,50 +140,66 @@ pub async fn place(
     let _guards = app.chunk_locks.lock_sorted(&lock_keys).await;
 
     let mut tx = app.pool.begin().await?;
-    // Cooldown: paints (overlapping existing art) wait 300s, empty space 1s.
-    let intersects: (bool,) = sqlx::query_as(
-        "SELECT EXISTS(
-             SELECT 1 FROM placements
-             WHERE removed_at IS NULL
-               AND bbox && box(point($1::float8, $2::float8),
-                               point($3::float8, $4::float8)))",
-    )
-    .bind(rect.x)
-    .bind(rect.y)
-    .bind(rect.x + rect.w - 1)
-    .bind(rect.y + rect.h - 1)
-    .fetch_one(&mut *tx)
-    .await?;
-    let threshold = if intersects.0 {
-        app.cfg.cooldown_paint_secs
-    } else {
-        app.cfg.cooldown_empty_secs
-    };
-    let updated: Option<(chrono::DateTime<Utc>,)> = sqlx::query_as(
-        "UPDATE accounts SET last_placement_at = now()
-         WHERE id = $1
-           AND (last_placement_at IS NULL
-                OR now() - last_placement_at >= make_interval(secs => $2))
-         RETURNING last_placement_at",
-    )
-    .bind(account_id)
-    .bind(threshold)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if updated.is_none() {
-        tx.rollback().await.map_err(internal)?;
-        let last: Option<(chrono::DateTime<Utc>,)> =
-            sqlx::query_as("SELECT last_placement_at FROM accounts WHERE id = $1")
-                .bind(account_id)
-                .fetch_optional(&app.pool)
-                .await?;
-        let elapsed = last
-            .map(|(t,)| (Utc::now() - t).num_milliseconds() as f64 / 1000.0)
-            .unwrap_or(0.0);
-        return match cooldown_check(elapsed, threshold) {
-            Ok(()) => Err(AppError::Cooldown(threshold.max(1))),
-            Err(retry) => Err(AppError::Cooldown(retry)),
+    // Cooldown exemption (admin-granted): skip both cooldowns entirely —
+    // no 429 path. Everyone else: paints (overlapping existing art) wait
+    // 300 s, empty space 1 s.
+    let acct: (bool,) =
+        sqlx::query_as("SELECT cooldown_exempt FROM accounts WHERE id = $1 FOR UPDATE")
+            .bind(account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !acct.0 {
+        let intersects: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(
+                 SELECT 1 FROM placements
+                 WHERE removed_at IS NULL
+                   AND bbox && box(point($1::float8, $2::float8),
+                                   point($3::float8, $4::float8)))",
+        )
+        .bind(rect.x)
+        .bind(rect.y)
+        .bind(rect.x + rect.w - 1)
+        .bind(rect.y + rect.h - 1)
+        .fetch_one(&mut *tx)
+        .await?;
+        let threshold = if intersects.0 {
+            app.cfg.cooldown_paint_secs
+        } else {
+            app.cfg.cooldown_empty_secs
         };
+        let updated: Option<(chrono::DateTime<Utc>,)> = sqlx::query_as(
+            "UPDATE accounts SET last_placement_at = now()
+             WHERE id = $1
+               AND (last_placement_at IS NULL
+                    OR now() - last_placement_at >= make_interval(secs => $2))
+             RETURNING last_placement_at",
+        )
+        .bind(account_id)
+        .bind(threshold)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if updated.is_none() {
+            tx.rollback().await.map_err(internal)?;
+            let last: Option<(chrono::DateTime<Utc>,)> =
+                sqlx::query_as("SELECT last_placement_at FROM accounts WHERE id = $1")
+                    .bind(account_id)
+                    .fetch_optional(&app.pool)
+                    .await?;
+            let elapsed = last
+                .map(|(t,)| (Utc::now() - t).num_milliseconds() as f64 / 1000.0)
+                .unwrap_or(0.0);
+            return match cooldown_check(elapsed, threshold) {
+                Ok(()) => Err(AppError::Cooldown(threshold.max(1))),
+                Err(retry) => Err(AppError::Cooldown(retry)),
+            };
+        }
+    } else {
+        // Keep last_placement_at fresh so a later un-exempt state starts
+        // from the real last placement, not an ancient one.
+        sqlx::query("UPDATE accounts SET last_placement_at = now() WHERE id = $1")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
     }
 
     let seq: (i64,) = sqlx::query_as("SELECT nextval('placement_seq')")

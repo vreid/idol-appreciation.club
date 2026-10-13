@@ -876,3 +876,94 @@ async fn approval_flag_off_auto_approves() {
     let resp = raw_login(&server, "openc").await;
     assert_eq!(resp.status, 200);
 }
+
+// -------------------------------------------------------------------------
+// Cooldown exemption.
+// -------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cooldown_exempt_skips_both_cooldowns() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "root").await;
+    let c1 = register(&server, "speedster").await;
+    let cx = CENTER - 8;
+
+    // Overlapping paints normally 429 immediately.
+    let p1 = place(&server, &c1, &png(32, 32), cx, cx, 32).await;
+    assert_eq!(p1.status, 201);
+    let p2 = place(&server, &c1, &png(32, 32), cx + 4, cx + 4, 32).await;
+    assert_eq!(p2.status, 429);
+
+    // Exempt → the same overlapping placement succeeds immediately.
+    let on = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/speedster/cooldown-exempt",
+        &[("Cookie", &admin), ("Content-Type", "application/json")],
+        br#"{"exempt":true}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(on.status, 204);
+    let p3 = place(&server, &c1, &png(32, 32), cx + 8, cx + 8, 32).await;
+    assert_eq!(p3.status, 201, "{}", String::from_utf8_lossy(&p3.body));
+
+    // The list surfaces the flag.
+    let list = request(
+        &server,
+        "GET",
+        "/api/admin/accounts",
+        &[("Cookie", &admin)],
+        vec![],
+    )
+    .await;
+    let l = list.json();
+    let row = l
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == "speedster")
+        .unwrap();
+    assert_eq!(row["cooldown_exempt"], true);
+
+    // Toggle off → cooldowns reapply (overlap again → 429).
+    let off = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/speedster/cooldown-exempt",
+        &[("Cookie", &admin), ("Content-Type", "application/json")],
+        br#"{"exempt":false}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(off.status, 204);
+    let p4 = place(&server, &c1, &png(32, 32), cx + 12, cx + 12, 32).await;
+    assert_eq!(p4.status, 429);
+
+    // Idempotent 204, 404 unknown, 403 non-admin.
+    let off = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/speedster/cooldown-exempt",
+        &[("Cookie", &admin), ("Content-Type", "application/json")],
+        br#"{"exempt":false}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(off.status, 204);
+    let unknown = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/ghost/cooldown-exempt",
+        &[("Cookie", &admin), ("Content-Type", "application/json")],
+        br#"{"exempt":true}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(unknown.status, 404);
+    let forbidden = request(
+        &server,
+        "POST",
+        "/api/admin/accounts/root/cooldown-exempt",
+        &[("Cookie", &c1), ("Content-Type", "application/json")],
+        br#"{"exempt":true}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(forbidden.status, 403);
+}

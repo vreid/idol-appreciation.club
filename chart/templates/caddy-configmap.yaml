@@ -1,4 +1,3 @@
-{{- if .Values.web.enabled }}
 # Edge config lives in a ConfigMap so routing/TLS changes never need an
 # image rebuild. Kept in sync with web/Caddyfile by deploy.yml before
 # upgrade (chart/caddy/Caddyfile is the packaged copy).
@@ -10,4 +9,3 @@ metadata:
 data:
   Caddyfile: |
 {{ .Files.Get "caddy/Caddyfile" | indent 4 }}
-{{- end }}

@@ -14,7 +14,8 @@
 
 use crate::error::{internal, AppError};
 use libvips::ops;
-use libvips::VipsImage;
+pub use libvips::VipsImage;
+
 use sha2::{Digest, Sha256};
 
 /// Paper background tiles render on.
@@ -96,6 +97,13 @@ impl SourceFormat {
 ///
 /// Rejects unknown loaders; collapses animation to the first frame; applies
 /// EXIF orientation before any metadata stripping, so pixels are upright.
+/// Sample the RGB triple at `(x, y)` (test/diagnostic helper; the image
+/// must be uchar-typed, as all rasters we produce are).
+pub fn get_pixel(img: &VipsImage, x: i32, y: i32) -> [u8; 3] {
+    let p = ops::getpoint(img, x, y).expect("getpoint");
+    [p[0] as u8, p[1] as u8, p[2] as u8]
+}
+
 pub fn decode(bytes: &[u8]) -> Result<(VipsImage, SourceFormat), AppError> {
     let _vips = VIPS.lock();
     let img = VipsImage::new_from_buffer(bytes, "")
@@ -481,7 +489,7 @@ fn tiny_png_rgba([r, g, b]: [u8; 3]) -> Vec<u8> {
 /// Scale a decoded 1×1 solid-color RGBA PNG to `width x height` and
 /// encode. (Constructing constants over `black` yields broken band
 /// layouts — see blank_chunk for the same decode-based trick.)
-fn solid_png(width: u32, height: u32, color: [u8; 3]) -> Vec<u8> {
+pub fn solid_png(width: u32, height: u32, color: [u8; 3]) -> Vec<u8> {
     init().expect("vips");
     let tiny = decode_1px(color);
     // A 1px source tiled to the exact target size — solid by construction.

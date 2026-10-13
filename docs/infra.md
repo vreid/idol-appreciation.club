@@ -31,8 +31,8 @@ Cloudflare (DNS ONLY, proxied=false)
   plane), 1 worker node, managed PostgreSQL, managed object storage + bucket +
   app credentials.
 - `deploy/` — namespace, backend Deployment/Service, Ingress (apex + www
-  redirect), ClusterIssuer; `deploy/placeholder.yaml` is a bootstrap-only static
-  page (deleted by the deploy workflow).
+  redirect), ClusterIssuer; legacy bootstrap manifests kept for history only
+  (the chart is the deploy surface; the placeholder edge is retired).
 - `scripts/sync-dns.sh` — idempotent Cloudflare record upsert.
 
 ### DNS is deliberately not in tofu
@@ -143,6 +143,48 @@ circular dependency. `tofu init -migrate-state` moves existing state.
 To restore state locally from a CI run: `actions/cache` keys are
 `tofu-state-<run-id>`; restore with `tofu-state-` prefix fallback.
 
+### State drift rebuild + pre-merge gate (2026-10-13, validated)
+
+Two findings from the autoscaling PR's merge gate:
+
+- `ci.yml`'s tofu-plan job is **structurally stateless** — it never touches the
+  Actions cache, so every PR plans against empty state ("12 to add"). That check
+  proves config validity, nothing about live infra. The only state-aware CI
+  paths are `infra-apply`/`deploy` (they use `.github/actions/tofu-setup`, which
+  restores `tofu-state-*` and saves it back).
+- The shared checkout's tfstate AND the CI cache had drifted: the live cluster
+  (`0d4c74ac-…`) was not the state's cluster (`0d25605e-…`); state refresh
+  showed the live node group as deleted and planned a duplicate node group on
+  the dead one.
+
+Validated rebuild (read-only against live; do it in a scratch worktree, never
+the shared checkout):
+
+1. `tofu init`, then delete local `terraform.tfstate*`.
+2. Import all 12 resources. IDs: network / k8s cluster / PG / object storage =
+   their UUIDs (cluster's network UUID comes from `GET /1.3/kubernetes/{uuid}` →
+   `network`); node group = `{cluster_uuid}/default`; logical db + db user =
+   `{db_uuid}/app`; bucket = `{objsto_uuid}/idol-canvas`; objsto user =
+   `{objsto_uuid}/app`; policy = `{objsto_uuid}/app-bucket-access`;
+   user_policy = `{objsto_uuid}/app/app-bucket-access`; access key =
+   `{objsto_uuid}/app/{access_key_id}`.
+3. `tofu apply -refresh-only -auto-approve` (reconciles computed fields).
+4. Expected plan: **0 to add, 0 to destroy**, 3 benign in-place lines — PG
+   `components` (importer populates a computed list), objsto policy `document`
+   (re-encode of identical JSON), db user `password` (unreadable via API —
+   documented above). None are node-related. A real apply of the password line
+   rotates the app DB password once; the deploy chain self-heals it (deploy.yml
+   always re-reads the password from the API and patches `app-env`).
+5. A/B gate for infra-relevant PRs: plan the branch AND main against the same
+   rebuilt state — they must be byte-identical (proves the PR adds no
+   provider-level behavior).
+
+Before merging any PR that touches `tofu/**`: reconcile the CI cache by
+dispatching `deploy.yml` once (no code change needed — its refresh-only step
+reconciles and re-saves `tofu-state-*`), check its "tofu state settle" step
+shows 0 add / 0 destroy, only then merge; the chained infra-apply then plans
+zero against live.
+
 ### Retrieving account credentials
 
 `scripts/account-password.sh [admin-account|seed-account]` prints the stored
@@ -159,6 +201,30 @@ workflow pushes it into the `app-env` secret on the next run.
 Once branch protection is on, every change ships via short-lived branch + PR;
 `gh pr create --fill --auto-merge=squash` queues the merge and deploy fires on
 merge. main stays green by construction. Agents stop pushing to main directly.
+
+## Deploy image digests (2026-10-13 incident note)
+
+A workflow-dispatch deploy whose image builds had been skipped rolled pods with
+malformed image refs (`InvalidImageName`) and had to be rolled back. Two guards
+now make that state unreachable: `deploy:k8s` fails fast before any cluster
+contact when an image that would roll has an empty digest, and the chart's image
+helper refuses to render — at `helm template` time, so `task helm:lint` catches
+it pre-merge — any `images.*` entry with a missing, malformed digest, or
+malformed tag. Digests remain the source of truth for what actually runs; the
+semver `tag` is an audit trail only, never concatenated into the ref.
+
+## Deploy secret choreography (S3 auth invariant)
+
+`deploy:k8s` provisions `app-env` (DB URL, S3 creds, session secret) **before**
+the helm upgrade, and never blindly rotates: the cluster's current S3 creds are
+probed with a cheap signed ListObjects — HTTP 200 keeps them (idempotent
+deploys, zero key churn), HTTP 403 rotates, and anything else aborts the deploy
+with prod untouched. Rotation therefore happens only while no pod has rolled, so
+the upgrade itself brings every pod up on a live key: **deploys never invalidate
+working S3 auth** (no `SignatureDoesNotMatch` windows). A trailing
+`rollout restart` runs only on the rotate branch, and only to cover upgrades
+that were a no-op for pods. The DB password stays fresh-from-API on every deploy
+(UpCloud may rotate managed-DB user passwords; state is not trusted for it).
 
 ## Scaling: the backend chunk writer (MUST read before scaling)
 
@@ -183,20 +249,76 @@ Decision record — the committed scale path, in order, when traffic justifies
    Valkey/Redis distributed locks: no second consistency domain, no lock-TTL/tx
    mismatch, no write-path SPOF).
 2. Then validate `backend.replicaCount = 2`.
-3. Managed Valkey (1C/1GB) ONLY if the metrics endpoint shows tile-read p95
+3. Flip the backend HPA (`backend.autoscaling.enabled`, below).
+4. CDN when read traffic dominates (tile GETs are immutable and
+   content-addressed — ideal cache candidates) — before any further compute.
+5. Managed Valkey (1C/1GB) ONLY if the metrics endpoint shows tile-read p95
    dominated by S3-GET latency (role: shared tile LRU across replicas).
 
-## Marker removal checklist (do not forget)
+### Autoscaling, staged (HPA + node group)
 
-The `backend/.ci-ready` / `web/.ci-ready` markers are a trust-based bootstrap
-gate. Once (a) protection + auto-merge are on and (b) the first green deploy has
-landed via a merged PR:
+Both halves are wired but **disabled by default**; the flags are values-only
+flips once their gates pass.
 
-- [ ] delete both marker files and their `ready`-job references
-- [ ] switch ci.yml/deploy.yml jobs to standard path filters (`backend/**`,
-      `web/**`)
-- [ ] confirm skipped-vs-pending behavior under protection
-- [ ] tell all agents: PRs only; broken code fails its own PR
+**Backend HPA** — `chart/templates/backend-hpa.yaml` behind
+`backend.autoscaling.enabled` (default `false`): min 1 / max 3 replicas, CPU
+target 65%, 5-minute scale-down stabilization (scale-up stays immediate). When
+enabled, the Deployment omits `replicas` so the HPA owns the count. Hard gate:
+the backend is a single writer — PG advisory locks on the chunk path are not
+validated at >1 replica, and auto-scaling a single-writer to 3 replicas is a
+data-ordering bug factory. Flip only AFTER: locks merged (order step 1) →
+`backend.replicaCount = 2` soak-validated (step 2).
+
+Scale-on-noise caveat: cold tile renders and prewarm bursts spike CPU (libvips
+webp decode/encode) for a couple of minutes. A utilization-based HPA will read
+those bursts as load; the 5m stabilization window stops them driving
+down-scales, but scale-UPS fire immediately — expect an occasional replica added
+for a prewarm and judge the 65% target from `/api/metrics`, not the first noisy
+hour.
+
+**Node group** — UpCloud managed Kubernetes has NO native node-group min/max
+autoscaling: the 1.3 API and provider v5.47.0 schema expose only a fixed count
+(`node_count`; API JSON field `count`), so "set max>min" in tofu is impossible.
+Autoscaling is the Kubernetes Cluster Autoscaler (UpCloud's cloud-provider
+build, `ghcr.io/upcloudltd/autoscaler`) running in-cluster: it PATCHes the
+node-group count within `--nodes=<min>:<max>:<nodeGroup>` when pods are pending,
+and scales down idle nodes (~10–15 min default). Shipped as
+`chart/templates/cluster-autoscaler.yaml` behind `clusterAutoscaler.enabled`
+(default `false`), bounds 1..2 on the `default` group. The deploy workflow
+provisions the `upcloud-autoscaler` secret (account token) and passes the
+cluster uuid on every deploy, so flipping is a values-only change. Flip notes:
+
+- tofu's `node_count` stays the floor (1). FIELD-NAME TRAP that caused the
+  2026-10-13 node-roll outage: bare `count` in tofu is the meta-argument — it
+  clones the node-group resource and rolls every node; the attribute is
+  `node_count`.
+- DRIFT: CA owns the live count, so the node group carries
+  `lifecycle { ignore_changes = [node_count] }` in tofu — a real `tofu apply`
+  (infra-apply) can no longer destroy a scaled-up node. deploy.yml only
+  refreshes state (`-refresh-only`); raise capacity via the CA bounds in
+  `chart/values.yaml`, not `var.node_count`.
+- The `dev-md` control-plane plan caps the cluster at 30 nodes — not a binding
+  constraint at max 2.
+- FIRST-HOUR WATCH (flip day): the pending-pod signal can be spoofed by
+  kube-system pods that can never schedule on a 1-node group — coredns (topology
+  spread wants a second node) and cilium-operator (hostPort conflicts) sit
+  Pending forever (live-verified). Cluster Autoscaler does scheduling simulation
+  — it only scales for pods that would fit post-scale-up — but watch its first
+  hour against exactly these two; a group pinned at max with no app load is this
+  failure mode.
+
+**Cost**: the worker plan `STARTER-4xCPU-8GB` is €20/mo per node (hourly-billed,
+~€0.03/h; billed hours cap at a 28-day month), so the autoscaling ceiling adds
+at most €20/mo (2 nodes) over today's single node; HPA replicas cost nothing
+extra until a second node is actually needed.
+
+## Readiness markers: removed
+
+The `backend/.ci-ready` / `web/.ci-ready` trust-based bootstrap gate and the
+placeholder edge were retired once branch protection + auto-merge were on: CI
+gates run unconditionally (tier-2 jobs path-filtered by the `changed` job in
+ci.yml), the chart has no `web.enabled` split, and `deploy/placeholder.yaml` is
+gone. Broken code fails its own PR; nothing waits on a marker file.
 
 ## Environment protection (later)
 
@@ -258,8 +380,6 @@ Current edge:
 - ingress-nginx and cert-manager are **not installed** by deploy.yml anymore;
   `deploy/20-ingress.yaml` and `deploy/30-issuer.yaml` are dead files kept only
   for history.
-- Bootstrap without the web image: `deploy/placeholder.yaml` becomes the edge
-  (plain HTTP LoadBalancer) and is deleted once web is ready.
 - Because images are tag-pinned (`:main`), all Deployments set
   `imagePullPolicy: Always` (a node-cached `:main` otherwise masks new pushes;
   the deploy job additionally pins exact digests via

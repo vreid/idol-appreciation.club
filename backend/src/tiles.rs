@@ -399,28 +399,45 @@ pub async fn get_tile(
                 .into_response())
         }
     };
-    let etag = format!("\"{seq}\"");
-    if let Some(inm) = headers
+    let inm = headers
         .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-    {
-        if inm.split(',').any(|t| t.trim() == etag) {
-            let mut resp = StatusCode::NOT_MODIFIED.into_response();
-            let h = resp.headers_mut();
-            h.insert(header::ETAG, etag.parse().expect("etag header"));
-            if stale {
-                h.insert(
-                    HeaderName::from_static("x-tile-stale"),
-                    HeaderValue::from_static("true"),
-                );
-            }
-            return Ok(resp);
+        .and_then(|v| v.to_str().ok());
+    Ok(tile_response(bytes, seq, stale, inm))
+}
+
+/// 304 when If-None-Match carries the served `"maxSeq"` tag, else 200 with
+/// the encoded tile. Caching is four cooperating parts: `max-age=1` stops
+/// per-tile revalidation storms during placement bursts,
+/// `stale-while-revalidate` serves tiles instantly while refreshing them in
+/// the background, the SSE-driven client refetch bounds visible staleness
+/// to ~1s past each place/remove commit, and the server-side stale-serve
+/// (`stale` ⇒ `X-Tile-Stale: true` + the STORED seq as ETag) keeps a GET
+/// with stale bytes available entirely off the render path — the ETag
+/// still makes every revalidation a cheap 304 while the seq is unchanged.
+fn tile_response(bytes: Bytes, seq: i64, stale: bool, if_none_match: Option<&str>) -> Response {
+    let etag = format!("\"{seq}\"");
+    let matched = if_none_match.is_some_and(|inm| inm.split(',').any(|t| t.trim() == etag));
+    if matched {
+        let mut resp = StatusCode::NOT_MODIFIED.into_response();
+        let h = resp.headers_mut();
+        h.insert(header::ETAG, etag.parse().expect("etag header"));
+        if stale {
+            h.insert(
+                HeaderName::from_static("x-tile-stale"),
+                HeaderValue::from_static("true"),
+            );
         }
+        return resp;
     }
     let mut resp = (StatusCode::OK, bytes).into_response();
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, "image/webp".parse().expect("mime"));
-    h.insert(header::CACHE_CONTROL, "no-cache".parse().expect("cc"));
+    h.insert(
+        header::CACHE_CONTROL,
+        "public, max-age=1, stale-while-revalidate=30"
+            .parse()
+            .expect("cache-control header"),
+    );
     h.insert(header::ETAG, etag.parse().expect("etag header"));
     if stale {
         h.insert(
@@ -428,7 +445,26 @@ pub async fn get_tile(
             HeaderValue::from_static("true"),
         );
     }
-    Ok(resp)
+    resp
+}
+    }
+    let mut resp = (StatusCode::OK, bytes).into_response();
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, "image/webp".parse().expect("mime"));
+    h.insert(
+        header::CACHE_CONTROL,
+        "public, max-age=1, stale-while-revalidate=30"
+            .parse()
+            .expect("cache-control header"),
+    );
+    h.insert(header::ETAG, etag.parse().expect("etag header"));
+    if stale {
+        h.insert(
+            HeaderName::from_static("x-tile-stale"),
+            HeaderValue::from_static("true"),
+        );
+    }
+    resp
 }
 
 /// The constant empty (pure paper) tile, encoded once per process. Tiles
@@ -508,6 +544,12 @@ async fn tile_bytes_inner(
         });
     }
     // Serialize renders per tile so concurrent misses don't duplicate work.
+    // In-process only, by design: cross-instance duplicate renders are
+    // benign — every instance computes the same seq for the tile, so both
+    // produce byte-identical output and the last PUT wins with identical
+    // content (place compositing is the only nondeterministic raster
+    // writer, and it takes the chunk advisory locks). No PG advisory locks
+    // on this path.
     let lock_key = format!("{z}/{x}/{y}");
     let _guard = app.tile_locks.lock_sorted(&[lock_key]).await;
     // Another request may have rendered this exact seq while we waited.
@@ -640,3 +682,59 @@ async fn render_tile(app: &App, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
 /// TILE_PX must divide a chunk exactly at BASE_Z for the recursion to line
 /// up (compile-time sanity of the world constants).
 const _: () = assert!(TILE_PX * (1 << (20 - BASE_Z)) == CHUNK_PX);
+
+#[cfg(test)]
+mod tests {
+    use super::tile_response;
+    use axum::http::header;
+    use axum::http::StatusCode;
+    use bytes::Bytes;
+
+    const BYTES: Bytes = Bytes::from_static(b"tile-bytes");
+
+    #[test]
+    fn fresh_get_is_200_with_cache_headers() {
+        let resp = tile_response(BYTES.clone(), 7, false, None);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let h = resp.headers();
+        assert_eq!(h[header::CONTENT_TYPE], "image/webp");
+        assert_eq!(
+            h[header::CACHE_CONTROL],
+            "public, max-age=1, stale-while-revalidate=30"
+        );
+        assert_eq!(h[header::ETAG], "\"7\"");
+    }
+
+    #[test]
+    fn matching_if_none_match_is_304_with_etag() {
+        let resp = tile_response(BYTES.clone(), 7, false, Some("\"7\""));
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers()[header::ETAG], "\"7\"");
+    }
+
+    #[test]
+    fn if_none_match_list_matches_after_trim() {
+        let resp = tile_response(BYTES.clone(), 7, false, Some("\"3\", \"7\""));
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[test]
+    fn stale_if_none_match_still_serves_200() {
+        let resp = tile_response(BYTES.clone(), 7, false, Some("\"6\""));
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::ETAG], "\"7\"");
+    }
+
+    #[test]
+    fn stale_serve_flags_both_success_kinds() {
+        // Server-side SWR: stored seq served with X-Tile-Stale on 200...
+        let resp = tile_response(BYTES.clone(), 6, true, None);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::ETAG], "\"6\"");
+        assert_eq!(resp.headers()["x-tile-stale"], "true");
+        // ...and on the 304 when the client already holds those bytes.
+        let resp = tile_response(BYTES.clone(), 6, true, Some("\"6\""));
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers()["x-tile-stale"], "true");
+    }
+}

@@ -169,9 +169,15 @@ segment is a wildcard parsed as `<n>.webp`). Resolution order:
    resolve fresh, a parent render never bakes stale child bytes) and write
    through object + row + memory.
 
-`ETag: "maxSeq"`, `Cache-Control: no-cache` ⇒ clients revalidate and get cheap
-304s. Removed art lowers maxSeq ⇒ the ETag drops back and content re-renders
-from chunks.
+`ETag: "maxSeq"`,
+`Cache-Control: public, max-age=1, stale-while-revalidate=30` — four
+cooperating parts: `max-age=1` stops per-tile revalidation storms during
+placement bursts, `stale-while-revalidate` serves tiles instantly while
+refreshing them in the background, the SSE-driven client refetch bounds visible
+staleness to ~1s past a place/remove commit, and (this change) the SERVER now
+stale-serves from stored bytes instead of rendering on the request path; the
+ETag keeps every revalidation a cheap 304 while the seq is unchanged. Removed
+art lowers maxSeq ⇒ the ETag drops back and content re-renders from chunks.
 
 ### Server-side stale-while-revalidate (the pile-wedge fix)
 
@@ -220,13 +226,16 @@ max-delay anchor) and `last_bump_at` (the quiet anchor):
   background render runs at a time and renders can never monopolize vips or the
   blocking pool. Pool-sizing math: tokio's blocking pool defaults to 512
   threads; after the fix background renders occupy at most one slot, placement
-  composites stay bounded by chunk-key locks, and vips eval runs with
-  `concurrency_set(1)` per op (see the libvips hardening rules above) — so
-  placement pixel work always has headroom; renders go through the queue ONLY,
-  never a placement's path. Render preemption is deliberately not implemented: a
-  single render's wall-time damage is bounded by one worker slot + per-op vips
-  concurrency 1 (a pending `VIPS_CONCURRENCY` env clamp in PR #68 composes with,
-  but is overridden by, `concurrency_set(1)`).
+  composites stay bounded by the chunk locks (in-process keys + PG advisory
+  locks, see chunks), and vips eval runs with `concurrency_set(1)` per op (see
+  the libvips hardening rules above) — so placement pixel work always has
+  headroom; renders go through the queue ONLY, never a placement's path. The
+  deployment's `VIPS_CONCURRENCY=2` clamp (#68) bounds threads per pipeline
+  env-side; `concurrency_set(1)` overrides it for this service's in-process
+  ops and remains the belt to the env's suspenders — the env is the binding
+  cap for any future render-role worker that does not call `concurrency_set`.
+  Render preemption is deliberately not implemented: a single render's
+  wall-time damage is bounded by one worker slot + per-op vips concurrency.
 - **Bounds and drop policy.** `TILE_RENDER_QUEUE_CAP` (default 512) bounds
   pending rows. Enqueue attempts beyond the cap are dropped — harmless, the next
   stale GET re-enqueues, and tiles WITH stored bytes are immune (they were
@@ -246,7 +255,8 @@ entire coordination protocol, no advisory locks, and the read/serve path stays
 untouched. To migrate, stop spawning the in-process worker in that deployment
 and run the same loop from a render-role binary; multi-writer safety comes from
 the claim query, per-tile write races are last-write-wins on identical-content
-bytes.
+bytes (the same benignness that already makes cross-instance cold renders
+safe).
 
 Public flood surfaces, for the record: SSE connections and tile GETs are the
 unauthenticated surfaces a flood hits; placement writes stay bounded by the
@@ -398,6 +408,14 @@ CI note: fmt/clippy/test all need `libvips-dev` installed on the runner.
 - Stateless logout cannot revoke a presented cookie (accepted; no session store
   by design).
 - Concurrent place requests serialize per chunk set — by design, to keep paint
-  order == seq order.
-- Single-instance deployment assumed for in-process caches/locks; scale by shard
-  or move tile locks to a shared store if that changes.
+  order == seq order. Serialization is two-tier: in-process per-key locks (cheap
+  same-pod) then session-level PG advisory locks on a dedicated connection held
+  across the chunk GET→composite→PUT window (`chunks.rs`). Sorted-key
+  acquisition keeps multi-chunk rects deadlock-free cross-instance; the lock
+  must outlive the transaction because the object PUT is not transactional
+  (commit-then-PUT would leave the read-modify-write window open).
+- Tile render locks stay in-process only: cross-instance duplicate cold renders
+  are benign (same seq ⇒ byte-identical output; last PUT wins with identical
+  bytes). Multi-replica is now structurally safe for the write path but still
+  needs validation at `replicas: 2` (in-memory tile cache hit rates, pool sizing
+  under advisory-lock waits) before raising the replica count.

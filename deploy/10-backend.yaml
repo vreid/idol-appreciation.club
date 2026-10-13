@@ -7,6 +7,10 @@ metadata:
     app: backend
     app.kubernetes.io/part-of: idol-appreciation.club
 spec:
+  # Chunk-raster mutation is cross-instance safe (PG session advisory locks
+  # around the chunk GET→composite→PUT window, sorted-key acquisition).
+  # Raise above 1 only after validating at 2: tile-cache hit rates and PG
+  # pool behavior under advisory-lock waits are unproven multi-replica.
   replicas: 1
   selector:
     matchLabels:

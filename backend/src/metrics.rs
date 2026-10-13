@@ -48,19 +48,34 @@ impl<const N: usize> Histogram<N> {
     }
 
     fn render(&self, name: &str, labels: &str) -> String {
+        // Bucket lines always carry the `le` label. `_sum`/`_count` carry
+        // only the series' own labels — omitted entirely when empty
+        // (`metric v`, not `metric{} v`).
+        let tail_line = |suffix: &str, tail: &str, value: String| {
+            format!("{name}_{suffix}{{{labels}{tail}}} {value}\n")
+        };
+        let plain_line = |suffix: &str, value: String| {
+            if labels.is_empty() {
+                format!("{name}_{suffix} {value}\n")
+            } else {
+                format!("{name}_{suffix}{{{labels}}} {value}\n")
+            }
+        };
         let mut out = String::with_capacity(64 * (N + 4));
         let count = self.count.load(Ordering::Relaxed);
         let mut cumulative = 0u64;
         for (i, b) in self.buckets.iter().enumerate() {
             cumulative += self.counts[i].load(Ordering::Relaxed);
-            out.push_str(&format!(
-                "{name}_bucket{{{labels}le=\"{b:?}\"}} {cumulative}\n"
+            out.push_str(&tail_line(
+                "bucket",
+                &format!("le=\"{b:?}\""),
+                cumulative.to_string(),
             ));
         }
-        out.push_str(&format!("{name}_bucket{{{labels}le=\"+Inf\"}} {count}\n"));
+        out.push_str(&tail_line("bucket", "le=\"+Inf\"", count.to_string()));
         let sum_secs = self.sum_nanos.load(Ordering::Relaxed) as f64 / 1e9;
-        out.push_str(&format!("{name}_sum{{{labels}}} {sum_secs}\n"));
-        out.push_str(&format!("{name}_count{{{labels}}} {count}\n"));
+        out.push_str(&plain_line("sum", format!("{sum_secs}")));
+        out.push_str(&plain_line("count", count.to_string()));
         out
     }
 }

@@ -111,8 +111,6 @@ export const digStackSchema = z.object({
   truncated: z.boolean(),
 });
 
-export type DigEntry = z.infer<typeof digEntrySchema>;
-export type DigStack = z.infer<typeof digStackSchema>;
 
 /** 201 response of POST /api/place. */
 export const placedPlacementSchema = z.object({

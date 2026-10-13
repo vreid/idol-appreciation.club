@@ -196,9 +196,9 @@ export function createAppStore(
       setDigStack([]);
       setDigTotal(0);
       setDigIndex(-1);
-      // A failed dig degrades silently — the panel works without it.
+      // A failed dig degrades silently; a superseded one is dropped.
       void client.dig(point.x, point.y).then((stack) => {
-        if (selectedPlace()?.id !== placement.id) return; // superseded
+        if (selectedPlace()?.id !== placement.id) return;
         setDigStack(stack.stack);
         setDigTotal(stack.total);
         setDigIndex(stack.stack.findIndex((e) => e.id === placement.id));

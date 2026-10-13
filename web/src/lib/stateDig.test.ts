@@ -67,10 +67,12 @@ describe("dig stack selection", () => {
     });
     store.flipDig(1);
     expect(store.selectedPlace?.id).toBe("mid");
-    store.flipDig(9); // clamps at the deepest stratum
+    // Deeper than the deepest stratum clamps in place.
+    store.flipDig(9);
     expect(store.selectedPlace?.id).toBe("deep");
     expect(store.digIndex).toBe(2);
-    store.flipDig(-9); // clamps back at the top
+    // And back up clamps at the newest.
+    store.flipDig(-9);
     expect(store.selectedPlace?.id).toBe("top");
     expect(store.digIndex).toBe(0);
   });

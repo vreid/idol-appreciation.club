@@ -1,0 +1,10 @@
+# jactionlint configuration — only things the tool cannot know.
+# Our release.yml uses workflow_run as a CI-success gate for releases on
+# main. It runs in the default-branch context, checks out only the trusted
+# main ref (never a PR ref), and consumes no artifacts or event payload
+# from the triggering run, so the dangerous-triggers heuristic does not
+# apply here.
+paths:
+  ".github/workflows/release.yml":
+    ignore:
+      - dangerous-triggers

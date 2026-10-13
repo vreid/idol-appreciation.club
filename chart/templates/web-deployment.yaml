@@ -8,6 +8,18 @@ metadata:
     app: web
 spec:
   replicas: 1
+  # Explicit zero-downtime roll: maxSurge 1 / maxUnavailable 0 means the
+  # replacement pod must pass readiness before the old one terminates.
+  # The caddy-data PVC is RWO, so the surged pod schedules on the volume's
+  # node (UpCloud CSI pins the PV to one node) where same-node multi-pod
+  # mounts are allowed — the roll either overlaps cleanly or the new pod
+  # stays Pending (old pod keeps serving) until the node has capacity.
+  # ACME certs live on the persistent PVC, so rolls do NOT re-run ACME.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: web
@@ -15,6 +27,10 @@ spec:
     metadata:
       labels:
         app: web
+      annotations:
+        # Release semver recorded for audit (the image itself stays
+        # digest-pinned; GHCR tags are mutable — see chart/values.yaml).
+        idol-appreciation.club/release-tag: {{ .Values.images.web.tag | quote }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -51,6 +67,12 @@ spec:
               port: 8080
             initialDelaySeconds: 3
             periodSeconds: 10
+          # Give kubelet time to propagate endpoint removal to the
+          # UpCloud LB before caddy drains, so in-flight TLS connections
+          # land on the surged pod.
+          lifecycle:
+            preStop:
+              exec: ["sleep", "5"]
           livenessProbe:
             tcpSocket:
               port: 8080

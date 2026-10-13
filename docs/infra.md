@@ -160,6 +160,32 @@ Once branch protection is on, every change ships via short-lived branch + PR;
 `gh pr create --fill --auto-merge=squash` queues the merge and deploy fires on
 merge. main stays green by construction. Agents stop pushing to main directly.
 
+## Scaling: the backend chunk writer (MUST read before scaling)
+
+Chunk mutation takes PG advisory locks (session-level, sorted lock order — see
+the backend chunk path) so multi-writer safety does not depend on a single
+process; the in-process lock tier is retained in front of them. Render locks
+stay in-process only — cross-instance duplicate renders are benign.
+
+N>1 is gated on the advisory-lock path being in place: replicas MUST stay 1
+until then (the paint-order == seq guarantee depends on it). The constraint is
+annotated on the deployment (`idol.app/scaling: single-writer-required`, see
+`chart/templates/backend-deployment.yaml`) so it is greppable from the live
+cluster. RollingUpdate `maxSurge=1, maxUnavailable=0` provides zero-downtime
+rollouts regardless of replica count — the surge pod is not in Service until
+`/api/health` passes, and the old pod drains gracefully (SSE clients reconnect
+with backoff).
+
+Decision record — the committed scale path, in order, when traffic justifies
+(trigger evidence comes from `/api/metrics` (#51), not forecasts):
+
+1. Advisory locks on chunk mutation (in-tx, atomic with the write — chosen over
+   Valkey/Redis distributed locks: no second consistency domain, no lock-TTL/tx
+   mismatch, no write-path SPOF).
+2. Then validate `backend.replicaCount = 2`.
+3. Managed Valkey (1C/1GB) ONLY if the metrics endpoint shows tile-read p95
+   dominated by S3-GET latency (role: shared tile LRU across replicas).
+
 ## Marker removal checklist (do not forget)
 
 The `backend/.ci-ready` / `web/.ci-ready` markers are a trust-based bootstrap

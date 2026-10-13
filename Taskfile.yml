@@ -128,6 +128,11 @@ tasks:
     desc: install contract/ dependencies with the pinned pnpm (frozen lockfile)
     dir: contract
     cmds:
+      # Same materialization web:install does: node/pnpm resolve from THIS
+      # package.json's devEngines, not the root mise.toml, and task runs
+      # deps in parallel — without `mise install` first, a cold CI cache
+      # has no pnpm on PATH yet (observed as exit 127 in web-lint).
+      - mise install
       - pnpm install --frozen-lockfile
 
   web:contract:

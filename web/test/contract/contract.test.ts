@@ -2,7 +2,7 @@
  * Contract integration suite: the TypeScript client against the REAL
  * backend. The harness (web/scripts/contract-harness.sh, task
  * `web:contract`) boots the pinned backend gate image + Postgres, exports
- * BASE_URL, and runs this file via vitest.contract.config.ts.
+ * CONTRACT_BASE_URL, and runs this file via vitest.contract.config.ts.
  *
  * Every response and SSE event is parsed against the wire-contract schemas
  * (contract/zod) — first inside the API client itself (a malformed payload
@@ -24,7 +24,9 @@ import {
 } from "@contract";
 import { ApiError, createApiClient } from "../../src/lib/api";
 
-const BASE_URL = process.env.BASE_URL ?? "http://127.0.0.1:18080";
+// NOT `BASE_URL`: vite clobbers that name with its app base ("/") in
+// process.env during vitest runs, which would 404 every request.
+const BASE_URL = process.env.CONTRACT_BASE_URL ?? "http://127.0.0.1:18080";
 
 const FIXTURE = fileURLToPath(
   new URL("../../test-assets/e2e-tile.png", import.meta.url),

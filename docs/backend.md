@@ -567,10 +567,10 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `MAX_DECODE_PIXELS=67108864`, `MIN_SIZE=16`, `MAX_SIZE=4096`,
 `TILE_CACHE_ENTRIES=2048`, `TILE_RENDER_QUIET_SECS=4`,
 `TILE_RENDER_MAX_DELAY_SECS=12`, `TILE_RENDER_QUEUE_CAP=512`,
-`TILE_RASTER_CACHE_ENTRIES=8`, `RUST_LOG=info`,
-`IMPORT_BLOCK_ENTRIES=500`, `IMPORT_GROUP_CONCURRENCY=2`,
-`IMPORT_DERIVATIVE_LONG_EDGE=1024`, `REGISTRATION_APPROVAL_REQUIRED=false` (set
-true in production to gate external signups behind admin approval).
+`TILE_RASTER_CACHE_ENTRIES=8`, `RUST_LOG=info`, `IMPORT_BLOCK_ENTRIES=500`,
+`IMPORT_GROUP_CONCURRENCY=2`, `IMPORT_DERIVATIVE_LONG_EDGE=1024`,
+`REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
+signups behind admin approval).
 
 `S3_ENDPOINT=file:///path` selects a local-filesystem store (dev only); anything
 else is an S3 endpoint (`allow_http` for plain-http endpoints).

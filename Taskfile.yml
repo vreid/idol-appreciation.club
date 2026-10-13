@@ -510,8 +510,12 @@ tasks:
           # zero valid keys — and every later deploy re-entered the same
           # broken rotate on its 403 probe.
           uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc6.json
-          mapfile -t oldkeys < <(jq -r '.[].access_key_id' /tmp/uc6.json)
-          echo "existing access keys before rotation: ${#oldkeys[@]}"
+          # go-task runs cmds in its interpreted shell (mvdan-sh), where
+          # `mapfile -t x < <(...)` silently leaves x unset -> unbound
+          # variable under set -u (run 38465310743). Plain assignment +
+          # word-splitting; access key ids are hex with no whitespace.
+          oldkeys="$(jq -r '.[].access_key_id' /tmp/uc6.json)"
+          echo "existing access keys before rotation: $(jq 'length' /tmp/uc6.json)"
           # CREATE first: the 2-key quota still has room while the old
           # keys exist, and a failed mint leaves prod credentials intact.
           uc key-create POST "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc5.json
@@ -531,8 +535,8 @@ tasks:
             echo "new access key failed live verify (HTTP $vcode); old keys left intact, refusing to rotate" >&2
             exit 1
           fi
-          # Only now delete the old keys.
-          for old in "${oldkeys[@]}"; do
+          # Only now delete the old keys (empty list -> no iterations).
+          for old in $oldkeys; do
             uc key-del DELETE "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" /tmp/uc7.json
             echo "deleted old access key ${old:0:8}…"
           done

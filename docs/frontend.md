@@ -221,9 +221,9 @@ point and opens the existing upload flow against it:
 
 - `src/lib/longPress.ts` owns the input: Leaflet `contextmenu` for desktop, a
   500 ms touch timer with 10 px move-slop for touch (iOS Safari never fires
-  `contextmenu` for touches). A fired long-press eats the synthetic `click`
-  that the following `touchend` would produce. The map root suppresses the
-  native callout (`-webkit-touch-callout: none`) and text selection.
+  `contextmenu` for touches). A fired long-press eats the synthetic `click` that
+  the following `touchend` would produce. The map root suppresses the native
+  callout (`-webkit-touch-callout: none`) and text selection.
 - The store holds the pin (`pendingSpot`); the place panel's primary becomes
   **📍 Place at pinned spot** (`confirmPinned`), which rides the exact
   `confirmAt` path as tap-to-choose — auth prompt, 429 cooldown toast and

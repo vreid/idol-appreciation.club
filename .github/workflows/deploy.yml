@@ -298,6 +298,7 @@ jobs:
           kubectl -n idol rollout status deployment/backend --timeout=180s
         env:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          UPCLOUD_API_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
 
       - name: Sync DNS to LoadBalancer IP
         run: |

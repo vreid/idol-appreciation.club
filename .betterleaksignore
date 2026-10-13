@@ -52,7 +52,7 @@ web/src/lib/components/AuthPopover.tsx:generic-password:89
 3700663d1f7b383325c67d6bf9cece37d41f2d1a:web/test/contract/contract.test.ts:generic-password:161
 
 # feat(web)! PR revives both files on this tree ("hunter2hunter2" is the
-# repo's load-test bot password, contract.test.ts:161 the contract-suite
-# bot password) — working-tree entries required again. Regenerate per
+# repo's load-test bot password, contract.test.ts the contract-suite bot
+# password) — working-tree entries required again. Regenerate per
 # .betterleaks.toml.
-web/test/contract/contract.test.ts:generic-password:161
+web/test/contract/contract.test.ts:generic-password:163

@@ -2,15 +2,13 @@
   import { onDestroy } from "svelte";
   import type { AppStore } from "../state.svelte";
   import { cooldownRemainingMs, formatCountdown } from "../cooldown";
-  import { formatDuration, timeAgo } from "../format";
+  import { timeAgo } from "../format";
 
   let {
     store,
-    onOpenLeaderboard,
     onPickImage,
   }: {
     store: AppStore;
-    onOpenLeaderboard: () => void;
     onPickImage: () => void;
   } = $props();
 
@@ -34,12 +32,6 @@
     adminOpen = !adminOpen;
     if (adminOpen) void store.loadAdminPending();
   }
-
-  const heldSeconds = $derived.by(() => {
-    const since = store.center?.current?.since;
-    if (since === undefined) return 0;
-    return Math.max(0, Math.floor((now - Date.parse(since)) / 1000));
-  });
 
   const cooldownLeft = $derived(
     cooldownRemainingMs(store.me?.cooldown_until ?? null, now),
@@ -87,30 +79,10 @@
     <span class="brand-name">idol-appreciation<b>.club</b></span>
   </div>
 
-  <button
-    class="chip center-chip"
-    type="button"
-    onclick={onOpenLeaderboard}
-    title="Who holds 0/0 — click for the leaderboard"
-  >
-    {#if store.center?.current}
-      <span class="chip-crown" aria-hidden="true">👑</span>
-      <span class="chip-name">{store.center.current.username}</span>
-      <span class="chip-time">{formatDuration(heldSeconds)}</span>
-    {:else}
-      <span class="chip-crown" aria-hidden="true">👑</span>
-      <span class="chip-name muted">0/0 unclaimed</span>
-    {/if}
-  </button>
-
   <div class="top-actions">
     <button class="btn primary" type="button" onclick={onPickImage}>
       📸 Place image
     </button>
-    <button class="btn ghost" type="button" onclick={onOpenLeaderboard}>
-      🏆 Leaderboard
-    </button>
-
     {#if store.authChecked && store.me}
       <span class="me-box">
         <span class="me-name">@{store.me.username}</span>

@@ -10,7 +10,7 @@
   --warn: #fbbf24;
   --danger: #f87171;
   --line: rgba(255, 255, 255, 0.09);
-  --radius: 12px;
+  --radius: 8px;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   font-family:
     system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
@@ -82,76 +82,6 @@ body {
   background: var(--bg-3) !important;
 }
 
-/* center reticle */
-
-.center-reticle {
-  pointer-events: none;
-}
-
-.reticle {
-  position: absolute;
-  left: -14px;
-  top: -14px;
-  width: 28px;
-  height: 28px;
-  border: 2px solid var(--accent);
-  border-radius: 50%;
-  box-shadow:
-    0 0 12px rgba(255, 95, 162, 0.8),
-    inset 0 0 8px rgba(255, 95, 162, 0.5);
-  animation: reticle-pulse 2.4s ease-in-out infinite;
-}
-
-.reticle::before,
-.reticle::after {
-  content: "";
-  position: absolute;
-  background: var(--accent);
-}
-
-.reticle::before {
-  left: 50%;
-  top: -8px;
-  width: 2px;
-  height: 44px;
-  transform: translateX(-50%);
-  opacity: 0.5;
-}
-
-.reticle::after {
-  top: 50%;
-  left: -8px;
-  height: 2px;
-  width: 44px;
-  transform: translateY(-50%);
-  opacity: 0.5;
-}
-
-@keyframes reticle-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.12);
-  }
-}
-
-.reticle-label {
-  position: absolute;
-  left: 14px;
-  top: 8px;
-  padding: 1px 7px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--accent);
-  background: rgba(11, 13, 16, 0.8);
-  border: 1px solid rgba(255, 95, 162, 0.45);
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
 /* ghost / pulse / highlight */
 
 .map-ghost {
@@ -207,11 +137,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  background: linear-gradient(
-    to bottom,
-    rgba(11, 13, 16, 0.92),
-    rgba(11, 13, 16, 0.75)
-  );
+  background: rgba(11, 13, 16, 0.86);
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(10px);
   flex-wrap: wrap;
@@ -235,19 +161,6 @@ body {
 
 .brand-name b {
   color: var(--accent);
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--bg-2);
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
 }
 
 .center-chip:hover {
@@ -285,7 +198,7 @@ body {
   gap: 8px;
   padding: 4px 6px 4px 12px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: var(--bg-2);
   font-size: 13px;
 }
@@ -380,7 +293,7 @@ body {
   justify-content: center;
   gap: 6px;
   padding: 8px 14px;
-  border-radius: 10px;
+  border-radius: var(--radius);
   border: 1px solid var(--line);
   background: var(--bg-2);
   color: var(--text);
@@ -410,10 +323,9 @@ body {
 }
 
 .btn.primary {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  background: var(--accent);
   border-color: transparent;
   color: #fff;
-  box-shadow: 0 4px 18px rgba(255, 95, 162, 0.35);
 }
 
 .btn.primary:hover {
@@ -516,13 +428,6 @@ input:focus {
 
 /* ---------- floating controls ---------- */
 
-.jump {
-  position: fixed;
-  right: 60px;
-  bottom: 18px;
-  z-index: 1000;
-}
-
 .footer-chip {
   position: fixed;
   left: 14px;
@@ -531,11 +436,8 @@ input:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(11, 13, 16, 0.82);
-  backdrop-filter: blur(8px);
+  padding: 4px 8px;
+  background: transparent;
 }
 
 .footer-chip a {
@@ -720,7 +622,7 @@ input[type="range"] {
   color: var(--text);
   background: var(--bg-3);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius);
   box-shadow: var(--shadow);
   cursor: pointer;
   animation: toast-in 0.18s ease-out;
@@ -890,12 +792,6 @@ input[type="range"] {
 
   .chip-name {
     max-width: 110px;
-  }
-
-  .jump {
-    right: 56px;
-    bottom: 14px;
-    padding: 8px 12px;
   }
 
   .place-panel {

@@ -51,7 +51,6 @@ export interface WorldMapController {
   pulse(bbox: BBox): void;
   setGhost(ghost: GhostImage | null): void;
   setPlacing(placing: boolean): void;
-  jumpToCenter(): void;
   currentZoom(): number;
   worldToScreenPoint(x: number, y: number): { x: number; y: number };
   showPlacement(p: PlacementForPopup): void;
@@ -284,16 +283,6 @@ export function createWorldMap(
     bounds: L.latLngBounds(...WORLD_LAT_LNG_BOUNDS),
   }).addTo(map);
 
-  L.marker(worldToLatLng(WORLD_CENTER, WORLD_CENTER), {
-    interactive: false,
-    keyboard: false,
-    icon: L.divIcon({
-      className: "center-reticle",
-      html: '<div class="reticle"></div><div class="reticle-label">0/0</div>',
-      iconSize: [0, 0],
-    }),
-  }).addTo(map);
-
   const stopCentering = wireWorldCentering(map);
   map.setView(worldToLatLng(WORLD_CENTER, WORLD_CENTER), 16);
 
@@ -327,10 +316,6 @@ export function createWorldMap(
       } else {
         map.scrollWheelZoom.enable();
       }
-    },
-
-    jumpToCenter(): void {
-      map.flyTo(worldToLatLng(WORLD_CENTER, WORLD_CENTER), 16);
     },
 
     currentZoom(): number {

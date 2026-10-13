@@ -365,6 +365,7 @@ pub fn composite(
 pub fn blank_chunk(size: i32) -> Result<VipsImage, AppError> {
     let _vips = VIPS.lock();
     const ONE_PX_TRANSPARENT_PNG_HEX: &str = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
+
     let bytes = hex_decode(ONE_PX_TRANSPARENT_PNG_HEX);
     let (tiny, _) = decode(&bytes, DEFAULT_MAX_DECODE_PIXELS)?;
     let embedded = ops::embed_with_opts(
@@ -784,24 +785,42 @@ mod tests {
         assert_eq!((img.get_width(), img.get_height()), (20, 20));
     }
 
+    /// Real 2-frame animated GIF (two 64x64 frames, 285 bytes) generated
+    /// with ImageMagick; loads as a 64x128 strip, decodes one 64x64 frame.
+    /// Real 2-frame animated GIF (two 64x64 frames, 285 bytes) generated
+    /// with ImageMagick; loads as a 64x128 strip, decodes one 64x64 frame.
+    const ANIMATED_2F_GIF_HEX: &str = concat!(
+        "47494638396140004000f00000ff000000000021ff0b4e45545343415045322e",
+        "30030100000021f904000000000021ff0b496d6167654d616769636b0e67616d",
+        "6d613d302e343534353435002c0000000040004000000245848fa9cbed0fa39c",
+        "b4da8bb3debcfb0f86e24896e689a6eacab6ee0bc7f24cd7f68de7facef7fe0f",
+        "0c0a87c4a2f1884c2a97cca6f3098d4aa7d4aaf58acd6ab7dcae1750000021f9",
+        "04000000000021ff0b496d6167654d616769636b0e67616d6d613d302e343534",
+        "353435002c0000000040004000800000ff0000000245848fa9cbed0fa39cb4da",
+        "8bb3debcfb0f86e24896e689a6eacab6ee0bc7f24cd7f68de7facef7fe0f0c0a",
+        "87c4a2f1884c2a97cca6f3098d4aa7d4aaf58acd6ab7dcae175000003b"
+    );
+
     /// The decoded-pixel budget is measured on the frame we actually
     /// decode, not the animation strip: a 2-frame 64x64 gif loads as a
     /// 64x128 strip (8192 px) but decodes one 64x64 (4096 px) frame, so a
     /// budget between the two must ADMIT it. The full-strip check this
-    /// replaced rejected such uploads outright.
+    /// replaced rejected such uploads outright. Embedded as hex (like the
+    /// 1px PNG) because the gate image copies only src/ — no tests/
+    /// fixtures directory exists in the container.
     #[test]
     fn animated_budget_bounds_the_decoded_frame() {
         if !vips() {
             return;
         }
-        let gif = include_bytes!("../tests/fixtures/animated-2f.gif");
-        let probed = probe(gif).unwrap();
+        let gif = hex_decode(ANIMATED_2F_GIF_HEX);
+        let probed = probe(&gif).unwrap();
         assert_eq!(probed, (64, 64), "probe reports first-frame dims");
         let budget = 4096u64; // exactly one frame
-        let (img, fmt) = decode(gif, budget).expect("frame fits the budget");
+        let (img, fmt) = decode(&gif, budget).expect("frame fits the budget");
         assert_eq!(fmt, SourceFormat::Gif);
         assert_eq!((img.get_width(), img.get_height()), (64, 64));
-        assert!(decode(gif, budget - 1).is_err(), "one pixel under rejects");
+        assert!(decode(&gif, budget - 1).is_err(), "one pixel under rejects");
     }
 
     /// The budget boundary is exact, and absurd declared dimensions

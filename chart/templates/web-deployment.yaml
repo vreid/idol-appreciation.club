@@ -72,7 +72,8 @@ spec:
           # land on the surged pod.
           lifecycle:
             preStop:
-              exec: ["sleep", "5"]
+              exec:
+                command: ["sleep", "5"]
           livenessProbe:
             tcpSocket:
               port: 8080

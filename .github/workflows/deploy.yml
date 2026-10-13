@@ -276,12 +276,24 @@ jobs:
           fi
           db="$(tofu output -raw app_database_uri)"
           test -n "$db" || { echo "app_database_uri missing" >&2; exit 1; }
+          # every UpCloud call names its stage and retries transient 4xx/5xx
+          uc() { local label="$1" method="$2" url="$3" out="$4" code
+            for attempt in 1 2 3; do
+              code="$(curl -s -o "$out" -w '%{http_code}' -X "$method" -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "$url")" || code="000"
+              case "$code" in 2*) return 0;; 429|5*) sleep $((attempt * 5));; *)
+                echo "upcloud $label -> HTTP $code"; sed -n '1,3p' "$out"; exit 1;;
+              esac
+            done
+            echo "upcloud $label -> HTTP $code after retries"; exit 1
+          }
           # UpCloud may rotate managed-DB user passwords after the provider
           # creates them, so trust the API, not tofu state, for the app user's
           # password. Host/port stay from tofu output.
-          dbuuid="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" https://api.upcloud.com/1.3/database | jq -r 'if type == "array" then . else [.database_services[]?] end | map(select(.name == "idol-canvas-db")) | .[0].uuid')"
+          uc db-list GET https://api.upcloud.com/1.3/database /tmp/uc1.json
+          dbuuid="$(jq -r 'if type == "array" then . else [.database_services[]?] end | map(select(.name == "idol-canvas-db")) | .[0].uuid' /tmp/uc1.json)"
           test -n "$dbuuid" || { echo "database service not found via API" >&2; exit 1; }
-          apppw="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/database/$dbuuid/users" | jq -r '(.users // .)[] | select(.username == "app") | .password')"
+          uc db-users GET "https://api.upcloud.com/1.3/database/$dbuuid/users" /tmp/uc2.json
+          apppw="$(jq -r '(.users // .)[] | select(.username == "app") | .password' /tmp/uc2.json)"
           test -n "$apppw" || { echo "app user password not found via API" >&2; exit 1; }
           db="$(printf '%s' "$db" | sed -E "s|//[^@]+@|//app:$apppw@|")"
           # Object storage: trust the UpCloud API, not tofu state. The
@@ -289,17 +301,21 @@ jobs:
           # service actually gets (seen on recreate), so fetch both from the
           # API, rotate the app user's access key, and refuse to ship an
           # endpoint that does not resolve.
-          osuuid="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" https://api.upcloud.com/1.3/object-storage-2 | jq -r 'if type == "array" then . else [.object_storages[]?] end | map(select(.name == "idol-canvas-objsto")) | .[0].uuid')"
+          uc os-list GET https://api.upcloud.com/1.3/object-storage-2 /tmp/uc3.json
+          osuuid="$(jq -r 'if type == "array" then . else [.object_storages[]?] end | map(select(.name == "idol-canvas-objsto")) | .[0].uuid' /tmp/uc3.json)"
           test -n "$osuuid" || { echo "object storage not found via API" >&2; exit 1; }
-          oshost="$(curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/object-storage-2/$osuuid" | jq -r '.endpoints[0].domain_name')"
+          uc os-detail GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid" /tmp/uc4.json
+          oshost="$(jq -r '.endpoints[0].domain_name' /tmp/uc4.json)"
           test -n "$oshost" || { echo "objsto endpoint missing from API" >&2; exit 1; }
           dig +short "$oshost" | grep -qE '^[0-9]+\.' || { echo "objsto endpoint $oshost does not resolve" >&2; exit 1; }
-          newkey="$(curl -sfc -X POST -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys")"
+          uc key-create POST "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc5.json
+          newkey="$(cat /tmp/uc5.json)"
           sak="$(printf '%s' "$newkey" | jq -r .access_key_id)"
           ssk="$(printf '%s' "$newkey" | jq -r .secret_access_key)"
           test -n "$ssk" || { echo "access key creation failed" >&2; exit 1; }
-          curl -sfc -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" | jq -r '.[] | select(.access_key_id != "'"$sak"'") | .access_key_id' | while read -r old; do
-            curl -sfc -X DELETE -H "Authorization: Bearer $UPCLOUD_API_TOKEN" "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" >/dev/null
+          uc key-list GET "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys" /tmp/uc6.json
+          jq -r '.[] | select(.access_key_id != "'"$sak"'") | .access_key_id' /tmp/uc6.json | while read -r old; do
+            uc key-del DELETE "https://api.upcloud.com/1.3/object-storage-2/$osuuid/users/app/access-keys/$old" /tmp/uc7.json
           done
           # prod registration closed until an admin approves the account
           kubectl -n idol create secret generic app-env \

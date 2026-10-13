@@ -20,6 +20,7 @@ matchesAny(attributes["path"] ?? "", [
     `(^|/)target/`,
     `(^|/)dist/`,
     `^test-assets/idols/`,
+    `^test-assets/idols-food/`,
 ])
 '''
 

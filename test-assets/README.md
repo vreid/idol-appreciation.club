@@ -1,7 +1,8 @@
 # Test idol images (AI-generated, fictional)
 
-100 AI-generated images of **fictional K-pop idols** for testing the image
-pipeline and seeding the live canvas.
+200 AI-generated images of **fictional K-pop idols** for testing the image
+pipeline and seeding the live canvas: the original 100 in `idols/` and a
+100-image food-themed batch in `idols-food/`.
 
 > **AI-generated fictional idols, no real persons.** Every prompt frames the
 > subject as a fictional idol; no real-person likenesses, group names, logos, or
@@ -22,7 +23,12 @@ pipeline and seeding the live canvas.
   city night, hanbok, sporty, y2k, cyber), behind the scenes (jacket making, MV
   set, makeup room, stage wings), lightstick ocean, festival fireworks,
   camping/picnic vlogs, and more.
-- `manifest.json` — index of all 100 images with `file`, `category`,
+- `idols-food/01-*.jpg` ... `idols-food/100-*.jpg` — second batch of 100 images:
+  fictional idols eating food in random places (street stalls, convenience
+  stores, cafes, picnics, BBQ tables, practice rooms, camping trips,
+  variety-show food challenges), same photocard/candid aesthetic. See
+  `manifest.json` (entries prefixed `idols-food/`).
+- `manifest.json` — index of all 200 images with `file`, `category`,
   `aspect_ratio`, `width`, `height`, `bytes`, `prompt`, `cost_if_known`.
 - `generate.py` — stdlib-only regeneration script (see below).
 - `seed.sh` — places the images on a deployed canvas (see below).
@@ -34,6 +40,20 @@ photocards, 2-3 member units, and 4-7 member girl groups across stage,
 photobook, beauty, and behind-the-scenes concepts. A handful of shots are male
 or coed, or contain no people (album flat lays, cafe display, lightstick-ocean
 crowd), kept for image-pipeline variety.
+
+## Food batch (`idols-food/`)
+
+The 100 food-themed images follow the same recipe: a fictional idol (or unit or
+group) with a specific dish in a specific setting — ramyeon at a convenience
+store, tteokbokki at a street stall, Korean BBQ with the group, bingsu in a
+pastel cafe, camping stew at night, mukbang streams, variety-show spicy-noodle
+and dalgona challenges, festival treats, birthday cake, hotel breakfasts,
+train-window rice balls, and a confetti finale feast. Aspect mix: 29x 1:1, 33x
+3:4, 30x 16:9, plus one 9:16 and two each of 4:3, 3:2, and 2:3. Four hero shots
+(55, 78, 85, 100) requested the `2k` tier, which again billed and dimensioned
+identically to `1k` (1672x2508 / 2508x1672 / 2730x1536). Three images (09,
+24, 95) initially failed on two consecutive HTTP 503 `rate_limiter_unavailable`
+responses and were regenerated successfully on a follow-up pass.
 
 ## Total spend
 
@@ -55,6 +75,13 @@ Note: the expansion re-attempt of `07-rehearsal` was skipped after two
 consecutive HTTP 503s ("rate_limiter_unavailable"); `07-rehearsal.jpg` on disk
 is the original first-run generation and remains valid.
 
+**Food batch spend: $7.3529 actual** ($7.3102 tracked in `manifest.json`
+`cost_if_known` plus $0.0427 for a probe request whose bytes were lost to a
+tooling bug before the output directory existed — fixed by adding a `mkdir -p`
+guard). Account balance went from $26.92761564 to $19.57461564 across the whole
+food run. Pricing at generation time: $0.0855 per non-square `1k` image and
+$0.04275 per square `1:1` image; `2k` billed identically.
+
 ## How they were made
 
 1. Model metadata was discovered with
@@ -65,11 +92,14 @@ is the original first-run generation and remains valid.
    Responses return `created`, `data` (`b64_json`), `cost`, `paymentSource`,
    `remainingBalance`, and `requestId`.
 2. `generate.py` decodes each `b64_json`, verifies it decodes as a JPEG (header
-   walk to SOF + non-trivial size > 30 KB), and writes it to `idols/`. Requests
-   run sequentially with a small gap; HTTP 5xx/429 get a single retry, then the
-   category is skipped and reported. A budget guard halts generation before the
-   $9.50 lifetime cap (estimated per requested resolution), and the account
-   balance is printed before and after each run (`POST /api/check-balance`).
+   walk to SOF + non-trivial size > 30 KB), and writes it to `idols/` (or
+   `idols-food/` with `--batch food`). Requests run sequentially with a small
+   gap; HTTP 5xx/429 get a single retry, then the category is skipped and
+   reported. A budget guard halts generation before the per-batch cap ($9.50
+   lifetime for `idols/`, $12 runaway guard for a food-batch run), and the
+   account balance is printed before and after each run
+   (`POST /api/check-balance`). The API key is read from `.env` or the
+   `NANO_GPT_API_KEY` environment variable.
 
 ## Regenerating
 
@@ -78,6 +108,7 @@ cd test-assets
 python3 generate.py             # any missing categories (skips ones
                                 # already in manifest.json)
 python3 generate.py --only 05   # a single category, by number
+python3 generate.py --batch food   # the idols-food/ batch (same skip logic)
 ```
 
 Requires `NANO_GPT_API_KEY` in the project `.env`. Each new image costs

@@ -50,8 +50,10 @@ pub struct RegisterReq {
     password: String,
 }
 
-/// POST /api/auth/register → 200, sets session cookie. First account ever
-/// becomes admin (single-admission enforced by a partial unique index).
+/// POST /api/auth/register → 201 {username, pending}. The first account
+/// ever becomes admin (single-admission enforced by a partial unique
+/// index) and is always approved, so gated deployments cannot lock out
+/// their admin. Pending accounts get no session cookie.
 pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> AppResult<Response> {
     if !valid_username(&req.username) {
         return Err(AppError::BadRequest(
@@ -63,13 +65,19 @@ pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> A
     }
     let hash = hash_password(&req.password)?;
     let id = Uuid::now_v7();
-    let mut resp = match try_insert(&app, id, &req.username, &hash, true).await {
-        Ok(r) => r,
+    // The gate targets external signups; the bootstrap admin is exempt
+    // (approved = true) so gated deployments never lock out their admin.
+    let approved = !app.cfg.registration_approval_required;
+    // The admin attempt always inserts approved=true; the retry path may
+    // be pending. The session cookie follows the actual insert outcome.
+    let (mut resp, session) = match try_insert(&app, id, &req.username, &hash, true, true).await {
+        Ok(r) => (r, true),
         Err(e) => {
             // Lost the single-admin race → retry as a normal account.
             if constraint_of(&e) == Some("accounts_single_admin") {
-                try_insert(&app, id, &req.username, &hash, false)
+                try_insert(&app, id, &req.username, &hash, false, approved)
                     .await
+                    .map(|r| (r, approved))
                     .map_err(|e| {
                         if constraint_of(&e) == Some("accounts_username_key") {
                             AppError::Conflict
@@ -84,8 +92,10 @@ pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> A
             }
         }
     };
-    let token = issue(&app.cfg.session_secret, id, chrono::Utc::now().timestamp());
-    set_cookie(&mut resp, cookie_value(&token, app.cfg.secure_cookies()));
+    if session {
+        let token = issue(&app.cfg.session_secret, id, chrono::Utc::now().timestamp());
+        set_cookie(&mut resp, cookie_value(&token, app.cfg.secure_cookies()));
+    }
     Ok(resp)
 }
 
@@ -102,21 +112,25 @@ async fn try_insert(
     username: &str,
     hash: &str,
     as_admin: bool,
+    approved: bool,
 ) -> Result<Response, sqlx::Error> {
-    let result: (bool,) = sqlx::query_as(
-        "INSERT INTO accounts (id, username, password_hash, is_admin)
-         VALUES ($1, $2, $3, $4)
-         RETURNING is_admin",
+    sqlx::query(
+        "INSERT INTO accounts (id, username, password_hash, is_admin, approved)
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(id)
     .bind(username)
     .bind(hash)
     .bind(as_admin)
-    .fetch_one(&app.pool)
+    .bind(approved)
+    .execute(&app.pool)
     .await?;
     let resp = (
         axum::http::StatusCode::CREATED,
-        Json(json!({ "id": id, "username": username, "is_admin": result.0 })),
+        Json(json!({
+            "username": username,
+            "pending": !approved,
+        })),
     )
         .into_response();
     Ok(resp)
@@ -130,16 +144,21 @@ pub struct LoginReq {
 
 /// POST /api/auth/login → 200, sets session cookie.
 pub async fn login(State(app): State<App>, Json(req): Json<LoginReq>) -> AppResult<Response> {
-    let row: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, password_hash FROM accounts WHERE username = $1")
-            .bind(&req.username)
-            .fetch_optional(&app.pool)
-            .await?;
-    let Some((id, hash)) = row else {
+    let row: Option<(Uuid, String, bool, bool)> = sqlx::query_as(
+        "SELECT id, password_hash, approved, is_admin FROM accounts WHERE username = $1",
+    )
+    .bind(&req.username)
+    .fetch_optional(&app.pool)
+    .await?;
+    let Some((id, hash, approved, is_admin)) = row else {
         return Err(AppError::Unauthorized);
     };
     if !verify_password(&hash, &req.password) {
         return Err(AppError::Unauthorized);
+    }
+    // Admins have full access regardless of the approval flag.
+    if !approved && !is_admin {
+        return Err(AppError::PendingApproval);
     }
     let mut resp = (axum::http::StatusCode::OK, Json(json!({ "id": id }))).into_response();
     let token = issue(&app.cfg.session_secret, id, chrono::Utc::now().timestamp());

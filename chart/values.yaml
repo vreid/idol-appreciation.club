@@ -13,6 +13,7 @@ images:
 domain: idol-appreciation.club
 
 backend:
+  registrationApprovalRequired: true
   replicaCount: 1
   resources:
     requests:

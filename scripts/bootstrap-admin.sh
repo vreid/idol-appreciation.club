@@ -26,9 +26,9 @@ if [ "${1:-}" = "--approve" ]; then
   $KUBECTL -n "$NS" delete pod bootstrap-admin-psql --ignore-not-found >/dev/null
   $KUBECTL -n "$NS" run bootstrap-admin-psql --restart=Never \
     --image=postgres:16-alpine \
-    --env="PGURI=$(cd tofu && tofu output -raw pg_admin_uri)" \
-    --env="TARGET=$TARGET" \
-    -- sh -c 'psql "$PGURI" -v target="$TARGET" -c "UPDATE accounts SET approved = true WHERE username = :'"'"'target'"'"'"' \
+    --env="PGURI=$(cd tofu && tofu output -raw pg_admin_uri | sed -E 's|^(postgres://[^/]+/)[^?]+|\1app|')" \
+    --env="SQL=UPDATE accounts SET approved = true WHERE username = '$TARGET'" \
+    -- sh -c 'psql "$PGURI" -v ON_ERROR_STOP=1 -c "$SQL"' \
     >/dev/null 2>&1 || true
   sleep 10
   $KUBECTL -n "$NS" logs bootstrap-admin-psql 2>/dev/null | tail -2
@@ -63,10 +63,13 @@ esac
 
 # ---- promote via psql (demote everyone else) ------------------------------
 ADMIN_URI=$(cd "$(dirname "$0")/../tofu" && tofu output -raw pg_admin_uri)
+# the service URI lands on the default maintenance DB; accounts lives in the app DB
+ADMIN_URI=$(printf '%s' "$ADMIN_URI" | sed -E 's|^(postgres://[^/]+/)[^?]+|\1app|')
 $KUBECTL -n "$NS" delete pod bootstrap-admin-psql --ignore-not-found >/dev/null 2>&1
+SQL_PROMOTE="UPDATE accounts SET is_admin = (username = '$USERNAME')"
 $KUBECTL -n "$NS" run bootstrap-admin-psql --restart=Never \
-  --image=postgres:16-alpine --env="PGURI=$ADMIN_URI" --env="TARGET=$USERNAME" \
-  -- sh -c 'psql "$PGURI" -v target="$USERNAME" -c "UPDATE accounts SET is_admin = (username = :'"'"'target'"'"')"' \
+  --image=postgres:16-alpine --env="PGURI=$ADMIN_URI" --env="SQL=$SQL_PROMOTE" \
+  -- sh -c 'psql "$PGURI" -v ON_ERROR_STOP=1 -c "$SQL"' \
   >/dev/null 2>&1 || true
 sleep 10
 $KUBECTL -n "$NS" logs bootstrap-admin-psql 2>/dev/null | tail -2

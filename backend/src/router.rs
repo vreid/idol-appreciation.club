@@ -9,6 +9,7 @@ pub fn router(state: App) -> Router {
     let max_body = state.cfg.max_upload_bytes + (1 << 20); // multipart slack
     let api = Router::new()
         .route("/api/health", get(api::health))
+        .route("/api/metrics", get(api::metrics))
         .route("/api/auth/register", post(handlers::register))
         .route("/api/auth/login", post(handlers::login))
         .route("/api/auth/logout", post(handlers::logout))

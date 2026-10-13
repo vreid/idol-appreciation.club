@@ -17,6 +17,7 @@ use libvips::ops;
 pub use libvips::VipsImage;
 
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 /// Paper background tiles render on.
 pub const PAPER: [f64; 3] = [244.0, 240.0, 232.0];
@@ -159,7 +160,16 @@ pub fn decode(bytes: &[u8], max_pixels: u64) -> Result<(VipsImage, SourceFormat)
         .map_err(|_| AppError::BadRequest("undecodable image"))?;
     let loader = img.get_as_string("vips-loader").unwrap_or_default();
     let format = format_of(&loader).ok_or(AppError::BadRequest("unsupported image format"))?;
-    let declared = i64::from(img.get_width()) * i64::from(img.get_height());
+    // Header-only budget on the frame we will actually decode: animated
+    // inputs report their page height (per-frame height), not the full
+    // strip — a 40-frame 800×800 GIF decodes one 0.64 MPx frame, not a
+    // 25.6 MPx strip. The product is orientation-invariant, so the EXIF
+    // axis swap needs no handling here.
+    let frame_h = match img.get_n_pages() {
+        pages if pages > 1 => img.get_page_height().max(1),
+        _ => img.get_height(),
+    };
+    let declared = i64::from(img.get_width()) * i64::from(frame_h);
     if declared > 0 && u64::try_from(declared).unwrap_or(u64::MAX) > max_pixels {
         return Err(AppError::TooLarge);
     }
@@ -190,6 +200,17 @@ pub fn decode(bytes: &[u8], max_pixels: u64) -> Result<(VipsImage, SourceFormat)
     // Materialize the fully-decoded pixels while the buffer is alive.
     let img = VipsImage::image_copy_memory(img)?;
     Ok((img, format))
+}
+
+/// Header-only dimensions of an encoded image — no full decode, no
+/// pixel work beyond the loader probe. The batch-import path uses this to
+/// verify a manifest's declared `w`/`h` against the actual derivative
+/// bitmap without paying a decode per entry.
+pub fn dimensions(bytes: &[u8]) -> Result<(i64, i64), AppError> {
+    let _vips = VIPS.lock();
+    let img = VipsImage::new_from_buffer(bytes, "")
+        .map_err(|_| AppError::BadRequest("undecodable image"))?;
+    Ok((i64::from(img.get_width()), i64::from(img.get_height())))
 }
 
 /// Resize to an exact `w x h` (aspect-preserving input already handled by
@@ -356,6 +377,7 @@ pub fn composite(
 pub fn blank_chunk(size: i32) -> Result<VipsImage, AppError> {
     let _vips = VIPS.lock();
     const ONE_PX_TRANSPARENT_PNG_HEX: &str = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
+
     let bytes = hex_decode(ONE_PX_TRANSPARENT_PNG_HEX);
     let (tiny, _) = decode(&bytes, DEFAULT_MAX_DECODE_PIXELS)?;
     let embedded = ops::embed_with_opts(
@@ -641,17 +663,19 @@ const TILE_EDGE: i64 = 256;
 /// `canvas` is the current chunk raster bytes (None = blank), overlays are
 /// `(bytes, x, y, rot)` in chunk-local coordinates with the placement's
 /// normalized rotation, applied in seq order.
-pub fn replay_canvas(
-    canvas: Option<Vec<u8>>,
-    overlays: &[(Vec<u8>, i64, i64, f32)],
+/// Generic over the buffer type (`Vec<u8>` from the store, or a shared
+/// `Bytes` from a batch-import cache) — no copies at the boundary.
+pub fn replay_canvas<C: AsRef<[u8]>, T: AsRef<[u8]>>(
+    canvas: Option<C>,
+    overlays: &[(T, i64, i64, f32)],
 ) -> crate::error::AppResult<Vec<u8>> {
     let _vips = VIPS.lock();
     let mut canvas = match &canvas {
-        Some(bytes) => Some(VipsImage::new_from_buffer(bytes, "")?),
+        Some(bytes) => Some(VipsImage::new_from_buffer(bytes.as_ref(), "")?),
         None => None,
     };
     for (bytes, x, y, rot) in overlays {
-        let (ov, _) = decode(bytes, DEFAULT_MAX_DECODE_PIXELS)?;
+        let (ov, _) = decode(bytes.as_ref(), DEFAULT_MAX_DECODE_PIXELS)?;
         let ov = VipsImage::image_copy_memory(ov)?;
         let ov = rotate_centered(&ov, *rot)?;
         let ov = VipsImage::image_copy_memory(ov)?;
@@ -673,6 +697,84 @@ pub fn replay_canvas(
         None => blank_chunk(CHUNK_CANVAS_PX)?,
     };
     webp_bytes(&canvas, 90).map_err(|e| anyhow::anyhow!("replay encode: {e}").into())
+}
+
+/// A member overlay placement inside one chunk: index into the group's
+/// overlay table + the chunk-local AABB top-left (paint order).
+pub(crate) type OverlayPlacement = (usize, i64, i64);
+
+/// One chunk pass: chunk coords, current raster bytes (None = virgin),
+/// members in paint order.
+pub(crate) type ChunkPaint = (i64, i64, Option<Vec<u8>>, Vec<OverlayPlacement>);
+
+/// Composite a whole chunk-group in ONE vips section with a bounded
+/// decoded-overlay cache: each unique overlay is decoded + rotated once
+/// and reused while cached. Decoding + rotating multi-megapixel derivatives
+/// PER CHUNK a pile image spans was the batch ingest wall (measured
+/// ~1.4 img/s vs the ≥10/s SLO — docs/backend.md "Batch import").
+/// `overlays` are `(bytes, normalized rot)`; `chunks` are
+/// `(cx, cy, canvas bytes or None for virgin, members)` with members
+/// `(overlay idx, chunk-local AABB x, chunk-local AABB y)` in paint (seq)
+/// order. Returns encoded webp bytes per chunk, input order. Pixel output
+/// is identical to per-chunk `replay_canvas` (same ops, cached inputs).
+/// `decoded_budget_bytes` bounds the decoded set; overflow clears it (the
+/// caller super-blocks chunk passes so spans stay cache-warm).
+pub fn composite_group<T: AsRef<[u8]>>(
+    overlays: &[(T, f32)],
+    chunks: &[ChunkPaint],
+    decoded_budget_bytes: u64,
+) -> crate::error::AppResult<Vec<Vec<u8>>> {
+    let _vips = VIPS.lock();
+    let mut cache: HashMap<usize, VipsImage> = HashMap::new();
+    let mut cache_bytes = 0u64;
+    let mut out = Vec::with_capacity(chunks.len());
+    for (_, _, canvas, members) in chunks {
+        let mut composed: Option<VipsImage> = match canvas {
+            Some(bytes) => {
+                let img = VipsImage::new_from_buffer(bytes, "")?;
+                // Chunk bases decode sequential; composite blends need
+                // random access.
+                Some(VipsImage::image_copy_memory(img)?)
+            }
+            None => None,
+        };
+        for (idx, lx, ly) in members {
+            if !cache.contains_key(idx) {
+                if cache_bytes > decoded_budget_bytes {
+                    cache.clear();
+                    cache_bytes = 0;
+                }
+                let (bytes, rot) = &overlays[*idx];
+                let (img, _) = decode(bytes.as_ref(), DEFAULT_MAX_DECODE_PIXELS)?;
+                let img = VipsImage::image_copy_memory(img)?;
+                let img = rotate_centered(&img, *rot)?;
+                let img = VipsImage::image_copy_memory(img)?;
+                cache_bytes +=
+                    (i64::from(img.get_width()) * i64::from(img.get_height()) * 4) as u64;
+                cache.insert(*idx, img);
+            }
+            let ov = &cache[idx];
+            composed = Some(match composed {
+                Some(base) => composite(&base, ov, *lx, *ly)?,
+                // First paint on a virgin chunk embeds directly (see
+                // composite_chunks for why not a synthetic blank).
+                None => embed_rect(
+                    ov,
+                    i32::try_from(*lx).map_err(|_| anyhow::anyhow!("embed x out of range"))?,
+                    i32::try_from(*ly).map_err(|_| anyhow::anyhow!("embed y out of range"))?,
+                    CHUNK_CANVAS_PX,
+                    CHUNK_CANVAS_PX,
+                )?,
+            });
+        }
+        let composed = composed.ok_or_else(|| anyhow::anyhow!("chunk without members"))?;
+        out.push(
+            webp_bytes(&composed, 90)
+                .map_err(|e| anyhow::anyhow!("chunk webp encode: {e}"))
+                .map_err(crate::error::AppError::from)?,
+        );
+    }
+    Ok(out)
 }
 
 /// Render a z ≥ BASE_Z tile from its covering chunk bytes (None = blank).
@@ -773,6 +875,81 @@ mod tests {
         let (img, fmt) = decode(&gif, DEFAULT_MAX_DECODE_PIXELS).unwrap();
         assert_eq!(fmt, SourceFormat::Gif);
         assert_eq!((img.get_width(), img.get_height()), (20, 20));
+    }
+
+    /// Real 2-frame animated GIF (two 64x64 frames, 285 bytes) generated
+    /// with ImageMagick; loads as a 64x128 strip, decodes one 64x64 frame.
+    /// Real 2-frame animated GIF (two 64x64 frames, 285 bytes) generated
+    /// with ImageMagick; loads as a 64x128 strip, decodes one 64x64 frame.
+    const ANIMATED_2F_GIF_HEX: &str = concat!(
+        "47494638396140004000f00000ff000000000021ff0b4e45545343415045322e",
+        "30030100000021f904000000000021ff0b496d6167654d616769636b0e67616d",
+        "6d613d302e343534353435002c0000000040004000000245848fa9cbed0fa39c",
+        "b4da8bb3debcfb0f86e24896e689a6eacab6ee0bc7f24cd7f68de7facef7fe0f",
+        "0c0a87c4a2f1884c2a97cca6f3098d4aa7d4aaf58acd6ab7dcae1750000021f9",
+        "04000000000021ff0b496d6167654d616769636b0e67616d6d613d302e343534",
+        "353435002c0000000040004000800000ff0000000245848fa9cbed0fa39cb4da",
+        "8bb3debcfb0f86e24896e689a6eacab6ee0bc7f24cd7f68de7facef7fe0f0c0a",
+        "87c4a2f1884c2a97cca6f3098d4aa7d4aaf58acd6ab7dcae175000003b"
+    );
+
+    /// The decoded-pixel budget is measured on the frame we actually
+    /// decode, not the animation strip: a 2-frame 64x64 gif loads as a
+    /// 64x128 strip (8192 px) but decodes one 64x64 (4096 px) frame, so a
+    /// budget between the two must ADMIT it. The full-strip check this
+    /// replaced rejected such uploads outright. Embedded as hex (like the
+    /// 1px PNG) because the gate image copies only src/ — no tests/
+    /// fixtures directory exists in the container.
+    #[test]
+    fn animated_budget_bounds_the_decoded_frame() {
+        if !vips() {
+            return;
+        }
+        let gif = hex_decode(ANIMATED_2F_GIF_HEX);
+        let probed = probe(&gif).unwrap();
+        assert_eq!(probed, (64, 64), "probe reports first-frame dims");
+        let budget = 4096u64; // exactly one frame
+        let (img, fmt) = decode(&gif, budget).expect("frame fits the budget");
+        assert_eq!(fmt, SourceFormat::Gif);
+        assert_eq!((img.get_width(), img.get_height()), (64, 64));
+        assert!(decode(&gif, budget - 1).is_err(), "one pixel under rejects");
+    }
+
+    /// The budget boundary is exact, and absurd declared dimensions
+    /// saturate instead of wrapping: products are computed in i64 across
+    /// two i32s, so no u64 wrap can sneak a bomb under the budget.
+    #[test]
+    fn budget_boundary_is_exact_and_saturates() {
+        if !vips() {
+            return;
+        }
+        let img = red_png(100, 100);
+        assert!(decode(&img, 10_000).is_ok());
+        assert!(matches!(decode(&img, 9_999), Err(AppError::TooLarge)));
+        // 2^23-1 squared (~7e13 px): fits i64 comfortably, far over any
+        // budget, and under libvips' 10M coordinate sanity limit so the
+        // header loads and the BUDGET is what rejects it.
+        let bomb = png_with_declared_dims(8_388_607, 8_388_607);
+        assert!(matches!(
+            decode(&bomb, DEFAULT_MAX_DECODE_PIXELS),
+            Err(AppError::TooLarge)
+        ));
+    }
+
+    /// A PNG whose IHDR declares (w, h) but whose pixel data is a real
+    /// 1x1 image: header checks see the declared dims, pixel decodes
+    /// fail. Used to prove the budget is size-driven, not an artifact of
+    /// truncated data.
+    fn png_with_declared_dims(width: u32, height: u32) -> Vec<u8> {
+        let mut png = red_png(1, 1);
+        const IHDR_DATA: usize = 8 + 4 + 4;
+        png[IHDR_DATA..IHDR_DATA + 4].copy_from_slice(&width.to_be_bytes());
+        png[IHDR_DATA + 4..IHDR_DATA + 8].copy_from_slice(&height.to_be_bytes());
+        let chunk_len = u32::from_be_bytes(png[8..12].try_into().expect("chunk len")) as usize;
+        let crc_offset = 12 + 4 + chunk_len;
+        let crc = crc32(&png[12..crc_offset]);
+        png[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_be_bytes());
+        png
     }
 
     #[test]
@@ -1054,5 +1231,46 @@ mod rot_tests {
             base_bytes = out[0].clone();
         }
         eprintln!("ok rounds");
+    }
+
+    /// composite_group must be pixel-identical to per-chunk replay_canvas
+    /// (same decode/rotate/composite/embed ops, cached inputs): the batch
+    /// ingest path relies on this equivalence for replay consistency.
+    #[test]
+    fn composite_group_matches_per_chunk_replay() {
+        assert!(vips());
+        let ov1 = asymmetric_test_png(200, 100);
+        let ov2 = asymmetric_test_png(64, 64);
+        // Two entries share (bytes, rot); one reuses ov1 at rot 0.
+        let overlays = vec![
+            (ov1.clone(), 0.0f32),
+            (ov2.clone(), 30.0f32),
+            (ov1.clone(), 0.0f32),
+        ];
+        let chunks = vec![
+            (
+                0i64,
+                0i64,
+                None,
+                vec![(0usize, -50i64, -50i64), (1, 900, 900)],
+            ),
+            (1, 0, None, vec![(0, 904, 10), (2, 0, 0)]),
+        ];
+        let grouped = composite_group(&overlays, &chunks, 1 << 20).unwrap();
+        let replay0 = replay_canvas(
+            None::<Vec<u8>>,
+            &[(ov1.clone(), -50, -50, 0.0), (ov2.clone(), 900, 900, 30.0)],
+        )
+        .unwrap();
+        let replay1 = replay_canvas(
+            None::<Vec<u8>>,
+            &[(ov1.clone(), 904, 10, 0.0), (ov1, 0, 0, 0.0)],
+        )
+        .unwrap();
+        assert_eq!(
+            grouped[0], replay0,
+            "clipped corner chunk must match replay"
+        );
+        assert_eq!(grouped[1], replay1, "second chunk must match replay");
     }
 }

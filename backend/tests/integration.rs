@@ -16,6 +16,7 @@ use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+
 #[tokio::test]
 async fn auth_flows() {
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
@@ -148,7 +149,10 @@ async fn place_validation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn place_and_cooldowns() {
-    let server = start_server(2, 1, 10 * 1024 * 1024).await;
+    // 8s paint window: strict enough that the early 429 asserts are
+    // deterministic, long enough to survive full-suite CPU load (a 2s
+    // window could lapse while a 48 MPx decode runs next door).
+    let server = start_server(8, 1, 10 * 1024 * 1024).await;
     let img = png(32, 32);
     let cookie = register(&server, "painter").await;
     let x = 1 << 20; // 1048576, 256- and 1024-aligned
@@ -1144,6 +1148,18 @@ async fn dig_etag_tracks_placement_seq() {
 // -------------------------------------------------------------------------
 // Hardening: decoded-pixel budget and login throttling
 
+/// An 8000x6000 (48 MPx) camera source keeps placing under the default
+/// budget (64 MPx): the bomb cap must not reject real large photos.
+#[tokio::test]
+async fn place_admits_large_camera_sources() {
+    let server = start_server(0, 0, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "photographer").await;
+    let img = png(8000, 6000);
+    let resp = place(&server, &cookie, &img, 0, 0, 4096).await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+    assert_eq!(resp.json()["w"], 4096);
+}
+
 /// A tiny PNG whose header declares 32768×32768 (1 Gpx, ~4 GiB of RGBA)
 /// must be rejected 413 by the decoded-pixel budget BEFORE any pixel work:
 /// the wire bytes are ~100 bytes, so only the header probe could have
@@ -1163,7 +1179,9 @@ async fn place_decode_budget_rejects_bomb() {
 /// without spending the serialized libvips stage on a doomed decode.
 #[tokio::test]
 async fn place_cooldown_precheck_rejects_before_decode() {
-    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    // 60s empty cooldown: the 429 is deterministic even under full-suite
+    // load (a 1s window can lapse when a 48 MPx decode runs next door).
+    let server = start_server(300, 60, 10 * 1024 * 1024).await;
     let cookie = register(&server, "rapid").await;
     let img = png(32, 32);
     let resp = place_rot(&server, &cookie, &img, 0, 0, 64, None).await;
@@ -1295,7 +1313,8 @@ async fn two_instance_composite_no_lost_update() {
         cooldown_paint_secs: 300,
         cooldown_empty_secs: 1,
         max_upload_bytes: 10 * 1024 * 1024,
-        max_decode_pixels: idol_appreciation_club_backend::img::DEFAULT_MAX_DECODE_PIXELS,
+        // Production default (MAX_DECODE_PIXELS env default): 64 MPx.
+        max_decode_pixels: 67_108_864,
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
@@ -1303,6 +1322,9 @@ async fn two_instance_composite_no_lost_update() {
         tile_render_max_delay_secs: 12,
         tile_render_queue_cap: 512,
         registration_approval_required: false,
+        import_block_entries: 500,
+        import_group_concurrency: 2,
+        import_derivative_long_edge: 1024,
     };
     let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");
     let (app2, _) = build_app(mk_cfg()).await.expect("instance 2");
@@ -1386,7 +1408,8 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
         cooldown_paint_secs: 300,
         cooldown_empty_secs: 1,
         max_upload_bytes: 10 * 1024 * 1024,
-        max_decode_pixels: idol_appreciation_club_backend::img::DEFAULT_MAX_DECODE_PIXELS,
+        // Production default (MAX_DECODE_PIXELS env default): 64 MPx.
+        max_decode_pixels: 67_108_864,
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
@@ -1394,6 +1417,9 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
         tile_render_max_delay_secs: 12,
         tile_render_queue_cap: 512,
         registration_approval_required: false,
+        import_block_entries: 500,
+        import_group_concurrency: 2,
+        import_derivative_long_edge: 1024,
     };
     let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");
     let (app2, _) = build_app(mk_cfg()).await.expect("instance 2");
@@ -1482,4 +1508,369 @@ async fn place_load_metrics_200() {
     for (le, v) in &buckets {
         println!("  le={le}: {v}");
     }
+}
+
+// ------------------------------------------------------ batch import ----
+
+fn multipart_images(images: &[Vec<u8>]) -> (String, Vec<u8>) {
+    let boundary = format!("b{}", uuid::Uuid::now_v7().simple());
+    let mut body = Vec::new();
+    for image in images {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"i.png\"\r\nContent-Type: image/png\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(image);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (boundary, body)
+}
+
+/// Preupload `images`; returns the response JSON array of mappings.
+async fn preupload(server: &Server, cookie: &str, images: &[Vec<u8>]) -> serde_json::Value {
+    let (boundary, body) = multipart_images(images);
+    let resp = request(
+        server,
+        "POST",
+        "/api/admin/import/originals",
+        &[
+            ("Cookie", cookie),
+            (
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            ),
+        ],
+        body,
+    )
+    .await;
+    assert_eq!(
+        resp.status,
+        200,
+        "preupload: {}",
+        String::from_utf8_lossy(&resp.body)
+    );
+    resp.json()
+}
+
+async fn import_manifest(server: &Server, cookie: &str, manifest: serde_json::Value) -> Resp {
+    request(
+        server,
+        "POST",
+        "/api/admin/import",
+        &[("Cookie", cookie), ("Content-Type", "application/json")],
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .await
+}
+
+fn entry(
+    map: &serde_json::Value,
+    idx: usize,
+    x: i64,
+    y: i64,
+    rot: f32,
+    override_w: Option<i64>,
+) -> serde_json::Value {
+    let mut e = serde_json::json!({
+        "source_sha": map[idx]["source_sha"],
+        "derivative_sha": map[idx]["derivative_sha"],
+        "x": x,
+        "y": y,
+        "w": map[idx]["w"],
+        "h": map[idx]["h"],
+        "rot": rot,
+    });
+    if let Some(w) = override_w {
+        e["w"] = serde_json::json!(w);
+    }
+    e
+}
+
+/// Raw-socket SSE reader: collects stream bytes until a `data:` line
+/// containing `needle` arrives (import events land only on subscribers
+/// connected BEFORE the import runs).
+async fn read_sse_until(addr: std::net::SocketAddr, needle: &str) -> Option<String> {
+    let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+    stream
+        .write_all(b"GET /api/events HTTP/1.1\r\nHost: test\r\n\r\n")
+        .await
+        .ok()?;
+    let mut buf = Vec::new();
+    loop {
+        let mut chunk = [0u8; 4096];
+        match tokio::time::timeout(Duration::from_secs(15), stream.read(&mut chunk)).await {
+            Ok(Ok(0)) | Err(_) | Ok(Err(_)) => break,
+            Ok(Ok(n)) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if let Ok(s) = std::str::from_utf8(&buf) {
+                    if let Some(line) = s
+                        .lines()
+                        .find(|l| l.starts_with("data: ") && l.contains(needle))
+                    {
+                        return Some(line[6..].to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_batch_chunk_grouping_and_sse() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "importer").await; // first account = admin
+
+    // Two unique originals; 20 entries pile into chunk (4,4), one far away.
+    let maps = preupload(&server, &admin, &[png(48, 48), png(64, 32)]).await;
+    assert_eq!(maps.as_array().unwrap().len(), 2);
+    assert_eq!(maps[0]["w"], 48);
+    assert_eq!(maps[0]["h"], 48);
+    assert_eq!(maps[1]["w"], 64);
+    assert_eq!(maps[1]["h"], 32);
+
+    let mut entries = Vec::new();
+    for k in 0..20 {
+        // Same chunk (4096..5120), deliberate overlaps, mixed rotations.
+        entries.push(entry(
+            &maps,
+            0,
+            4200 + (k % 5) * 10,
+            4200 + (k / 5) * 10,
+            if k % 3 == 0 { 45.0 } else { 0.0 },
+            None,
+        ));
+    }
+    entries.push(entry(&maps, 1, 20000, 20000, 0.0, None));
+    let batch_id = uuid::Uuid::now_v7();
+    let manifest = serde_json::json!({ "batch_id": batch_id, "entries": entries });
+
+    // SSE subscriber first: the per-block event must reach it.
+    let sse = tokio::spawn(read_sse_until(server.addr, "\"type\":\"import\""));
+    let resp = import_manifest(&server, &admin, manifest.clone()).await;
+    assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+    let summary = resp.json();
+    assert_eq!(summary["imported"], 21);
+    assert_eq!(summary["duplicates"], 0);
+    // 21 entries collapsed into 2 chunk raster writes.
+    assert_eq!(summary["chunk_writes"], 2);
+    assert_eq!(summary["blocks"], 1);
+    assert_eq!(summary["components"], 2);
+    let amp = summary["chunk_write_amplification"].as_f64().unwrap();
+    assert!((amp - 10.5).abs() < 1e-9);
+
+    // The coarse batch event: type, count, union bbox.
+    let event: serde_json::Value =
+        serde_json::from_str(&sse.await.unwrap().expect("import SSE event")).unwrap();
+    assert_eq!(event["type"], "import");
+    assert_eq!(event["count"], 21);
+    assert_eq!(event["batch_id"], batch_id.to_string());
+    let bbox = event["bbox"].as_array().unwrap();
+    assert_eq!(bbox.len(), 4);
+    // Union AABB: 4190 is the outward-rounded rotated AABB corner of the
+    // first entry (48 px rect @45° about its center); the union must span
+    // the whole pile plus the far singleton at 20000.
+    assert_eq!(bbox[0], 4190);
+    assert_eq!(bbox[1], 4190);
+    assert!(bbox[2].as_i64().unwrap() + bbox[0].as_i64().unwrap() >= 20064);
+    assert!(bbox[3].as_i64().unwrap() + bbox[1].as_i64().unwrap() >= 20032);
+
+    // Rows visible through the public API; seq ascends in entry order
+    // within the shared chunk (near is newest-first).
+    let near = request(
+        &server,
+        "GET",
+        "/api/placements/near?x=4300&y=4300&r=1024",
+        &[],
+        vec![],
+    )
+    .await;
+    let list = near.json().as_array().unwrap().clone();
+    assert_eq!(list.len(), 20);
+    let seqs: Vec<i64> = list.iter().map(|p| p["seq"].as_i64().unwrap()).collect();
+    // Seqs are allocated PER COMPONENT (the pile and the far singleton run
+    // in parallel), so cross-component values interleave by scheduling —
+    // but within this chunk the paint order IS seq order: strictly
+    // descending in near's newest-first listing, no duplicates.
+    assert!(
+        seqs.windows(2).all(|w| w[0] > w[1]),
+        "near newest-first ⇒ strictly descending seqs in one chunk"
+    );
+    assert_eq!(seqs.len(), 20);
+
+    // Tiles went stale through seq only; a GET now renders at max seq.
+    let tile = request(&server, "GET", "/api/tiles/18/4/4.webp", &[], vec![]).await;
+    assert_eq!(tile.status, 200);
+    assert_eq!(tile.headers["etag"], format!("\"{}\"", seqs[0]));
+
+    // Content-dedup counts by original sha: 20 placements on image 0, 1 on
+    // image 1.
+    let sha0 = maps[0]["source_sha"].as_str().unwrap();
+    let count = request(
+        &server,
+        "GET",
+        &format!("/api/images/{sha0}/count"),
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(count.json()["count"], 20);
+
+    // ---- resume: the exact same manifest is a pure skip ----
+    let resp = import_manifest(&server, &admin, manifest).await;
+    assert_eq!(resp.status, 200);
+    let summary = resp.json();
+    assert_eq!(summary["imported"], 0);
+    assert_eq!(summary["duplicates"], 21);
+    assert_eq!(summary["chunk_writes"], 0);
+    // No double-placement, no seq churn: tile ETag and row count hold.
+    let count = request(
+        &server,
+        "GET",
+        &format!("/api/images/{sha0}/count"),
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(count.json()["count"], 20);
+    let tile2 = request(&server, "GET", "/api/tiles/18/4/4.webp", &[], vec![]).await;
+    assert_eq!(tile2.headers["etag"], tile.headers["etag"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_rotated_corner_entry_and_prewarm() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "corner").await;
+    let maps = preupload(&server, &admin, &[png(32, 32)]).await;
+    // Straddles the (3,3)/(4,3)/(3,4)/(4,4) chunk corner: AABB crosses
+    // both 4096 boundaries.
+    let manifest = serde_json::json!({
+        "batch_id": uuid::Uuid::now_v7(),
+        "prewarm": true,
+        "entries": [entry(&maps, 0, 4096 - 10, 4096 - 10, 0.0, None)],
+    });
+    let resp = import_manifest(&server, &admin, manifest).await;
+    assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+    let summary = resp.json();
+    assert_eq!(summary["imported"], 1);
+    // One entry, four chunk rasters.
+    assert_eq!(summary["chunk_writes"], 4);
+    assert_eq!(summary["components"], 1);
+    // Prewarm covers z18 (1 tile/chunk) + z19 (4) + z20 (16) × 4 chunks.
+    assert_eq!(summary["prewarmed_tiles"], 84);
+    // Prewarmed tiles are servable and fresh: chunk (3,3) at z18 (tile ==
+    // chunk) and the z20 sub-tile of chunk (4,4) holding entry pixels.
+    let tile18 = request(&server, "GET", "/api/tiles/18/3/3.webp", &[], vec![]).await;
+    assert_eq!(tile18.status, 200);
+    assert_eq!(tile18.headers["etag"], "\"1\"");
+    let tile20 = request(&server, "GET", "/api/tiles/20/16/16.webp", &[], vec![]).await;
+    assert_eq!(tile20.status, 200);
+    assert_eq!(tile20.headers["etag"], "\"1\"");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_resolves_derivative_from_source_sha() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "resolver").await;
+    let image = png(48, 48);
+    // The HTTP place response carries no shas, so learn the original sha
+    // from a preupload of the same bytes (strip→hash is deterministic),
+    // then place through /api/place to create the resolvable row.
+    let maps = preupload(&server, &admin, std::slice::from_ref(&image)).await;
+    let sha = maps[0]["source_sha"].as_str().unwrap().to_string();
+    let placed = place_rot(&server, &admin, &image, 50000, 50000, 48, Some(0.0)).await;
+    assert_eq!(placed.status, 201);
+
+    // Import WITHOUT derivative_sha: resolved from the newest placement of
+    // that original (the /api/place row).
+    let manifest = serde_json::json!({
+        "batch_id": uuid::Uuid::now_v7(),
+        "entries": [{
+            "source_sha": sha,
+            "x": 50048, "y": 50000, "w": 48, "h": 48, "rot": 0,
+        }],
+    });
+    let resp = import_manifest(&server, &admin, manifest).await;
+    assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+    assert_eq!(resp.json()["imported"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn import_rejects_bad_manifests() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "gatekeeper").await;
+    let other = register(&server, "pleb").await;
+    let maps = preupload(&server, &admin, &[png(48, 48)]).await;
+
+    let base = |entries: serde_json::Value| serde_json::json!({ "batch_id": uuid::Uuid::now_v7(), "entries": entries });
+
+    // Unauthenticated + non-admin.
+    let resp = import_manifest(&server, "", base(serde_json::json!([]))).await;
+    assert_eq!(resp.status, 401);
+    let resp = import_manifest(&server, &other, base(serde_json::json!([]))).await;
+    assert_eq!(resp.status, 403);
+
+    // Dims mismatch.
+    let resp = import_manifest(
+        &server,
+        &admin,
+        base(serde_json::json!([entry(&maps, 0, 0, 0, 0.0, Some(49))])),
+    )
+    .await;
+    assert_eq!(resp.status, 400);
+
+    // Missing derivative object.
+    let missing = format!("{:0>64}", "beef");
+    let resp = import_manifest(
+        &server,
+        &admin,
+        base(serde_json::json!([{
+            "source_sha": maps[0]["source_sha"],
+            "derivative_sha": missing,
+            "x": 0, "y": 0, "w": 48, "h": 48, "rot": 0,
+        }])),
+    )
+    .await;
+    assert_eq!(resp.status, 400);
+
+    // Unresolvable source (never uploaded).
+    let unknown = format!("{:0>64}", "cafe");
+    let resp = import_manifest(
+        &server,
+        &admin,
+        base(serde_json::json!([{ "source_sha": unknown, "x": 0, "y": 0, "w": 48, "h": 48 }])),
+    )
+    .await;
+    assert_eq!(resp.status, 400);
+
+    // Out of world.
+    let resp = import_manifest(
+        &server,
+        &admin,
+        base(serde_json::json!([entry(
+            &maps,
+            0,
+            268_435_456 - 8,
+            0,
+            0.0,
+            None
+        )])),
+    )
+    .await;
+    assert_eq!(resp.status, 400);
+
+    // Nothing above committed anything.
+    let sha0 = maps[0]["source_sha"].as_str().unwrap();
+    let count = request(
+        &server,
+        "GET",
+        &format!("/api/images/{sha0}/count"),
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(count.json()["count"], 0);
 }

@@ -551,6 +551,9 @@ tasks:
         fi
         echo "s3 auth: $([ "$rotate" = true ] && echo rotated || echo verified-working)"
         echo "$rotate" > /tmp/deploy-s3-rotated
+        # Fresh clusters have no namespaces yet (helm --create-namespace only
+        # helps the helm cmd; every kubectl apply before it needs this first).
+        kubectl create namespace idol --dry-run=client -o yaml | kubectl apply -f -
         # prod registration closed until an admin approves the account
         kubectl -n idol create secret generic app-env \
           --from-literal="DATABASE_URL=$db" \

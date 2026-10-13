@@ -18,6 +18,7 @@ import {
   worldScreenSize,
   worldToLatLng,
   tileIndexAt,
+  rotAABB,
 } from "./world";
 
 describe("world <-> latLng conversion", () => {
@@ -158,6 +159,35 @@ describe("queryRadiusForZoom", () => {
     expect(queryRadiusForZoom(16)).toBe(256);
     expect(queryRadiusForZoom(20)).toBe(256);
     expect(queryRadiusForZoom(8)).toBe(256 * 2 ** 8);
+  });
+});
+
+describe("rotAABB", () => {
+  it("is the identity at 0 and 180 degrees", () => {
+    expect(rotAABB(100, 50, 0)).toEqual({ w: 100, h: 50 });
+    expect(rotAABB(100, 50, 180)).toEqual({ w: 100, h: 50 });
+    expect(rotAABB(100, 50, -180)).toEqual({ w: 100, h: 50 });
+  });
+
+  it("swaps dimensions at 90 degrees", () => {
+    expect(rotAABB(100, 50, 90)).toEqual({ w: 50, h: 100 });
+    expect(rotAABB(100, 50, -90)).toEqual({ w: 50, h: 100 });
+  });
+
+  it("grows a square by sqrt(2) at 45 degrees", () => {
+    const aabb = rotAABB(100, 100, 45);
+    expect(aabb.w).toBeCloseTo(100 * Math.SQRT2, 6);
+    expect(aabb.h).toBeCloseTo(100 * Math.SQRT2, 6);
+  });
+
+  it("never shrinks below the shorter edge per axis", () => {
+    for (const rot of [-180, -135, -90, -45, 0, 30, 45, 90, 135, 180]) {
+      const aabb = rotAABB(100, 50, rot);
+      // Each axis is at least the shorter edge, and area never decreases.
+      expect(aabb.w).toBeGreaterThanOrEqual(50 - 1e-9);
+      expect(aabb.h).toBeGreaterThanOrEqual(50 - 1e-9);
+      expect(aabb.w * aabb.h).toBeGreaterThanOrEqual(100 * 50 - 1e-6);
+    }
   });
 });
 

@@ -76,8 +76,8 @@ Configured in `web/vite.config.ts` under `lint`:
   `parseTileKey`, bbox→tile selection for SSE invalidation, query-radius clamps,
   world clamps.
 - API client (`api.ts`): mock-fetch tests for register/login/logout, me (200 +
-  401→null), place() multipart construction (x/y/size FormData), 429 with
-  Retry-After, 400 message, near/center parsing (incl. null current),
+  401→null), place() multipart construction (x/y/size/rot FormData), 429 with
+  Retry-After, 400 message, near/center parsing (incl. null current, rot),
   report/DELETE admin removal, network-failure → status 0.
 - SSE (`sse.ts`): fake EventSource — event parsing, garbage dropping,
   bbox→center check, reconnect scheduling with doubling backoff capped at 30 s,
@@ -85,8 +85,10 @@ Configured in `web/vite.config.ts` under `lint`:
   semantics.
 - Cooldown (`cooldown.ts`): remaining-ms math, countdown formatting, live
   Countdown ticking/expiry with fake timers.
-- Sizing (`sizing.ts`): long-edge clamp 16..2048, aspect math (ghost rect), 10
+- Sizing (`sizing.ts`): long-edge clamp 16..4096, aspect math (ghost rect), 10
   MB upload check.
+- Rotation (`rotAABB` in `world.ts`): cardinal identity, 90° swap, 45° √2
+  growth, area/edge invariants.
 - Format (`format.ts`): time-ago buckets, duration formatting.
 - Store (`state.svelte.ts`): auth flows, toasts lifecycle, full place flow incl.
   429 cooldown toast, auth prompts, report/remove rules.
@@ -121,11 +123,24 @@ lines**.
   ETag/no-cache, so the refetch is a cheap conditional GET.
 - Popup query radius: `256 * 2^(16 - z)` clamped to `[256, 65536]`.
 
+## Rotation semantics
+
+- `Placement.rot` is degrees clockwise, 0 = upright; `x, y, w, h` stay the
+  UNROTATED rect (top-left + long-edge dims). The rect rotates about its own
+  centre, so the centre is always `(x + w/2, y + h/2)`.
+- Overlays that need a screen box (ghost footprint outline, placement highlight)
+  use the axis-aligned footprint `rotAABB(w, h, rot)` — centred on the rect
+  centre, sized `w·|cos|+h·|sin| × w·|sin|+h·|cos|`. Hit-testing is server-side
+  (`placements/near` bbox), so the client never re-implements it.
+- Ghost rendering: CSS `translate(pointer) rotate(rot)` on the `<img>`
+  (transform-origin centre = rect centre); the outline is a sibling div sized to
+  the AABB at the current zoom.
+
 ## API usage map
 
 Cookie auth, same-origin. `src/lib/api.ts` is the only fetch site (fetch
 injectable for tests). Endpoints per contract: auth register/login/logout/me,
-place (multipart x/y/size), placements/near, center, events (SSE), reports,
+place (multipart x/y/size/rot), placements/near, center, events (SSE), reports,
 admin placements delete. The store (`state.svelte.ts`) owns UX rules: 429 →
 cooldown toast with Retry-After; 401/403 → login popover; center chip polls
 `/api/center` every 30 s and refreshes early when an SSE bbox covers the center.
@@ -149,8 +164,8 @@ context is `web/`).
 
 | Asset             | Raw      | Gzip    |
 | ----------------- | -------- | ------- |
-| JS (index-*.js)   | 215.2 kB | 68.2 kB |
-| CSS (index-*.css) | 25.5 kB  | 9.0 kB  |
+| JS (index-*.js)   | 216.7 kB | 67.6 kB |
+| CSS (index-*.css) | 25.1 kB  | 8.8 kB  |
 | index.html        | 0.7 kB   | 0.4 kB  |
 
 JS gzipped is 68 kB against the 150 kB target; the only runtime deps are Svelte
@@ -160,12 +175,15 @@ JS gzipped is 68 kB against the 150 kB target; the only runtime deps are Svelte
 
 - `vp check` exit 0 (fmt + oxlint + tsgo type check); `vpr check`: svelte-check
   0 errors/0 warnings + tsc clean.
-- `vp test`: 83 passing; `vp test --coverage`: 93.5% lines.
+- `vp test`: 104 passing; `vp test --coverage`: 85.7% lines (gate: 80%).
 - `vp build` produces `web/dist` with hashed assets (sizes above).
 - `vp dev` smoke: page compiles and boots with zero console errors; browser
   check confirmed topbar, 0/0 chip, center reticle, modals, auth popover,
-  Escape-to-close. `/api` 502s with no backend running, surfaced as toasts —
-  expected without the backend.
+  Escape-to-close. Rotation: place flow DOM-verified against a static replica
+  (ghost `rotate(45deg)` at the pointer, dashed AABB outline √2-scaled at 45°,
+  Rotation slider label live) and pixel-verified via magnified screenshot.
+  `/api` 502s with no backend running, surfaced as toasts — expected without the
+  backend.
 - Docker: image builds (multi-stage, 93.6 MB); HTTP-verified — `/` and
   `/index.html` send `no-cache`, `/assets/*` send
   `public, max-age=31536000, immutable` + gzip, unknown routes fall back to

@@ -33,6 +33,7 @@ function makeClient(
         y: req.y,
         w: req.size,
         h: req.size,
+        rot: req.rot,
         seq: 5,
       });
     }),
@@ -232,6 +233,7 @@ describe("place flow", () => {
         y: 134217700,
         w: 512,
         h: 512,
+        rot: 0,
         seq: 5,
       },
     });

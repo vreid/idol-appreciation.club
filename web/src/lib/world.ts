@@ -74,6 +74,27 @@ export function latLngToWorld(lat: number, lng: number): WorldPoint {
 }
 
 /**
+ * Axis-aligned footprint (native px) of a w×h rect rotated by rot degrees
+ * clockwise about its centre. The placement x/y/w/h stay the unrotated rect;
+ * overlays (dashed outline, highlight, hit visuals) size to this AABB.
+ */
+/** Snap near-zero trig values so cardinal angles give exact AABBs. */
+function snapTrig(v: number): number {
+  return Math.abs(v) < 1e-12 ? 0 : Math.abs(v);
+}
+
+export function rotAABB(
+  w: number,
+  h: number,
+  rotDeg: number,
+): { w: number; h: number } {
+  const rad = (rotDeg * Math.PI) / 180;
+  const cos = snapTrig(Math.cos(rad));
+  const sin = snapTrig(Math.sin(rad));
+  return { w: w * cos + h * sin, h: w * sin + h * cos };
+}
+
+/**
  * Server tile formula: the index of the tile covering native worldPx at the
  * given zoom — floor(worldPx / (256 * 2^(20-z))). Keep in sync with
  * GET /api/tiles/{z}/{x}/{y}.webp.

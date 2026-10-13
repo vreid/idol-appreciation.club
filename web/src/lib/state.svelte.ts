@@ -55,6 +55,7 @@ export function createAppStore(
   let placeMode = $state<PlaceMode>("idle");
   let prepared = $state<PreparedImage | null>(null);
   let longEdge = $state(DEFAULT_LONG_EDGE);
+  let rotation = $state(0);
   let submittingPlace = $state(false);
   let authPrompt = $state(false);
 
@@ -75,6 +76,7 @@ export function createAppStore(
 
   function doCancelPlace(): void {
     releasePrepared();
+    rotation = 0;
     placeMode = "idle";
     submittingPlace = false;
   }
@@ -176,6 +178,12 @@ export function createAppStore(
     },
     get longEdge() {
       return longEdge;
+    },
+    get rotation() {
+      return rotation;
+    },
+    setRotation(value: number): void {
+      rotation = Math.max(-180, Math.min(180, Math.round(value)));
     },
     get submittingPlace() {
       return submittingPlace;
@@ -283,6 +291,7 @@ export function createAppStore(
           x: spot.x,
           y: spot.y,
           size: Math.max(size.w, size.h),
+          rot: rotation,
         });
         doCancelPlace();
         pushToast("success", "Image placed!");

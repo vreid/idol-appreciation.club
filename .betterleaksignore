@@ -132,3 +132,7 @@ backend/tests/integration.rs:generic-password:1421
 # filesystem scans of dev machines, never present on CI checkouts
 tofu/.terraform/terraform.tfstate:generic-api-key:6
 tofu/.terraform/terraform.tfstate:generic-api-key:41
+# dir-scan variant of the same finding (c46abae recorded only the
+# git-scan fingerprint, which is commit-prefixed; `task leaks` runs BOTH
+# scans, so the working-tree scan kept failing main).
+chart/cnpg/barman-cloud-plugin-0.15.1.yaml:kubernetes-secret-yaml:976

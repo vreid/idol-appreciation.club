@@ -1,6 +1,7 @@
 //! idol-appreciation.club backend: HTTP API + tile renderer + static host.
 //!
 //! Library crate so integration tests can boot the real router.
+//! (Image-digest drift source for the images-bot exercise, 2026-10-14.)
 
 pub mod api;
 pub mod auth;

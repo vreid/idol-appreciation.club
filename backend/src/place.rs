@@ -455,6 +455,14 @@ pub async fn place(
     )
     .await?;
 
+    // The chunk version rollup advances with the placement (same tx): the
+    // tile read path reads chunk_seqs, never placement rows.
+    crate::chunks::bump_chunk_seqs(
+        &mut tx,
+        &[(seq, aabb.x, aabb.y, aabb.w as i32, aabb.h as i32)],
+    )
+    .await?;
+
     let event = json!({
         "type": "place",
         "seq": seq,
@@ -542,6 +550,30 @@ pub async fn admin_delete(
     )
     .await?;
     crate::chunks::replay_chunks(&app, &mut tx, &chunk_keys).await?;
+    // The replay rewrites the rasters without the removed art; give the
+    // chunks a FRESH version (a raw sequence draw, no row inserted) so the
+    // rollup moves forward and stale tiles re-render exactly once.
+    let bump: (i64,) = crate::dbq::timed(
+        "place",
+        sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
+    )
+    .await?;
+    crate::chunks::bump_chunk_seqs(
+        &mut tx,
+        &chunk_keys
+            .iter()
+            .map(|&(cx, cy)| {
+                (
+                    bump.0,
+                    cx * crate::world::CHUNK_PX,
+                    cy * crate::world::CHUNK_PX,
+                    1,
+                    1,
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     let event = json!({
         "type": "remove",
         "id": id,

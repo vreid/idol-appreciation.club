@@ -320,6 +320,13 @@ that were a no-op for pods. The DB password stays fresh-from-API on every deploy
 
 ## Scaling: the backend chunk writer (MUST read before scaling)
 
+CNPG note (2026-10-14): the worker floor is 3 (`tofu/ var.node_count`, live
+count bumped by `task cnpg:node-scale` — the node group's `ignore_changes` means
+tofu never snaps the live count back). The CNPG Cluster pins one database
+replica per node via required pod anti-affinity, so 3 workers is the minimum
+viable fleet; the Cluster Autoscaler bounds (chart/ values) must stay
+`minSize: 3, maxSize: 4` when enabled.
+
 Chunk mutation takes PG advisory locks (session-level, sorted lock order — see
 the backend chunk path) so multi-writer safety does not depend on a single
 process; the in-process lock tier is retained in front of them. Render locks

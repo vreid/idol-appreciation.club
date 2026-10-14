@@ -36,9 +36,16 @@ use std::time::{Duration, Instant};
 /// (z, x, y, seq) → encoded webp bytes.
 type CacheKey = (i64, i64, i64, i64);
 
+/// Coordinate → (newest seq, bytes). Only the newest seq per coordinate
+/// is kept: keying by the full (z, x, y, seq) and never evicting (#155)
+/// grows one entry per re-rendered seq — the whole pyramid's ancestors
+/// re-render every quiet window while anyone is zoomed out, an unbounded
+/// slow leak.
+type LowZoomEntry = (i64, Bytes);
+
 pub struct TileCache {
-    /// z ≤ 4 tiles never evict (at most 341 exist).
-    low_zoom: StdMutex<HashMap<CacheKey, Bytes>>,
+    /// z ≤ 4 tiles: at most 341 coordinates exist.
+    low_zoom: StdMutex<HashMap<(i64, i64, i64), LowZoomEntry>>,
     lru: StdMutex<LruCache<CacheKey, Bytes>>,
 }
 
@@ -54,11 +61,16 @@ impl TileCache {
 
     fn get(&self, z: i64, key: CacheKey) -> Option<Bytes> {
         if z <= 4 {
-            self.low_zoom
+            let hit = self
+                .low_zoom
                 .lock()
                 .expect("low zoom cache")
-                .get(&key)
-                .cloned()
+                .get(&(key.0, key.1, key.2))
+                .map(|(seq, bytes)| (*seq, bytes.clone()));
+            match hit {
+                Some((seq, bytes)) if seq == key.3 => Some(bytes),
+                _ => None,
+            }
         } else {
             self.lru.lock().expect("tile lru").get(&key).cloned()
         }
@@ -69,7 +81,7 @@ impl TileCache {
             self.low_zoom
                 .lock()
                 .expect("low zoom cache")
-                .insert(key, bytes);
+                .insert((key.0, key.1, key.2), (key.3, bytes));
         } else {
             self.lru.lock().expect("tile lru").put(key, bytes);
         }
@@ -649,8 +661,13 @@ struct TileCtx {
     /// per render, on a brief pool hold, the first time a node at that
     /// level needs its stored seq (mem-cache hits skip it entirely).
     stored_levels: StdMutex<HashMap<i64, Arc<StoredLevel>>>,
-    /// Memoized effective seq per node = max over its subtree chunks.
-    node_seqs: StdMutex<HashMap<(i64, i64, i64), i64>>,
+    /// Precomputed effective seq per node, one level per zoom from
+    /// root_z to BASE_Z (index = z - root_z). Built once in `prefetch`
+    /// from the chunk rows: each level's entry count is bounded by the
+    /// level below, so the whole pyramid costs ~4/3 x the chunk rows —
+    /// NEVER materialize per-node memos on demand: a z5 entry GET would
+    /// recurse (4^13 - 1)/3 ~= 22M nodes (issue #150).
+    levels: Vec<HashMap<(i64, i64), i64>>,
     /// The zoom this context was prefetched for (level-span arithmetic
     /// and the "strictly under the root" check key off it).
     root_z: i64,
@@ -665,53 +682,54 @@ struct TileCtx {
 impl TileCtx {
     async fn prefetch(app: &App, z: i64, x: i64, y: i64) -> AppResult<Self> {
         let rect = tile_bounds(z, x, y);
-        // Per-chunk max live placement seq: a PLAIN GiST-probe retrieval
-        // (Index Scan on placements_bbox_gist, ~0.1 ms for tile-sized
-        // boxes on the 51k-row prod pile), with the chunk-span expansion
-        // and per-chunk max done in Rust. Never aggregate this in SQL:
-        // `max(seq)` lets the planner pick a placements_seq_key BACKWARD
-        // scan that filters bbox row-by-row (51750 rows removed, ~150
-        // ms-1.3 s per probe — the 2026-10-14 pile-wedge shape), and a
-        // CROSS JOIN LATERAL generate_series expansion poisons the row
-        // estimate (~149M planned rows, ~1.1 s). Prod-verified plans in
-        // PR #134.
-        let rows: Vec<(i64, i64, i64, i32, i32)> = crate::dbq::timed(
+        // Per-chunk content versions from the MAINTAINED rollup
+        // (chunk_seqs — bumped in the place/import/removal write paths;
+        // see chunks::bump_chunk_seqs). This is the doctrine end-state:
+        // the read path never consults placement rows, so view cost is
+        // pile-depth-independent — a PK range scan over the box's chunks
+        // (~ms, and ~23k rows for the whole-pile worst case instead of a
+        // 51k-row GiST recheck that cost 1.2 s and OOM-killed the pod
+        // under concurrent low-zoom GETs on 2026-10-14).
+        let rows: Vec<(i64, i64, i64)> = crate::dbq::timed(
             "tile_seq",
             sqlx::query_as(
-                "SELECT seq, x, y, w, h
-             FROM placements
-             WHERE removed_at IS NULL
-               AND bbox && box(point($1::float8, $2::float8),
-                               point($3::float8, $4::float8))",
+                "SELECT cx, cy, max_seq FROM chunk_seqs
+                 WHERE cx >= $1 AND cx <= $2 AND cy >= $3 AND cy <= $4",
             )
-            .bind(rect.x)
-            .bind(rect.y)
-            .bind(rect.x + rect.w - 1)
-            .bind(rect.y + rect.h - 1)
+            .bind(rect.x.div_euclid(CHUNK_PX))
+            .bind((rect.x + rect.w - 1).div_euclid(CHUNK_PX))
+            .bind(rect.y.div_euclid(CHUNK_PX))
+            .bind((rect.y + rect.h - 1).div_euclid(CHUNK_PX))
             .fetch_all(&app.pool),
         )
         .await?;
         let probe_rows = rows.len();
-        let mut chunk_seqs: HashMap<(i64, i64), i64> = HashMap::new();
-        for (seq, x, y, w, h) in rows {
-            let (w, h) = (i64::from(w), i64::from(h));
-            let cx0 = x / CHUNK_PX;
-            let cx1 = (x + w - 1) / CHUNK_PX;
-            let cy0 = y / CHUNK_PX;
-            let cy1 = (y + h - 1) / CHUNK_PX;
-            for cx in cx0..=cx1 {
-                for cy in cy0..=cy1 {
-                    let slot = chunk_seqs.entry((cx, cy)).or_default();
-                    if seq > *slot {
-                        *slot = seq;
-                    }
+        let base: HashMap<(i64, i64), i64> =
+            rows.into_iter().map(|(cx, cy, s)| ((cx, cy), s)).collect();
+        // Collapse the chunk map into one max-level per zoom, bottom-up:
+        // level z's entry = max of its four children. Total entries across
+        // all levels are bounded by ~4/3 x the base level.
+        let levels_len = (BASE_Z - z).max(0) as usize + 1;
+        let mut levels = Vec::with_capacity(levels_len);
+        levels.push(base.clone());
+        let mut cur = base;
+        for _ in (0..(BASE_Z - z)).rev() {
+            let mut next: HashMap<(i64, i64), i64> = HashMap::new();
+            for (&(cx, cy), &seq) in &cur {
+                let p = (cx / 2, cy / 2);
+                let slot = next.entry(p).or_default();
+                if seq > *slot {
+                    *slot = seq;
                 }
             }
+            cur = next;
+            levels.push(cur.clone());
         }
+        levels.reverse(); // levels[k] = zoom (z + k)
         Ok(Self {
-            chunk_seqs,
+            chunk_seqs: levels[levels.len() - 1].clone(),
+            levels,
             stored_levels: StdMutex::new(HashMap::new()),
-            node_seqs: StdMutex::new(HashMap::new()),
             root_z: z,
             rows: probe_rows,
             root_stored: crate::dbq::timed(
@@ -730,31 +748,15 @@ impl TileCtx {
     /// Effective live seq at a node = max chunk seq over its subtree.
     /// Memoized: every node of the pyramid is computed exactly once.
     fn node_seq(&self, z: i64, x: i64, y: i64) -> i64 {
-        {
-            let memo = self.node_seqs.lock().expect("node seq memo");
-            if let Some(seq) = memo.get(&(z, x, y)) {
-                return *seq;
-            }
+        if z >= BASE_Z {
+            return *self.chunk_seqs.get(&tile_chunk(z, x, y)).unwrap_or(&0);
         }
-        let seq = if z >= BASE_Z {
-            *self.chunk_seqs.get(&tile_chunk(z, x, y)).unwrap_or(&0)
-        } else {
-            [
-                (2 * x, 2 * y),
-                (2 * x + 1, 2 * y),
-                (2 * x, 2 * y + 1),
-                (2 * x + 1, 2 * y + 1),
-            ]
-            .into_iter()
-            .map(|(cx, cy)| self.node_seq(z + 1, cx, cy))
-            .max()
+        let k = (z - self.root_z).max(0) as usize;
+        self.levels
+            .get(k)
+            .and_then(|l| l.get(&(x, y)))
+            .copied()
             .unwrap_or(0)
-        };
-        self.node_seqs
-            .lock()
-            .expect("node seq memo")
-            .insert((z, x, y), seq);
-        seq
     }
 
     /// Stored staleness row for a node, materializing its level lazily.
@@ -779,7 +781,15 @@ impl TileCtx {
         let level = match level {
             Some(l) => l,
             None => {
+                // The level map covers the ROOT's whole span at this
+                // level: [rx*span, (rx+1)*span). Deriving the range from
+                // THIS node's coords (#151) yields a disjoint window
+                // whenever the root isn't at 0 — every later lookup in
+                // the cached map misses and the subtree cold-renders.
+                // i64 math throughout: x*span wraps i32 at deep levels
+                // under low roots.
                 let span = 1i64 << (z - root_z);
+                let (rx, ry) = (x / span, y / span);
                 let rows: Vec<(i32, i32, i64)> = crate::dbq::timed(
                     "tiles_meta",
                     sqlx::query_as(
@@ -787,10 +797,10 @@ impl TileCtx {
                          WHERE z = $1 AND x >= $2 AND x < $3 AND y >= $4 AND y < $5",
                     )
                     .bind(z as i16)
-                    .bind((x * span) as i32)
-                    .bind(((x + 1) * span) as i32)
-                    .bind((y * span) as i32)
-                    .bind(((y + 1) * span) as i32)
+                    .bind((rx * span) as i32)
+                    .bind(((rx + 1) * span) as i32)
+                    .bind((ry * span) as i32)
+                    .bind(((ry + 1) * span) as i32)
                     .fetch_all(&app.pool),
                 )
                 .await?;
@@ -956,6 +966,26 @@ async fn tile_bytes_inner(
             return Ok(TileResolved::Shed);
         }
     }
+    // Cold oversized low-zoom tiles never render inline: a first-ever
+    // z0-z12 GET recurses its WHOLE subtree on the request path (the
+    // prod wedge: a z12 tile = 1323 chunk renders = 10-31 s; z0 = the
+    // pile's entire pyramid, minutes) while same-coord followers queue
+    // silently on the per-tile lock holding gate leases. Above this
+    // many prefetched chunk rows the tile goes to the background queue
+    // and the GET sheds like any other congestion. The worker renders
+    // it (Ungated) and later GETs stale-serve from storage.
+    if admission == Admission::Gated && z < BASE_Z && stored.is_none() && ctx.rows > 256 {
+        eprintln!("DEBUG cold-shed fired z={z} rows={}", ctx.rows);
+        app.render_queue.enqueue(z, x, y).await;
+        crate::metrics::tile_done(crate::metrics::tile_outcome("shed"), t0.elapsed());
+        return Ok(TileResolved::Shed);
+    }
+    eprintln!(
+        "DEBUG shed-check z={z} admission_gated={} rows={} stored={:?}",
+        admission == Admission::Gated,
+        ctx.rows,
+        stored.is_some()
+    );
     // Pyramid gate (issue #120): a cold z < BASE_Z render is a
     // multi-minute sequential recursion. Entry GETs hold one of a couple
     // of leases for the whole recursion — with sequential children that
@@ -1124,7 +1154,24 @@ pub async fn prewarm_chunks(app: &App, chunks: &[(i64, i64)]) -> AppResult<u64> 
 
 #[cfg(test)]
 mod tests {
-    use super::{tile_response, PyramidGate};
+    use super::{tile_response, PyramidGate, TileCache};
+
+    #[test]
+    fn low_zoom_keeps_only_newest_seq_per_tile() {
+        // Issue #155: the map must stay bounded by coordinates, not by
+        // the number of distinct seqs ever rendered.
+        let cache = TileCache::new(16);
+        for seq in 0..1000i64 {
+            cache.put(0, (0, 0, 0, seq), Bytes::from_static(b"new"));
+        }
+        assert_eq!(cache.low_zoom.lock().unwrap().len(), 1);
+        assert!(cache.get(0, (0, 0, 0, 999)).is_some());
+        assert!(cache.get(0, (0, 0, 0, 0)).is_none());
+        // A second coordinate is kept alongside.
+        cache.put(2, (2, 1, 1, 7), Bytes::from_static(b"x"));
+        assert_eq!(cache.low_zoom.lock().unwrap().len(), 2);
+    }
+
     use axum::http::header;
     use axum::http::StatusCode;
     use bytes::Bytes;

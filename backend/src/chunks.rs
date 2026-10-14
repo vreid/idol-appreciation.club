@@ -214,6 +214,58 @@ async fn replay_chunks_locked(
     Ok(())
 }
 
+/// Advance the per-chunk content version for every chunk each (seq, x, y,
+/// w, h) placement rect touches. Called in the SAME transaction as the
+/// placement write (place insert, import batch insert) and — with a fresh
+/// `nextval('placement_seq')` as the version — after a removal replay, so
+/// versions only move forward. This table is the tile read path's ONLY
+/// placement-derived input (issue #120 doctrine): placement rows are never
+/// consulted at render time.
+pub async fn bump_chunk_seqs(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    rows: &[(i64, i64, i64, i32, i32)],
+) -> AppResult<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut seqs = Vec::with_capacity(rows.len());
+    let mut xs = Vec::with_capacity(rows.len());
+    let mut ys = Vec::with_capacity(rows.len());
+    let mut ws = Vec::with_capacity(rows.len());
+    let mut hs = Vec::with_capacity(rows.len());
+    for (s, x, y, w, h) in rows {
+        seqs.push(*s);
+        xs.push(*x);
+        ys.push(*y);
+        ws.push(*w);
+        hs.push(*h);
+    }
+    crate::dbq::timed(
+        "chunk_bump",
+        sqlx::query(
+            "INSERT INTO chunk_seqs (cx, cy, max_seq)
+             SELECT cx, cy, max(seq)
+             FROM unnest($1::bigint[], $2::bigint[], $3::bigint[], $4::int[], $5::int[])
+                  AS t(seq, x, y, w, h)
+             CROSS JOIN LATERAL generate_series(floor(x / 1024.0)::bigint,
+                                                floor((x + w - 1) / 1024.0)::bigint) AS cx
+             CROSS JOIN LATERAL generate_series(floor(y / 1024.0)::bigint,
+                                                floor((y + h - 1) / 1024.0)::bigint) AS cy
+             GROUP BY cx, cy
+             ON CONFLICT (cx, cy) DO UPDATE
+             SET max_seq = GREATEST(chunk_seqs.max_seq, EXCLUDED.max_seq)",
+        )
+        .bind(&seqs)
+        .bind(&xs)
+        .bind(&ys)
+        .bind(&ws)
+        .bind(&hs)
+        .execute(&mut **tx),
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

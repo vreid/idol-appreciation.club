@@ -102,14 +102,19 @@ RUNNER=docker task backend:test
 
 ## Secret scanning (hard gate)
 
-`task leaks` scans git history and the working tree with
-[betterleaks](https://github.com/betterleaks/betterleaks), configured in
+`task leaks` scans the git history of the checked-out ref and the working tree
+with [betterleaks](https://github.com/betterleaks/betterleaks), configured in
 `.betterleaks.toml` (built-in rules plus path exclusions for generated image
 fixtures and dependency/build trees). Output is redacted; a finding fails the
 gate. Known committed test fixtures (bot-account passwords, docs examples) are
 allowlisted by fingerprint in `.betterleaksignore` — never by value; see the
 regeneration commands in `.betterleaks.toml`. A genuinely leaked credential
 requires rotation, not an allowlist entry; never weaken the scan to pass it.
+
+The history scan is limited to commits reachable from `HEAD` (`--log-opts=HEAD`;
+in CI that is the PR merge commit, or the pushed `main` commit). Other branches
+are scanned by their own PR and push runs, so a finding on one branch no longer
+fails every open PR.
 
 ## Markdown formatting
 

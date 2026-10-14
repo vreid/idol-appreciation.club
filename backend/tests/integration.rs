@@ -1677,7 +1677,7 @@ async fn import_metrics_move_on_batch() {
     assert_eq!(n("import_images_total"), 3.0, "images counter did not move");
     let writes = n("import_chunk_writes_total");
     assert!(
-        writes >= 1.0 && writes <= 3.0,
+        (1.0..=3.0).contains(&writes),
         "chunk_writes {writes} outside [1,3] — must count chunk raster writes, not images"
     );
     assert!(

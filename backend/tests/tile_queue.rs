@@ -517,3 +517,199 @@ async fn cold_flood_sheds_202_while_hot_stays_stale() {
         "hot stale serve took {hot_latency:?}"
     );
 }
+
+/// Issue #120 soak invariant, now structural: the pyramid gate bounds
+/// concurrent full-pyramid renders at 2 and sheds the rest (202 +
+/// Retry-After) BEFORE they touch the pool, and the connection-free walk
+/// means a rendering GET holds no pool connection while it grinds. Three
+/// concurrent z17 renders (paused mid-flight) + a placement: the
+/// placement stays at baseline latency and nothing 500s.
+#[tokio::test(flavor = "multi_thread")]
+async fn pyramid_gate_sheds_and_keeps_placements_live() {
+    let _serial = set_render_pause_ms(0).await;
+    let server = start_server_full(
+        false,
+        300,
+        1,
+        10 * 1024 * 1024,
+        TileRenderCfg {
+            quiet_secs: 1,
+            max_delay_secs: 60,
+            cap: 512,
+        },
+    )
+    .await;
+    let placer = make_placer(&server, "pyramider").await;
+    let base = 1 << 22;
+    let img = png(48, 48);
+
+    // Three placements in three DIFFERENT z17 tiles (2048px each), far
+    // enough apart that no two share a parent.
+    let spots: Vec<(i64, i64)> = (0..3i64)
+        .map(|i| (base + i * 8192, base + i * 8192))
+        .collect();
+    for (x, y) in &spots {
+        assert_eq!(place(&server, &placer, &img, *x, *y, 48).await.status, 201);
+    }
+    let z17 = |i: usize| {
+        format!(
+            "/api/tiles/17/{}/{}.webp",
+            spots[i].0 / 2048,
+            spots[i].1 / 2048
+        )
+    };
+
+    // Hold each parent render mid-flight so the gate stays full.
+    set_pyramid_pause_ms(2500);
+    let sheds_before = counter(&metrics_map(&server).await, "tile_pyramid_sheds_total");
+
+    // Baseline placement latency (no renders in flight yet).
+    let t0 = Instant::now();
+    let resp = place(&server, &placer, &img, spots[0].0 + 8, spots[0].1 + 8, 48).await;
+    assert_eq!(resp.status, 201);
+    let baseline = t0.elapsed();
+    assert!(
+        baseline < Duration::from_millis(1500),
+        "baseline {baseline:?}"
+    );
+
+    // Fire three pyramid renders concurrently: two take the leases, the
+    // third must be shed — and the shed must happen while the first two
+    // are still paused.
+    let mut gets = Vec::new();
+    for i in 0..3 {
+        let addr = server.addr;
+        let path = z17(i);
+        gets.push(tokio::spawn(async move {
+            let t0 = Instant::now();
+            let (status, headers, _body) = burst_get(addr, &path).await;
+            (status, headers, t0.elapsed())
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // THE INVARIANT: a placement while two pyramid renders are paused
+    // mid-flight stays at baseline scale — pre-#120 the fan-out raced the
+    // whole pool and this queued behind slow acquires.
+    let t0 = Instant::now();
+    let resp = place(&server, &placer, &img, spots[1].0 + 16, spots[1].1 + 16, 48).await;
+    assert_eq!(resp.status, 201);
+    let took = t0.elapsed();
+    assert!(
+        took < Duration::from_millis(1500),
+        "placement during paused pyramid renders took {took:?} (baseline {baseline:?})"
+    );
+
+    let mut shed = 0;
+    let mut served = 0;
+    for g in gets {
+        let (status, headers, took) = g.await.unwrap();
+        assert!(status == 200 || status == 202, "got {status}");
+        if status == 202 {
+            shed += 1;
+            assert_eq!(headers.get("retry-after").map(String::as_str), Some("2"));
+        } else {
+            served += 1;
+            assert!(
+                took >= Duration::from_millis(2500),
+                "rendered GET finished early: {took:?}"
+            );
+        }
+    }
+    assert_eq!(shed, 1, "exactly the third GET sheds: {shed}");
+    assert_eq!(served, 2);
+    assert!(
+        counter(&metrics_map(&server).await, "tile_pyramid_sheds_total") > sheds_before,
+        "shed counter must advance"
+    );
+}
+
+/// Scale regression for the pile-wedge incident (#120): a few-thousand-
+/// entry import pile must not couple a low-zoom render to placement
+/// latency. The render walk is connection-free (snapshot prefetch, then
+/// pure Rust + object storage + pixels), so placements keep their
+/// baseline latency while a z15 pyramid render is in flight, and the
+/// render itself completes within a bounded budget.
+#[tokio::test(flavor = "multi_thread")]
+async fn import_pile_low_zoom_never_starves_placements() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "pile-wedge").await;
+
+    // Seed a real pile through the import endpoint: 48×48 entries on a
+    // 112px pitch over ~7k px — 64×64 = 4096 entries covering all 64 z18
+    // chunks of the z15 tile at (1024, 1024) (native z15 size = 8192px).
+    let maps = preupload(&server, &admin, &[png(48, 48)]).await;
+    let base = 1 << 23;
+    let pitch: i64 = 112;
+    let n: i64 = 64;
+    let mut entries = Vec::with_capacity((n * n) as usize);
+    for i in 0..n {
+        for j in 0..n {
+            entries.push(entry(
+                &maps,
+                0,
+                base + 64 + i * pitch,
+                base + 64 + j * pitch,
+                0.0,
+                None,
+            ));
+        }
+    }
+    let manifest = serde_json::json!({
+        "batch_id": uuid::Uuid::now_v7(),
+        "entries": entries,
+    });
+    let resp = import_manifest(&server, &admin, manifest).await;
+    assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+    assert_eq!(resp.json()["imported"], 4096);
+
+    // Baseline: an empty-corner placement while nothing renders.
+    let img = png(32, 32);
+    let quiet = base + 8100;
+    let t0 = std::time::Instant::now();
+    let resp = place(&server, &admin, &img, quiet, quiet, 32).await;
+    assert_eq!(resp.status, 201);
+    let baseline = t0.elapsed();
+
+    // Fire the low-zoom render and overlap it with placements. Empty-
+    // space cooldown is 1s, so placements pace just past it.
+    let addr = server.addr;
+    let path = "/api/tiles/15/1024/1024.webp";
+    let get = tokio::spawn(async move {
+        let t0 = std::time::Instant::now();
+        let r = request_addr(addr, "GET", path, &[], Vec::new(), Duration::from_secs(150)).await;
+        (r, t0.elapsed())
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut worst = Duration::ZERO;
+    for k in 0..8 {
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let t0 = std::time::Instant::now();
+        let resp = place(&server, &admin, &img, quiet + 64 + k * 64, quiet, 32).await;
+        assert_eq!(resp.status, 201, "placement {k} under render load");
+        worst = worst.max(t0.elapsed());
+    }
+    assert!(
+        worst <= Duration::from_secs(5),
+        "placement latency {worst:?} during a low-zoom render (baseline {baseline:?}) — \
+         the render walk is holding pool connections again"
+    );
+
+    let (resp, elapsed) = get.await.unwrap();
+    assert_eq!(resp.status, 200, "low-zoom render over the pile");
+    assert!(
+        elapsed <= Duration::from_secs(120),
+        "z15 render over a 4k-entry pile took {elapsed:?} — budget blown"
+    );
+
+    // The rendered tile is stored: the re-GET is served without a
+    // re-render, fast.
+    let t0 = std::time::Instant::now();
+    let resp = request(&server, "GET", path, &[], Vec::new()).await;
+    assert_eq!(resp.status, 200);
+    assert!(
+        t0.elapsed() <= Duration::from_secs(5),
+        "warm re-GET took {:?} — should be a mem/store hit",
+        t0.elapsed()
+    );
+}

@@ -11,7 +11,7 @@ use crate::error::{internal, AppError, AppResult};
 use crate::img;
 use crate::state::App;
 use crate::world::{
-    is_valid_tile, tile_bounds, tile_chunk, tile_key, tile_native_size, tile_offset_in_chunk, Rect,
+    is_valid_tile, tile_bounds, tile_chunk, tile_key, tile_native_size, tile_offset_in_chunk,
     BASE_Z, CHUNK_PX, MAX_Z, TILE_PX,
 };
 use axum::extract::State;
@@ -22,6 +22,7 @@ use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
@@ -279,7 +280,8 @@ impl RenderExecutor for InProcessExecutor {
             if pause > 0 {
                 tokio::time::sleep(Duration::from_millis(pause)).await;
             }
-            tile_bytes_inner(&self.app, z, x, y, Stale::Never).await?;
+            let ctx = TileCtx::prefetch(&self.app, z, x, y).await?;
+            tile_bytes_inner(&self.app, &ctx, z, x, y, Stale::Never, Admission::Ungated).await?;
             crate::metrics::background_render_done(t0.elapsed());
             Ok(())
         })
@@ -294,6 +296,13 @@ static RENDER_PAUSE_MS: AtomicU64 = AtomicU64::new(0);
 #[doc(hidden)]
 pub fn set_render_pause_for_tests(ms: u64) {
     RENDER_PAUSE_MS.store(ms, Ordering::Relaxed);
+}
+
+static PYRAMID_PAUSE_MS: AtomicU64 = AtomicU64::new(0);
+
+#[doc(hidden)]
+pub fn set_pyramid_pause_for_tests(ms: u64) {
+    PYRAMID_PAUSE_MS.store(ms, Ordering::Relaxed);
 }
 
 /// Spawn the single background render worker. Called once from
@@ -345,23 +354,6 @@ async fn render_worker(app: App, executor: impl RenderExecutor) {
     }
 }
 
-/// Max non-removed placement seq whose bbox intersects the rect (0 = none).
-pub async fn max_seq_covering(app: &App, rect: Rect) -> AppResult<i64> {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(max(seq), 0) FROM placements
-         WHERE removed_at IS NULL
-           AND bbox && box(point($1::float8, $2::float8),
-                           point($3::float8, $4::float8))",
-    )
-    .bind(rect.x)
-    .bind(rect.y)
-    .bind(rect.x + rect.w - 1)
-    .bind(rect.y + rect.h - 1)
-    .fetch_one(&app.pool)
-    .await?;
-    Ok(row.0)
-}
-
 /// GET /api/tiles/{z}/{x}/{y}.webp
 pub async fn get_tile(
     State(app): State<App>,
@@ -382,7 +374,10 @@ pub async fn get_tile(
     if !is_valid_tile(z, x, y) {
         return Err(AppError::NotFound);
     }
-    let resolved = tile_bytes(&app, z, x, y, Stale::Allow).await?;
+    // One-shot snapshot for this render (issue #120): two short pool
+    // holds, then the walk runs connection-free.
+    let ctx = TileCtx::prefetch(&app, z, x, y).await?;
+    let resolved = tile_bytes(&app, &ctx, z, x, y, Stale::Allow, Admission::Gated).await?;
     let (bytes, seq, stale) = match resolved {
         TileResolved::Bytes { bytes, seq, stale } => (bytes, seq, stale),
         // Render-storm flood: queue at capacity, no stored bytes to serve.
@@ -463,12 +458,14 @@ fn empty_tile_bytes() -> AppResult<Vec<u8>> {
 /// z < BASE_Z render through this same fn).
 fn tile_bytes<'a>(
     app: &'a App,
+    ctx: &'a TileCtx,
     z: i64,
     x: i64,
     y: i64,
     stale: Stale,
+    admission: Admission,
 ) -> futures::future::BoxFuture<'a, AppResult<TileResolved>> {
-    Box::pin(tile_bytes_inner(app, z, x, y, stale))
+    Box::pin(tile_bytes_inner(app, ctx, z, x, y, stale, admission))
 }
 
 /// Whether the caller tolerates serving stored-but-stale bytes. Entry GETs
@@ -479,6 +476,226 @@ fn tile_bytes<'a>(
 enum Stale {
     Allow,
     Never,
+}
+
+/// Whether this resolution may acquire a pyramid lease. Only entry GETs
+/// are gated: a cold z < BASE_Z render is a multi-minute sequential
+/// recursion (issue #120), and N concurrent entries must not pin N pool
+/// connections for that long. Recursion children resolve under the
+/// parent's existing lease; the background worker is serial by
+/// construction; prewarm only walks z >= BASE_Z leaves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Gated,
+    Ungated,
+}
+
+/// Bound on concurrent full-pyramid (z < BASE_Z) renders. Held for the
+/// whole recursion — with one query in flight per render (sequential
+/// children), this is also the max pool footprint of all pyramid renders
+/// combined. Entry GETs that find the gate full are shed (202 + Retry-
+/// After, the existing shed path) instead of queueing invisibly.
+pub struct PyramidGate {
+    permits: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+impl PyramidGate {
+    pub fn new(permits: usize) -> Self {
+        Self {
+            permits: std::sync::Arc::new(tokio::sync::Semaphore::new(permits)),
+        }
+    }
+
+    /// Take a lease if one is free; `None` means shed. The gauge is
+    /// decremented when the lease drops.
+    pub fn try_acquire(&self) -> Option<PyramidLease> {
+        match self.permits.clone().try_acquire_owned() {
+            Ok(permit) => {
+                crate::metrics::pyramid_acquired();
+                Some(PyramidLease {
+                    _permit: Some(permit),
+                })
+            }
+            Err(_) => {
+                crate::metrics::pyramid_shed();
+                None
+            }
+        }
+    }
+}
+
+/// RAII marker for one in-flight pyramid render.
+pub struct PyramidLease {
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl Drop for PyramidLease {
+    fn drop(&mut self) {
+        if self._permit.take().is_some() {
+            crate::metrics::pyramid_released();
+        }
+    }
+}
+
+/// One-shot DB snapshot for a render (issue #120): everything the whole
+/// recursion needs, fetched in short pool holds and RELEASED before the
+/// walk. The walk itself is connection-free — pure Rust, object storage,
+/// pixels. This is the structural fix for the pool starvation: a render
+/// never holds a connection across its external I/O (S3/vips), so N
+/// concurrent renders pin zero idle connections.
+///
+/// Snapshot semantics are deliberately NOT transactional-perfect: we
+/// snapshot rows + seqs, render, and store at the snapshot seq. A
+/// placement landing mid-render bumps the covering seq, the next GET
+/// sees stored < covering and serves stale + re-enqueues — the system
+/// self-heals around the stale snapshot. Do NOT re-introduce a held
+/// connection "for correctness".
+/// One zoom level's stored-seq rows from the tiles table.
+type StoredLevel = HashMap<(i64, i64), i64>;
+
+struct TileCtx {
+    /// Per-chunk max live placement seq for every chunk intersecting the
+    /// root rect (ONE grouped query over the GiST index). Chunk
+    /// granularity is a conservative superset of per-leaf attribution: a
+    /// placement touching any part of a chunk marks all its leaves.
+    chunk_seqs: HashMap<(i64, i64), i64>,
+    /// Stored staleness rows (tiles table), fetched lazily ONE level at a
+    /// time: a level's `(x, y) -> seq` map is materialized at most once
+    /// per render, on a brief pool hold, the first time a node at that
+    /// level needs its stored seq (mem-cache hits skip it entirely).
+    stored_levels: StdMutex<HashMap<i64, Arc<StoredLevel>>>,
+    /// Memoized effective seq per node = max over its subtree chunks.
+    node_seqs: StdMutex<HashMap<(i64, i64, i64), i64>>,
+    /// The zoom this context was prefetched for (level-span arithmetic
+    /// and the "strictly under the root" check key off it).
+    root_z: i64,
+    /// The root tile's own staleness row (the lazy level fetches only
+    /// cover strictly deeper levels).
+    root_stored: Option<i64>,
+}
+
+impl TileCtx {
+    async fn prefetch(app: &App, z: i64, x: i64, y: i64) -> AppResult<Self> {
+        let rect = tile_bounds(z, x, y);
+        // Per-chunk max live placement seq, from the rect columns (core
+        // PG — the generated bbox has no corner accessors): each
+        // placement CROSS JOIN LATERAL-expands to its full chunk span —
+        // exactly the bbox's span. Two bare generate_series in one
+        // SELECT list would ZIP to the diagonal instead of crossing.
+        let chunk_rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT cx, cy, max(seq)
+             FROM placements p
+             CROSS JOIN LATERAL generate_series(floor(p.x / 1024.0)::bigint,
+                                                floor((p.x + p.w - 1) / 1024.0)::bigint) AS cx
+             CROSS JOIN LATERAL generate_series(floor(p.y / 1024.0)::bigint,
+                                                floor((p.y + p.h - 1) / 1024.0)::bigint) AS cy
+             WHERE p.removed_at IS NULL
+               AND p.bbox && box(point($1::float8, $2::float8),
+                                 point($3::float8, $4::float8))
+             GROUP BY cx, cy",
+        )
+        .bind(rect.x)
+        .bind(rect.y)
+        .bind(rect.x + rect.w - 1)
+        .bind(rect.y + rect.h - 1)
+        .fetch_all(&app.pool)
+        .await?;
+        Ok(Self {
+            chunk_seqs: chunk_rows
+                .into_iter()
+                .map(|(cx, cy, s)| ((cx, cy), s))
+                .collect(),
+            stored_levels: StdMutex::new(HashMap::new()),
+            node_seqs: StdMutex::new(HashMap::new()),
+            root_z: z,
+            root_stored: sqlx::query_as("SELECT seq FROM tiles WHERE z = $1 AND x = $2 AND y = $3")
+                .bind(z as i16)
+                .bind(x as i32)
+                .bind(y as i32)
+                .fetch_optional(&app.pool)
+                .await?
+                .map(|(seq,)| seq),
+        })
+    }
+
+    /// Effective live seq at a node = max chunk seq over its subtree.
+    /// Memoized: every node of the pyramid is computed exactly once.
+    fn node_seq(&self, z: i64, x: i64, y: i64) -> i64 {
+        {
+            let memo = self.node_seqs.lock().expect("node seq memo");
+            if let Some(seq) = memo.get(&(z, x, y)) {
+                return *seq;
+            }
+        }
+        let seq = if z >= BASE_Z {
+            *self.chunk_seqs.get(&tile_chunk(z, x, y)).unwrap_or(&0)
+        } else {
+            [
+                (2 * x, 2 * y),
+                (2 * x + 1, 2 * y),
+                (2 * x, 2 * y + 1),
+                (2 * x + 1, 2 * y + 1),
+            ]
+            .into_iter()
+            .map(|(cx, cy)| self.node_seq(z + 1, cx, cy))
+            .max()
+            .unwrap_or(0)
+        };
+        self.node_seqs
+            .lock()
+            .expect("node seq memo")
+            .insert((z, x, y), seq);
+        seq
+    }
+
+    /// Stored staleness row for a node, materializing its level lazily.
+    async fn stored_seq(
+        &self,
+        app: &App,
+        z: i64,
+        x: i64,
+        y: i64,
+        root_z: i64,
+    ) -> AppResult<Option<i64>> {
+        if z == root_z {
+            return Ok(self.root_stored);
+        }
+        if z < root_z {
+            return Ok(None);
+        }
+        let level = {
+            let levels = self.stored_levels.lock().expect("stored levels");
+            levels.get(&z).cloned()
+        };
+        let level = match level {
+            Some(l) => l,
+            None => {
+                let span = 1i64 << (z - root_z);
+                let rows: Vec<(i32, i32, i64)> = sqlx::query_as(
+                    "SELECT x, y, seq FROM tiles
+                     WHERE z = $1 AND x >= $2 AND x < $3 AND y >= $4 AND y < $5",
+                )
+                .bind(z as i16)
+                .bind((x * span) as i32)
+                .bind(((x + 1) * span) as i32)
+                .bind((y * span) as i32)
+                .bind(((y + 1) * span) as i32)
+                .fetch_all(&app.pool)
+                .await?;
+                let map: HashMap<(i64, i64), i64> = rows
+                    .into_iter()
+                    .map(|(tx, ty, seq)| ((tx as i64, ty as i64), seq))
+                    .collect();
+                let map = Arc::new(map);
+                self.stored_levels
+                    .lock()
+                    .expect("stored levels")
+                    .insert(z, map.clone());
+                map
+            }
+        };
+        Ok(level.get(&(x, y)).copied())
+    }
 }
 
 /// Outcome of a resolution: bytes with the seq they correspond to (the
@@ -494,13 +711,16 @@ enum TileResolved {
 // recursive child resolutions.
 async fn tile_bytes_inner(
     app: &App,
+    ctx: &TileCtx,
     z: i64,
     x: i64,
     y: i64,
     stale: Stale,
+    admission: Admission,
 ) -> AppResult<TileResolved> {
     let t0 = std::time::Instant::now();
-    let seq = max_seq_covering(app, tile_bounds(z, x, y)).await?;
+    // Snapshot lookup — no pool touch. See TileCtx for the semantics.
+    let seq = ctx.node_seq(z, x, y);
     // Empty region: constant paper tile, no recursion, no storage writes.
     // Zero-cost placeholder — served even under congestion (it never
     // queues and never renders).
@@ -543,14 +763,10 @@ async fn tile_bytes_inner(
         });
     }
     let object_key = tile_key(z, x, y);
-    let stored: Option<(i64,)> =
-        sqlx::query_as("SELECT seq FROM tiles WHERE z = $1 AND x = $2 AND y = $3")
-            .bind(z as i16)
-            .bind(x as i32)
-            .bind(y as i32)
-            .fetch_optional(&app.pool)
-            .await?;
-    if stored.map(|(s,)| s) == Some(seq) {
+    // Lazy per-level stored-seq snapshot; brief pool hold only the first
+    // time this level is touched in this render (mem hits skip it).
+    let stored = ctx.stored_seq(app, z, x, y, ctx.root_z).await?;
+    if stored == Some(seq) {
         if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
             let bytes = Bytes::from(bytes);
             app.tile_cache.put(z, key, bytes.clone());
@@ -567,7 +783,7 @@ async fn tile_bytes_inner(
     // GET with stale bytes available never waits on (or triggers) pixel
     // work. A row without its object falls through to a plain render.
     if stale == Stale::Allow {
-        if let Some((stored_seq,)) = stored {
+        if let Some(stored_seq) = stored {
             if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
                 // Dropping here is fine: the next stale GET re-enqueues.
                 app.render_queue.enqueue(z, x, y).await;
@@ -589,7 +805,25 @@ async fn tile_bytes_inner(
             return Ok(TileResolved::Shed);
         }
     }
-    let encoded = render_tile(app, z, x, y).await?;
+    // Pyramid gate (issue #120): a cold z < BASE_Z render is a
+    // multi-minute sequential recursion. Entry GETs hold one of a couple
+    // of leases for the whole recursion — with sequential children that
+    // is also the render's entire pool footprint (at most one query in
+    // flight). Entry GETs arriving when the gate is full are shed
+    // (202 + Retry-After) instead of stacking a fourth minute-long
+    // recursion onto the pool.
+    let _pyramid_lease = if admission == Admission::Gated && z < BASE_Z {
+        match app.pyramid_gate.try_acquire() {
+            Some(lease) => Some(lease),
+            None => {
+                crate::metrics::tile_done(crate::metrics::tile_outcome("shed"), t0.elapsed());
+                return Ok(TileResolved::Shed);
+            }
+        }
+    } else {
+        None
+    };
+    let encoded = render_tile(app, ctx, z, x, y).await?;
     // Write-through: object storage + staleness row + memory cache.
     crate::store::put(&app.store, &object_key, encoded.to_vec()).await?;
     sqlx::query(
@@ -614,7 +848,16 @@ async fn tile_bytes_inner(
 
 /// Render + encode the tile from its sources (chunk for z ≥ BASE_Z, the
 /// four child tiles below). Pixel work is boxed into spawn_blocking.
-async fn render_tile(app: &App, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
+async fn render_tile(app: &App, ctx: &TileCtx, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
+    // Test seam: slow THIS pyramid render (after the snapshot, before any
+    // child resolution) so gate/shed windows are deterministic. Parent
+    // renders only; always 0 in production.
+    if z < BASE_Z {
+        let pause = PYRAMID_PAUSE_MS.load(Ordering::Relaxed);
+        if pause > 0 {
+            tokio::time::sleep(Duration::from_millis(pause)).await;
+        }
+    }
     let bytes = if z >= BASE_Z {
         let (cx, cy) = tile_chunk(z, x, y);
         let key = crate::world::chunk_key(cx, cy);
@@ -626,32 +869,40 @@ async fn render_tile(app: &App, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
             .map_err(internal)?
             .map_err(internal)?
     } else {
-        // Resolve the four children CONCURRENTLY: each child goes through
-        // its own tile_bytes (mem cache / s3 / render), serialized only by
-        // its own per-tile lock. Children ALWAYS resolve fresh
-        // (Stale::Never) so a parent render never bakes stale child bytes
-        // under a fresh parent seq. Deadlock-free: the parent holds
-        // "z/x/y" while children take "z+1/x'/y'" keys — the wait-for
-        // graph only ever points DOWN the pyramid (a child's own recursion
-        // goes deeper, never back up), so no cycle is possible regardless
-        // of scheduling; lock_sorted orders within a single acquisition
-        // and every concurrent child here acquires a different key. First
-        // child error aborts the join (same ? semantics as the old
-        // sequential loop).
-        let child_futures = [(0i64, 0i64), (1, 0), (0, 1), (1, 1)]
-            .map(|(dx, dy)| tile_bytes(app, z + 1, 2 * x + dx, 2 * y + dy, Stale::Never));
-        let resolved = futures::future::try_join_all(child_futures).await?;
-        let kids: [Vec<u8>; 4] = resolved
-            .into_iter()
-            .map(|r| match r {
-                TileResolved::Bytes { bytes, .. } => bytes.to_vec(),
+        // Resolve the four children SEQUENTIALLY (issue #120): the old
+        // try_join_all put the whole subtree's queries in flight at once —
+        // a cold z9 render raced the pool with up to 4^9 pending
+        // acquisitions and starved every other handler. One child at a
+        // time keeps a render's pool footprint at exactly one in-flight
+        // query; the raster cache absorbs 3 of the 4 consecutive leaves
+        // (same chunk). Children ALWAYS resolve fresh (Stale::Never) so a
+        // parent render never bakes stale child bytes under a fresh parent
+        // seq. Deadlock-free: the parent holds "z/x/y" while children take
+        // "z+1/x'/y'" keys — the wait-for graph only ever points DOWN the
+        // pyramid (a child's own recursion goes deeper, never back up), so
+        // no cycle is possible regardless of scheduling. Children run
+        // under the parent's pyramid lease (Admission::Ungated): they
+        // never shed.
+        let mut kids: Vec<Vec<u8>> = Vec::with_capacity(4);
+        for (dx, dy) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)] {
+            match tile_bytes(
+                app,
+                ctx,
+                z + 1,
+                2 * x + dx,
+                2 * y + dy,
+                Stale::Never,
+                Admission::Ungated,
+            )
+            .await?
+            {
+                TileResolved::Bytes { bytes, .. } => kids.push(bytes.to_vec()),
                 // Children always resolve with Stale::Never, which never
                 // sheds.
                 TileResolved::Shed => unreachable!("child resolution never sheds"),
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| internal("children count"))?;
+            }
+        }
+        let kids: [Vec<u8>; 4] = kids.try_into().map_err(|_| internal("children count"))?;
         tokio::task::spawn_blocking(move || img::render_parent_tile(&kids))
             .await
             .map_err(internal)?
@@ -680,7 +931,19 @@ pub async fn prewarm_chunks(app: &App, chunks: &[(i64, i64)]) -> AppResult<u64> 
                     // Stale::Never: prewarm is a render, not a serve — it
                     // always resolves fresh (and never sheds), matching the
                     // parent-render path's guarantees.
-                    match tile_bytes(app, z, cx * span + dx, cy * span + dy, Stale::Never).await? {
+                    let tile_ctx =
+                        TileCtx::prefetch(app, z, cx * span + dx, cy * span + dy).await?;
+                    match tile_bytes(
+                        app,
+                        &tile_ctx,
+                        z,
+                        cx * span + dx,
+                        cy * span + dy,
+                        Stale::Never,
+                        Admission::Ungated,
+                    )
+                    .await?
+                    {
                         TileResolved::Bytes { .. } => rendered += 1,
                         TileResolved::Shed => unreachable!("Stale::Never never sheds"),
                     }
@@ -693,7 +956,7 @@ pub async fn prewarm_chunks(app: &App, chunks: &[(i64, i64)]) -> AppResult<u64> 
 
 #[cfg(test)]
 mod tests {
-    use super::tile_response;
+    use super::{tile_response, PyramidGate};
     use axum::http::header;
     use axum::http::StatusCode;
     use bytes::Bytes;
@@ -744,5 +1007,17 @@ mod tests {
         let resp = tile_response(BYTES.clone(), 6, true, Some("\"6\""));
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(resp.headers()["x-tile-stale"], "true");
+    }
+
+    #[test]
+    fn pyramid_gate_bounds_concurrency_and_sheds() {
+        let gate = PyramidGate::new(2);
+        let a = gate.try_acquire().expect("first lease");
+        let b = gate.try_acquire().expect("second lease");
+        // Third entry finds the gate full: shed signal, not a wait.
+        assert!(gate.try_acquire().is_none());
+        drop(b);
+        let c = gate.try_acquire().expect("lease after release");
+        drop((a, c));
     }
 }

@@ -6,7 +6,7 @@
 //!
 //! Aggregates only — no usernames, keys, or request payloads.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -104,6 +104,11 @@ pub struct Metrics {
     import_images: AtomicU64,
     import_chunk_writes: AtomicU64,
     import_duration: Histogram<{ IMPORT_BUCKETS.len() }>,
+    /// Pyramid gate (issue #120): leases currently held by full-pyramid
+    /// (z < BASE_Z) renders, and entry GETs shed because the gate was
+    /// full.
+    pyramid_active: AtomicUsize,
+    pyramid_sheds: AtomicU64,
 }
 
 /// Batch imports run minutes-to-hours; log-ish buckets up to 3 h (the
@@ -136,6 +141,8 @@ pub static METRICS: LazyLock<Metrics> = LazyLock::new(|| Metrics {
     import_images: AtomicU64::new(0),
     import_chunk_writes: AtomicU64::new(0),
     import_duration: Histogram::new(IMPORT_BUCKETS),
+    pyramid_active: AtomicUsize::new(0),
+    pyramid_sheds: AtomicU64::new(0),
 });
 
 pub fn place_done(elapsed: Duration) {
@@ -174,6 +181,18 @@ pub const S3_OPS: [&str; 2] = ["get", "put"];
 
 pub fn chunk_composited() {
     METRICS.chunk_composites.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn pyramid_acquired() {
+    METRICS.pyramid_active.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn pyramid_released() {
+    METRICS.pyramid_active.fetch_sub(1, Ordering::Relaxed);
+}
+
+pub fn pyramid_shed() {
+    METRICS.pyramid_sheds.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn auth_rate_limited() {
@@ -333,6 +352,20 @@ pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> Stri
     );
     out.push_str(&format!("chunk_write_amplification {amp}\n"));
 
+    out.push_str(
+        "# HELP tile_pyramid_active Full-pyramid (z < BASE_Z) renders currently in flight (issue #120 gate).\n# TYPE tile_pyramid_active gauge\n",
+    );
+    out.push_str(&format!(
+        "tile_pyramid_active {}\n",
+        m.pyramid_active.load(Ordering::Relaxed)
+    ));
+    out.push_str(
+        "# HELP tile_pyramid_sheds_total Entry GETs shed because the pyramid gate was full (202 + Retry-After).\n# TYPE tile_pyramid_sheds_total counter\n",
+    );
+    out.push_str(&format!(
+        "tile_pyramid_sheds_total {}\n",
+        m.pyramid_sheds.load(Ordering::Relaxed)
+    ));
     out.push_str(
         "# HELP db_pool_connections sqlx connection pool state.\n# TYPE db_pool_connections gauge\n",
     );

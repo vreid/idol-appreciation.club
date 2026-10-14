@@ -8,11 +8,16 @@ vars:
   # Container runner for backend gates. podman by default (local dev);
   # override with RUNNER=docker where only docker exists (CI runners).
   RUNNER: '{{.RUNNER | default "podman"}}'
+  # Extra container-run flags (CI: --network host -e DATABASE_URL so the
+  # in-image test harness reaches the job's postgres service).
+  RUN_FLAGS: '{{.RUN_FLAGS | default ""}}'
   IMAGE: '{{.IMAGE | default "backend-builder"}}'
   # TEMPORARY: mirrors the skip in ci.yml backend-test (webp buffer encode
   # fails in the gate image only; backend agent is debugging). Drop it here
   # and in ci.yml when the fix lands.
-  BACKEND_TEST_ARGS: '--skip derivative_bytes_are_deterministic'
+  # --test-threads 2: the 10.3 GB local OOM lesson — parallel suite
+  # shards each boot a server + pool; cap it (double on 2-vCPU runners).
+  BACKEND_TEST_ARGS: '--skip derivative_bytes_are_deterministic --test-threads 2'
 
 tasks:
   # ---------------- lint ----------------
@@ -247,7 +252,7 @@ tasks:
     dir: backend
     deps: [backend:image]
     cmds:
-      - '{{.RUNNER}} run --rm {{.IMAGE}} bash -c "cargo test -- {{.BACKEND_TEST_ARGS}}"'
+      - '{{.RUNNER}} run --rm {{.RUN_FLAGS}} {{.IMAGE}} bash -c "cargo test -- {{.BACKEND_TEST_ARGS}}"'
 
   # ---------------- leaks (hard gate) ----------------
 

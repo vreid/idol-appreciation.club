@@ -44,8 +44,11 @@ impl Default for TileRenderCfg {
 pub struct Server {
     pub addr: SocketAddr,
     pub _store_dir: PathBuf,
+    /// None when CI presets DATABASE_URL (job service container): there
+    /// is nothing to stop — the service outlives the test.
     #[allow(dead_code)] // dropped at test end; container stops with it
-    pub container: testcontainers_modules::testcontainers::ContainerAsync<postgres::Postgres>,
+    pub container:
+        Option<testcontainers_modules::testcontainers::ContainerAsync<postgres::Postgres>>,
 }
 
 pub struct Resp {
@@ -98,21 +101,32 @@ pub async fn start_server_full(
     tiles_cfg: TileRenderCfg,
 ) -> Server {
     // Pin a modern postgres: the module default is 11-alpine, too old for
-    // generated columns.
-    let container = postgres::Postgres::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start postgres container");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("container port");
+    // generated columns. CI presets DATABASE_URL (job service container —
+    // the pinned image has no docker socket for testcontainers) and skips
+    // the local container entirely.
+    let (database_url, container) = match std::env::var("DATABASE_URL") {
+        Ok(url) => (url, None),
+        Err(_) => {
+            let container = postgres::Postgres::default()
+                .with_tag("16-alpine")
+                .start()
+                .await
+                .expect("start postgres container");
+            let port = container
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("container port");
+            (
+                format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
+                Some(container),
+            )
+        }
+    };
     let store_dir =
         std::env::temp_dir().join(format!("idol-test-store-{}", uuid::Uuid::now_v7().simple()));
     let cfg = Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
-        database_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
+        database_url,
         database_pool_max: 30,
         s3_endpoint: Some(format!("file://{}", store_dir.display())),
         s3_bucket: "test-bucket".to_string(),

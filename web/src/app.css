@@ -75,6 +75,20 @@ body {
   user-select: none;
 }
 
+.panel-layer {
+  position: fixed;
+  inset: 0;
+  /* Clicks pass through the layer itself; only the card is interactive.
+     The layer exists so anchored panels never sit inside the Leaflet
+     container, where their clicks would fire the map's click handler. */
+  pointer-events: none;
+  z-index: 500;
+}
+
+.panel-layer .place-detail {
+  pointer-events: auto;
+}
+
 .map-root.placing {
   cursor: crosshair;
 }

@@ -463,8 +463,7 @@ mod tests {
     async fn import_done_moves_all_series() {
         let series_value = |text: &str, series: &str| {
             text.lines()
-                .filter(|l| l.starts_with(series) && !l.starts_with('#'))
-                .next_back()
+                .rfind(|l| l.starts_with(series) && !l.starts_with('#'))
                 .unwrap_or_else(|| panic!("series {series} missing from exposition"))
                 .rsplit_once(' ')
                 .expect("series line has a value")

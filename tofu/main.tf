@@ -88,49 +88,12 @@ resource "upcloud_kubernetes_node_group" "this" {
 }
 
 # ----------------------------------------------------------------- postgres
-
-resource "upcloud_managed_database_postgresql" "this" {
-  name  = var.pg_name
-  zone  = var.zone
-  title = "idol-appreciation.club PostgreSQL"
-
-  # Attach the DB to the cluster's private network: worker nodes reach it via
-  # 100.125.x/SDN+private routing. The public service address (10.33.x service
-  # space) stopped being reachable after the first node replacement, so the
-  # attachment is declared here and must stay.
-  network {
-    name   = upcloud_network.k8s.name
-    uuid   = upcloud_network.k8s.id
-    family = "IPv4"
-    type   = "private"
-  }
-
-  # plan is deprecated for PostgreSQL; plan_compute takes the new
-  # rdb.* shape names. Smallest development shape = 1 vCPU / 1 GiB,
-  # single node, 10 GiB storage, "mini" backup tier.
-  plan_compute     = var.pg_plan_compute
-  plan_node_count  = var.pg_node_count
-  plan_storage_gib = var.pg_storage_gib
-  plan_backups     = var.pg_plan_backups
-
-  labels = {
-    project    = "idol-appreciation.club"
-    managed-by = "tofu"
-  }
-}
-
-resource "upcloud_managed_database_logical_database" "app" {
-  service = upcloud_managed_database_postgresql.this.id
-  name    = var.pg_database
-}
-
-resource "upcloud_managed_database_user" "app" {
-  service  = upcloud_managed_database_postgresql.this.id
-  username = var.pg_user
-
-  # password is omitted on purpose: the provider generates one and exposes
-  # it read-only, so it never appears in configuration.
-}
+# RETIRED (2026-10-14 CNPG migration): the managed PostgreSQL service is
+# replaced by an in-cluster CloudNativePG Cluster (chart/, cnpg.* values;
+# operator + backup plugin via the cnpg:* tasks). Destroying it is a
+# user-approved cost call — the data it held is disposable (the seeder
+# re-creates the pile), durability now rides on Barman Cloud backups to
+# the object storage below.
 
 # ---------------------------------------------------- object storage (S3)
 

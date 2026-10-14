@@ -66,51 +66,6 @@ variable "node_count" {
   default     = 3
 }
 
-variable "pg_name" {
-  description = "Managed PostgreSQL service name."
-  type        = string
-  default     = "idol-canvas-db"
-}
-
-variable "pg_plan_compute" {
-  description = <<-EOT
-    PostgreSQL compute shape. `rdb.development.1CPU-1GB` is the smallest
-    managed-DB shape (1 vCPU / 1 GiB, single node).
-  EOT
-  type        = string
-  default     = "rdb.development.1CPU-1GB"
-}
-
-variable "pg_database" {
-  description = "Application logical database name."
-  type        = string
-  default     = "app"
-}
-
-variable "pg_user" {
-  description = "Application database user name."
-  type        = string
-  default     = "app"
-}
-
-variable "pg_node_count" {
-  description = "PostgreSQL node count (1 = development shapes only)."
-  type        = number
-  default     = 1
-}
-
-variable "pg_storage_gib" {
-  description = "PostgreSQL base storage in GiB."
-  type        = number
-  default     = 10
-}
-
-variable "pg_plan_backups" {
-  description = "PostgreSQL backup tier (mini is the smallest)."
-  type        = string
-  default     = "mini"
-}
-
 variable "objsto_name" {
   description = "Managed Object Storage (S3) service name."
   type        = string

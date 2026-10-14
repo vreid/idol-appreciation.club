@@ -200,7 +200,10 @@ test.describe("scale density", () => {
     // measured with the longtask observer instead: any single task over
     // the budget while zooming fails the view.
     const worstTaskMs = await page.evaluate(async () => {
-      const wait = (ms: number): Promise<void> =>
+      // Page-context helper (the module-level wait is not in scope
+      // inside evaluate); declared here, so scope lint is expected.
+      // eslint-disable-next-line unicorn/consistent-function-scoping -- page context
+      const pause = (ms: number): Promise<void> =>
         new Promise((resolve) => {
           setTimeout(resolve, ms);
         });
@@ -224,7 +227,7 @@ test.describe("scale density", () => {
           700 + i * 150,
         );
       }
-      await wait(2_300);
+      await pause(2_300);
       observer.disconnect();
       return tasks.length === 0 ? 0 : Math.max(...tasks);
     });

@@ -161,8 +161,11 @@ tasks:
       # YAML and miss typed-shape errors (e.g. lifecycle.preStop.exec
       # rendered as an array). kubectl apply/create --dry-run=client need
       # an API server for REST mapping, so offline kubeconform with pinned
-      # upstream schemas is the gate.
-      - helm template chart | kubeconform -strict -summary -kubernetes-version 1.32.0
+      # upstream schemas is the gate. -ignore-missing-schemas: the CNPG
+      # Cluster instance (cnpg-cluster.yaml, gated off) is a CRD instance
+      # with no offline schema; it is validated server-side by the
+      # cnpg:cluster:install task instead.
+      - helm template chart | kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.32.0
       # Render-assert image refs (second defense for the 2026-10-13
       # InvalidImageName incident): digest-only, tag-only, both (digest
       # wins, never concatenated), and neither (must fail loudly at
@@ -667,6 +670,185 @@ tasks:
           exit 1
         fi
         ./scripts/sync-dns.sh "$ipv4" ${ipv6:+"$ipv6"}
+
+  # ---------------- CloudNativePG migration (staged) ----------------
+  # Run order: cnpg:node-scale -> cnpg:operator:install ->
+  # cnpg:cluster:secret -> cnpg:cluster:install -> cnpg:cutover:dump ->
+  # cnpg:cutover:restore -> cnpg:cutover:switch -> cnpg:cutover:verify
+  # -> cnpg:destroy-managed (LAST, after the deploy.yml follow-up has
+  # stopped sourcing DATABASE_URL from the managed-pg tofu outputs).
+  # Env contract: UPCLOUD_TOKEN + CLUSTER (UpCloud API, as
+  # infra:delete-lbs), KUBECONFIG (as deploy:k8s), MANAGED_PG_URI
+  # (tofu output pg_admin_uri, for the dump only).
+
+  cnpg:node-scale:
+    desc: bump the worker node group to 3 (one-time; tofu ignores the drift)
+    cmds:
+      - |
+        set -o pipefail; set -e
+        uuid="$(curl -sS -H "Authorization: Bearer ${UPCLOUD_TOKEN}" \
+          https://api.upcloud.com/1.3/kubernetes \
+          | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
+        test -n "$uuid" || { echo "cluster $CLUSTER not found" >&2; exit 1; }
+        curl -sS -X PATCH -H "Authorization: Bearer ${UPCLOUD_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d '{"node_groups":[{"name":"default","count":3}]}' \
+          "https://api.upcloud.com/1.3/kubernetes/${uuid}" \
+          | jq -r '.node_groups[] | "\(.name) count=\(.count)"'
+        echo "wait for the third node to join: kubectl get nodes -w"
+
+  cnpg:operator:install:
+    desc: apply the digest-pinned CNPG operator manifest and kubeconform it
+    cmds:
+      - |
+        set -o pipefail; set -e
+        # Offline schema gate on the pinned artifact. CRDs have no
+        # upstream json-schema (kubeconform can only skip them); their
+        # structural validation happens at apply time on the API server.
+        # Everything else (Deployment/RBAC/Webhook) is strict-validated.
+        kubeconform -strict -summary -ignore-missing-schemas \
+          -kubernetes-version 1.32.0 chart/cnpg/cnpg-operator-1.29.3.yaml
+        # Provenance guard: the committed manifest must equal upstream
+        # v1.29.3 with ONLY the image-digest rewrite applied.
+        got="$(curl -sL https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.29.3/cnpg-1.29.3.yaml \
+          | sed 's#ghcr.io/cloudnative-pg/cloudnative-pg:1\.29\.3#ghcr.io/cloudnative-pg/cloudnative-pg@sha256:cc0594bd9fd8cdd654dfbd91e4cf2c8fc1bfc4e3a09c4a90a2ab4ffc524f1db5#g' \
+          | sha256sum | cut -d' ' -f1)"
+        want="$(grep -v '^#' chart/cnpg/cnpg-operator-1.29.3.yaml | sha256sum | cut -d' ' -f1)"
+        test "$got" = "$want" \
+          || { echo "pinned operator manifest drifted from upstream v1.29.3 + digest rewrite" >&2; exit 1; }
+        kubectl apply -f chart/cnpg/cnpg-operator-1.29.3.yaml
+        kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=180s
+
+  cnpg:cluster:secret:
+    desc: create the CNPG superuser secret (idempotent; operator creds)
+    cmds:
+      - |
+        set -o pipefail; set -e
+        # Bootstrap credential: generated once here, never deploy-side.
+        if kubectl -n idol get secret cnpg-pg-superuser >/dev/null 2>&1; then
+          echo "cnpg-pg-superuser already exists; leaving it untouched"
+        else
+          pw="$(openssl rand -base64 24 | tr -d '\n')"
+          kubectl -n idol create secret generic cnpg-pg-superuser \
+            --from-literal=username=postgres --from-literal=password="$pw"
+          echo "created cnpg-pg-superuser"
+        fi
+
+  cnpg:cluster:install:
+    desc: render the Cluster CR, server-dry-run it, then apply
+    cmds:
+      - |
+        set -o pipefail; set -e
+        helm template chart --show-only templates/cnpg-cluster.yaml \
+          --set cnpg.enabled=true > /tmp/cnpg-cluster.yaml
+        kubectl apply --dry-run=server -f /tmp/cnpg-cluster.yaml
+        kubectl apply -f /tmp/cnpg-cluster.yaml
+        kubectl -n idol wait cluster.idol-db --for=condition=Ready --timeout=600s \
+          || kubectl -n idol get pods -l cnpg.io/cluster=idol-db
+
+  cnpg:cutover:dump:
+    desc: pg_dump -Fc the managed DB while prod still serves from it
+    cmds:
+      - |
+        set -o pipefail; set -e
+        test -n "${MANAGED_PG_URI:-}" \
+          || { echo "MANAGED_PG_URI env required (tofu output pg_admin_uri)" >&2; exit 1; }
+        kubectl -n idol delete pod cnpg-cutover --ignore-not-found --force --grace-period=0 >/dev/null 2>&1 || true
+        kubectl -n idol run cnpg-cutover --restart=Never \
+          --image=postgres:16-alpine --env="SRC=$MANAGED_PG_URI" \
+          -- sh -c 'pg_dump "$SRC" -Fc -f /tmp/idol-canvas.dump && ls -l /tmp/idol-canvas.dump'
+        kubectl -n idol wait --for=condition=complete pod/cnpg-cutover --timeout=600s
+        kubectl -n idol cp cnpg-cutover:/tmp/idol-canvas.dump /tmp/idol-canvas.dump
+        ls -l /tmp/idol-canvas.dump
+
+  cnpg:cutover:restore:
+    desc: recreate the app role and restore the dump (owned by the app role)
+    cmds:
+      - |
+        set -o pipefail; set -e
+        # The live app credential carries over so the DATABASE_URL swap
+        # changes the host only. app-env stores the URI with the creds
+        # inline (no PGUSER/PGPASSWORD keys) — parse them out.
+        OLDURL="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' | base64 -d)"
+        APPUSER="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
+        APPPW="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
+        SUPPW="$(kubectl -n idol get secret cnpg-pg-superuser -o jsonpath='{.data.password}' | base64 -d)"
+        test -f /tmp/idol-canvas.dump || { echo "run cnpg:cutover:dump first" >&2; exit 1; }
+        kubectl -n idol delete pod cnpg-restore --ignore-not-found --force --grace-period=0 >/dev/null 2>&1 || true
+        # 1) Role setup: env-passed SQL, no shell quoting pitfalls.
+        kubectl -n idol run cnpg-restore --restart=Never \
+          --image=postgres:16-alpine \
+          --env="PGSUP=postgresql://postgres:$SUPPW@idol-db-rw:5432/idol-canvas" \
+          --env="ROLESQL=DROP ROLE IF EXISTS $APPUSER; CREATE ROLE $APPUSER LOGIN PASSWORD '$APPPW';" \
+          -- sh -c 'pg_isready -h idol-db-rw -t 60 \
+            && psql "$PGSUP" -v ON_ERROR_STOP=1 -c "$ROLESQL"'
+        kubectl -n idol wait --for=condition=complete pod/cnpg-restore --timeout=120s
+        kubectl -n idol logs cnpg-restore | tail -1
+        # 2) Restore as superuser with --no-owner --role so every object
+        # lands owned by the app role — no post-restore GRANT churn.
+        kubectl -n idol delete pod cnpg-restore --ignore-not-found --force --grace-period=0
+        kubectl -n idol run cnpg-restore --restart=Never \
+          --image=postgres:16-alpine \
+          --env="SUPPW=$SUPPW" --env="APPUSER=$APPUSER" \
+          --command -- sleep infinity
+        kubectl -n idol wait --for=condition=ready pod/cnpg-restore --timeout=120s
+        kubectl -n idol cp /tmp/idol-canvas.dump cnpg-restore:/tmp/idol-canvas.dump
+        set +e
+        kubectl -n idol exec cnpg-restore -- sh -c \
+          'PGPASSWORD="$SUPPW" pg_restore -h idol-db-rw -U postgres -d idol-canvas \
+             --no-owner --role="$APPUSER" --if-exists /tmp/idol-canvas.dump 2>&1' \
+          | grep -vE "^pg_restore: (notice|warning)" | tail -5
+        rc=${PIPESTATUS[0]}
+        set -e
+        kubectl -n idol delete pod cnpg-restore --force --grace-period=0 >/dev/null 2>&1 || true
+        test "$rc" = 0 || { echo "pg_restore failed (rc=$rc)" >&2; exit "$rc"; }
+        echo "restore complete"
+
+  cnpg:cutover:switch:
+    desc: repoint app-env DATABASE_URL at the CNPG -rw service and roll
+    cmds:
+      - |
+        set -o pipefail; set -e
+        OLDURL="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' | base64 -d)"
+        APPUSER="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
+        APPPW="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
+        DBNAME="$(printf '%s' "$OLDURL" | sed -E 's#.*/([^/?]+)(\?.*)?$#\1#')"
+        NEWURL="postgresql://$APPUSER:$APPPW@idol-db-rw.idol.svc:5432/$DBNAME"
+        kubectl -n idol patch secret app-env -p "{\"stringData\":{\"DATABASE_URL\":\"$NEWURL\"}}"
+        kubectl -n idol rollout restart deploy/backend
+        kubectl -n idol rollout status deploy/backend --timeout=300s
+        curl -s https://idol-appreciation.club/api/health && echo
+
+  cnpg:cutover:verify:
+    desc: post-switch receipts — health, placements, dig, tile, row count
+    cmds:
+      - |
+        set -o pipefail; set -e
+        echo "health: $(curl -s https://idol-appreciation.club/api/health)"
+        echo "placements-near: $(curl -s -o /dev/null -w '%{http_code}' 'https://idol-appreciation.club/api/placements/near?x=134217728&y=134217728')"
+        echo "tile z16: $(curl -s -o /dev/null -w '%{http_code}' https://idol-appreciation.club/api/tiles/16/32768/32768.webp)"
+        OLDURL="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' | base64 -d)"
+        APPUSER="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
+        APPPW="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
+        DBNAME="$(printf '%s' "$OLDURL" | sed -E 's#.*/([^/?]+)(\?.*)?$#\1#')"
+        kubectl -n idol delete pod cnpg-verify --ignore-not-found --force --grace-period=0 >/dev/null 2>&1 || true
+        kubectl -n idol run cnpg-verify --restart=Never --image=postgres:16-alpine \
+          --env="PGURI=postgresql://$APPUSER:$APPPW@idol-db-rw.idol.svc:5432/$DBNAME" \
+          -- sh -c 'psql "$PGURI" -t -c "SELECT '"'"'placements: '"'"' || count(*) FROM placements"'
+        sleep 8; kubectl -n idol logs cnpg-verify
+        kubectl -n idol delete pod cnpg-verify --force --grace-period=0 >/dev/null 2>&1
+
+  cnpg:destroy-managed:
+    desc: retire the managed Postgres (LAST; after deploy.yml follow-up)
+    dir: tofu
+    cmds:
+      - |
+        set -o pipefail; set -e
+        echo "GUARD: confirm deploy.yml no longer sources DATABASE_URL from managed-pg outputs before running this" >&2
+        tofu destroy -auto-approve -input=false \
+          -target=upcloud_managed_database_logical_database.app \
+          -target=upcloud_managed_database_user.app \
+          -target=upcloud_managed_database_postgresql.this
 
   # ---------------- e2e (e2e.yml) ----------------
 

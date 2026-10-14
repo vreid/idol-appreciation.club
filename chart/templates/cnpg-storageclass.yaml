@@ -1,0 +1,17 @@
+{{- if .Values.cnpg.enabled }}
+# Chart-owned StorageClass for the CNPG data PVCs — mirrors the caddy-data
+# approach: the CCM-provided upcloud classes are Retain and their reclaim
+# policy is immutable, which is how six orphan disks piled up during
+# recreate cycle 3. Chart-owned class keeps the CNPG volumes on the same
+# Delete-reclaim path (docs/infra.md recreate history).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.cnpg.storage.storageClass }}
+provisioner: storage.csi.upcloud.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  tier: standard
+{{- end }}

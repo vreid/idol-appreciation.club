@@ -36,6 +36,12 @@ spec:
         # Release semver recorded for audit (the image itself stays
         # digest-pinned; GHCR tags are mutable — see chart/values.yaml).
         idol-appreciation.club/release-tag: {{ .Values.images.backend.tag | quote }}
+        # Manual restart marker (issue #120 mitigation): bumping this
+        # annotation changes the pod template so `helm upgrade` rolls the
+        # Deployment, clearing pool-connection holders without an image
+        # change. Bump the timestamp, never hand-run kubectl against the
+        # template.
+        idol-appreciation.club/restarted-at: "2026-10-14T09:05:00Z"
     spec:
       # SSE connections are long-lived: axum graceful shutdown drains
       # in-flight requests and streams on SIGTERM; web clients reconnect

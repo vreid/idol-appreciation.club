@@ -50,4 +50,10 @@ spec:
       # Shared 4 vCPU nodes; leave headroom for the app fleet.
       max_connections: "100"
       shared_buffers: "512MB"
+  {{- if .Values.cnpg.backup }}
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      parameters:
+        barmanObjectName: idol-db-backup
+  {{- end }}
 {{- end }}

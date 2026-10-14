@@ -769,7 +769,7 @@ tasks:
         want="$(tail -n +14 chart/cnpg/cnpg-operator-1.29.3.yaml | sha256sum | cut -d' ' -f1)"
         test "$got" = "$want" \
           || { echo "pinned operator manifest drifted from upstream v1.29.3 + digest rewrite" >&2; exit 1; }
-        kubectl apply -f chart/cnpg/cnpg-operator-1.29.3.yaml
+        kubectl apply --server-side --field-manager=cnpg-operator -f chart/cnpg/cnpg-operator-1.29.3.yaml
         kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=180s
 
   cnpg:cluster:secret:
@@ -786,6 +786,26 @@ tasks:
             --from-literal=username=postgres --from-literal=password="$pw"
           echo "created cnpg-pg-superuser"
         fi
+
+  cnpg:backup:secret:
+    desc: copy live S3 keys + endpoint into cnpg-backup-s3 (idempotent)
+    cmds:
+      - |
+        set -o pipefail; set -e
+        # Runtime state, not re-minted: the app's proven S3 credentials
+        # gain a second consumer (Barman Cloud WAL/base backups).
+        # Fresh-cluster order falls back to the just-applied tofu outputs.
+        ak="$(kubectl -n idol exec deployment/backend -- printenv S3_ACCESS_KEY_ID 2>/dev/null || kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ACCESS_KEY_ID}' 2>/dev/null | base64 -d || tofu -chdir=tofu output -raw s3_access_key_id 2>/dev/null || true)"
+        sk="$(kubectl -n idol exec deployment/backend -- printenv S3_SECRET_ACCESS_KEY 2>/dev/null || kubectl -n idol get secret app-env -o jsonpath='{.data.S3_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d || tofu -chdir=tofu output -raw s3_secret_access_key 2>/dev/null || true)"
+        ep="$(kubectl -n idol exec deployment/backend -- printenv S3_ENDPOINT 2>/dev/null || kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' 2>/dev/null | base64 -d || tofu -chdir=tofu output -raw s3_endpoint 2>/dev/null || true)"
+        test -n "$ak" && test -n "$sk" && test -n "$ep" \
+          || { echo "could not source S3 credentials" >&2; exit 1; }
+        kubectl -n idol create secret generic cnpg-backup-s3 \
+          --from-literal="ACCESS_KEY_ID=$ak" \
+          --from-literal="SECRET_ACCESS_KEY=$sk" \
+          --from-literal="S3_ENDPOINT=$ep" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        echo "cnpg-backup-s3 ready (endpoint: $ep)"
 
   cnpg:cluster:install:
     desc: render the Cluster CR, server-dry-run it, then apply

@@ -1,0 +1,32 @@
+{{- if and .Values.cnpg.enabled .Values.cnpg.backup }}
+# Barman Cloud ObjectStore: WAL archiving + base backups for the CNPG
+# Cluster (docs/scaling-architecture.md BINDING). Credentials from the
+# cnpg-backup-s3 secret (cnpg:backup:secret copies the live app-env S3
+# keys AND the S3 endpoint - runtime state, never deploy-minted). The
+# endpoint resolves at render time from that secret when present; on a
+# fresh install without it the render fails loudly instead of guessing.
+{{- $sec := lookup "v1" "Secret" "idol" .Values.cnpg.backup.endpointSecretName }}
+{{- $ep := "" }}
+{{- if $sec }}
+{{- $ep = index $sec.data "S3_ENDPOINT" | b64dec }}
+{{- end }}
+apiVersion: barman-cloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: idol-db-backup
+  namespace: idol
+spec:
+  destinationPath: {{ .Values.cnpg.backup.destinationPath }}
+  endpointURL: {{ .Values.cnpg.backup.endpointURL | default $ep | required "cnpg.backup.endpointURL: set it in values or run task cnpg:backup:secret first" }}
+  s3Credentials:
+    accessKeyId:
+      name: {{ .Values.cnpg.backup.endpointSecretName }}
+      key: ACCESS_KEY_ID
+    secretAccessKey:
+      name: {{ .Values.cnpg.backup.endpointSecretName }}
+      key: SECRET_ACCESS_KEY
+  wal:
+    compression: {{ .Values.cnpg.backup.compression }}
+  data:
+    compression: {{ .Values.cnpg.backup.compression }}
+{{- end }}

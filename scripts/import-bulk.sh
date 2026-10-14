@@ -12,12 +12,25 @@
 #                  [--chunk C] [--tag TAG] [--prewarm] [--idols-dir DIR]
 #
 #   count   total placements to import (default 10000)
-#   chunk   entries per POST (default 10000; ~17 min at the 10 img/s SLO)
+#   chunk   entries per POST (default 750; sized so one POST fits the
+#           3600s client timeout at the observed 1.7-2.5 img/s live rate
+#           even with 4 concurrent workers. FIXED PER RUN: chunk size
+#           feeds the entry ids, so changing --chunk mid-run re-places
+#           the same coordinates — use a new --tag instead)
 #   tag     run identity for batch ids (default "bulk"; reuse to resume)
 #   idols   unique sources (default test-assets/idols)
 #
-# Credentials are arguments/env only and are never echoed. Prints one
-# progress line per chunk plus a final sustained-rate summary.
+# Preuploads are cached: client (sha256,size) -> server response map is
+# kept in ${TMPDIR:-/tmp}/import-bulk-preupload-cache-<host>.json (keyed
+# per server: a wiped/re-seeded backend loses the content-addressed
+# objects, and a stale cache then 400s the import — delete it to force a
+# full re-upload), so re-running (any tag) only uploads sources the
+# server has never seen. The server dedupes by source sha anyway; the
+# cache saves the bandwidth and the ~3.3s/source server-side decode.
+#
+# Credentials are arguments/env only, and are never echoed. Prints one
+# progress line per chunk plus a final sustained-rate summary. A chunk
+# POST is retried up to 4x (idempotent by batch_id) with backoff.
 set -euo pipefail
 
 BASE_URL=${1:?usage: import-bulk.sh BASE_URL ADMIN_USER ADMIN_PASS [opts]}
@@ -26,7 +39,7 @@ ADMIN_PASS=${3:?missing admin password}
 shift 3
 
 COUNT=10000
-CHUNK=10000
+CHUNK=750
 TAG=bulk
 RADIUS=100000
 SIGMA=7.5
@@ -58,7 +71,7 @@ FILES=("$IDOLS_DIR"/*.jpg)
 N_FILES=${#FILES[@]}
 [ "$N_FILES" -ge 2 ] || { echo "need >=2 idols in $IDOLS_DIR" >&2; exit 1; }
 
-api() { local url=$1; shift; curl -sS -m 1800 -b "$JAR" "${BASE_URL%/}/${url}" "$@"; }
+api() { local url=$1; shift; curl -sS -m 3600 -b "$JAR" "${BASE_URL%/}/${url}" "$@"; }
 
 echo "==> login $ADMIN_USER at $BASE_URL"
 code=$(curl -sS -o /dev/null -w '%{http_code}' -c "$JAR" -X POST \
@@ -70,20 +83,65 @@ code=$(curl -sS -o /dev/null -w '%{http_code}' -c "$JAR" -X POST \
   -d "{\"username\":\"${ADMIN_USER}\",\"password\":\"${ADMIN_PASS}\"}")
 [ "$code" = "200" ] || { echo "login -> HTTP $code" >&2; exit 1; }
 
-echo "==> preupload $N_FILES unique originals"
+echo "==> preupload $N_FILES unique originals (skip-if-known cache)"
 # map.json: [{"basename","source_sha","derivative_sha","w","h"},...]
-curl_args=()
-for f in "${FILES[@]}"; do curl_args+=(-F "image=@$f"); done
-api "api/admin/import/originals" -X POST "${curl_args[@]}" > "$TMP/preupload.json" || true
-python3 - "$TMP/preupload.json" "${FILES[@]##*/}" "$TMP/map.json" <<'PYEOF'
-import json, sys
+# keyed client-side by the file's own sha256 — same file in, same map out
+# (derivative shas are deterministic vips output), so a cache hit skips
+# the upload entirely.
+CACHE_HOST=$(printf '%s' "$BASE_URL" | sed -E 's|^https?://||; s|/.*$||')
+CACHE="${TMPDIR:-/tmp}/import-bulk-preupload-cache-${CACHE_HOST}.json"
+if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CACHE" 2>/dev/null; then
+  [ -e "$CACHE" ] && echo "    WARN unreadable cache at $CACHE — starting fresh" >&2
+  echo '{}' > "$CACHE"
+fi
+
+unknown=()
+for f in "${FILES[@]}"; do
+  sha=$(sha256sum "$f" | awk '{print $1}')
+  grep -q "\"$sha\"" "$CACHE" || unknown+=("$f")
+done
+echo "    known=$((${#FILES[@]} - ${#unknown[@]})) upload=${#unknown[@]}"
+
+if [ "${#unknown[@]}" -gt 0 ]; then
+  curl_args=()
+  for f in "${unknown[@]}"; do curl_args+=(-F "image=@$f"); done
+  api "api/admin/import/originals" -X POST "${curl_args[@]}" > "$TMP/preupload.json" || true
+  python3 - "$TMP/preupload.json" "$CACHE" "${unknown[@]}" <<'PYEOF'
+import json, sys, hashlib
 raw = open(sys.argv[1]).read()
+cache_path = sys.argv[2]
+files = sys.argv[3:]
 maps = json.loads(raw)
-names, out = sys.argv[2:-1], sys.argv[-1]
-if len(names) != len(maps):
-    sys.exit(f"mapping/file count mismatch: {len(maps)} maps for {len(names)} files; body: {raw[:400]}")
-json.dump([{"basename": n, **m} for n, m in zip(names, maps)], open(out, "w"))
-print(f"    {len(maps)} uniques: " + ", ".join(m["source_sha"][:8] for m in maps[:3]) + " ...")
+if len(files) != len(maps):
+    sys.exit(f"mapping/file count mismatch: {len(maps)} maps for {len(files)} files; body: {raw[:400]}")
+cache = json.load(open(cache_path))
+for path, m in zip(files, maps):
+    # The server's source_sha is computed AFTER its normalization stage
+    # (strip/resave), so it does NOT equal the client file's sha256 — the
+    # cache is keyed by the CLIENT sha (deterministic per file bytes) and
+    # only stores the server's response map. Correlation is positional:
+    # the preupload returns maps in request order.
+    sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    cache[sha] = {"basename": path.rsplit("/", 1)[-1], **m}
+json.dump(cache, open(cache_path + ".tmp", "w"))
+import os
+os.replace(cache_path + ".tmp", cache_path)
+print(f"    uploaded {len(maps)} new uniques: " + ", ".join(m["source_sha"][:8] for m in maps[:3]) + " ...")
+PYEOF
+else
+  echo "    all sources known — no upload"
+fi
+
+python3 - "$CACHE" "${FILES[@]}" "$TMP/map.json" <<'PYEOF'
+import json, sys
+cache, files, out = json.load(open(sys.argv[1])), sys.argv[2:-1], sys.argv[-1]
+import hashlib
+missing = [p for p in files if hashlib.sha256(open(p, "rb").read()).hexdigest() not in cache]
+assert not missing, f"cache missing {len(missing)} sources after preupload"
+json.dump(
+    [cache[hashlib.sha256(open(p, "rb").read()).hexdigest()] for p in files],
+    open(out, "w"),
+)
 PYEOF
 
 # Deterministic batch id per (tag, chunk index).
@@ -116,10 +174,11 @@ for ((c = 0; c < N_CHUNKS; c++)); do
   gen_manifest "$c" "$this_chunk"
   attempt=0
   while :; do
-    resp=$(curl -sS -m 1800 -b "$JAR" -X POST "${BASE_URL%/}/api/admin/import" \
+    resp=$(curl -sS -m 3600 -b "$JAR" -X POST "${BASE_URL%/}/api/admin/import" \
       -H 'Content-Type: application/json' \
       --data-binary @"$TMP/m-$c.json" -w '\n%{http_code}') || {
-      echo "chunk $c: connection error" >&2; attempt=$((attempt + 1)); [ $attempt -lt 4 ] || exit 1; continue; }
+      echo "chunk $c: connection error" >&2; attempt=$((attempt + 1)); [ $attempt -lt 4 ] || exit 1
+      sleep $((attempt * 5)); continue; }
     code=${resp##*$'\n'}; body=${resp%$'\n'*}
     if [ "$code" != "200" ]; then
       echo "chunk $c: HTTP $code: $(echo "$body" | head -c 300)" >&2

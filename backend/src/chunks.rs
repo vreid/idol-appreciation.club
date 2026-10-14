@@ -125,7 +125,7 @@ async fn composite_locked(
         targets.push((aabb.x - cx * CHUNK_PX, aabb.y - cy * CHUNK_PX));
     }
     let encoded =
-        tokio::task::spawn_blocking(move || img::composite_chunks(bases, &overlay, &targets, rot))
+        crate::telemetry::blocking(move || img::composite_chunks(bases, &overlay, &targets, rot))
             .await
             .map_err(internal)?
             .map_err(internal)?;
@@ -211,7 +211,7 @@ async fn replay_chunks_locked(
             overlays.push((bytes, aabb.x - qx0, aabb.y - qy0, rot));
         }
         let encoded =
-            tokio::task::spawn_blocking(move || img::replay_canvas(canvas_owned, &overlays))
+            crate::telemetry::blocking(move || img::replay_canvas(canvas_owned, &overlays))
                 .await
                 .map_err(internal)?
                 .map_err(internal)?;

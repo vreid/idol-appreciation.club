@@ -17,9 +17,11 @@ pub mod metrics;
 pub mod place;
 pub mod rate;
 pub mod router;
+
 pub mod state;
 pub mod statics;
 pub mod store;
+pub mod telemetry;
 pub mod tiles;
 pub mod world;
 
@@ -76,17 +78,15 @@ async fn shutdown_signal() {
         _ = int.recv() => {},
     }
     tracing::info!("shutdown signal received");
+    telemetry::shutdown();
 }
 
 /// Main entry point used by the binary.
 pub async fn run() -> anyhow::Result<()> {
-    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-        .init();
+    let _telemetry = telemetry::init();
 
     let cfg = config::Config::from_env();
+    telemetry::set_db_endpoint(&cfg.database_url);
     let addr = cfg.listen_addr;
     let (_state, app) = build_app(cfg).await?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -94,5 +94,6 @@ pub async fn run() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    telemetry::shutdown();
     Ok(())
 }

@@ -770,6 +770,47 @@ Tests:
 
 CI note: fmt/clippy/test all need `libvips-dev` installed on the runner.
 
+## Telemetry
+
+OpenTelemetry tracing + trace-correlated logs, per
+`docs/scaling-architecture.md` § Observability. **Off by default**: with no
+`OTEL_EXPORTER_OTLP_ENDPOINT` the process emits exactly what it did before (JSON
+logs on stdout), with zero new threads or exports.
+
+_*Configuration — standard OTEL\_* environment only_* (no app knobs):
+
+| Variable                      | Effect                                                                                                                        |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | set ⇒ spans export over OTLP/HTTP+protobuf (batched); unset ⇒ logs only                                                       |
+| `OTEL_SERVICE_NAME`           | resource `service.name`, default `api`                                                                                        |
+| `OTEL_RESOURCE_ATTRIBUTES`    | `k=v,k=v` into the resource (version, environment, pod/node from the downward API)                                            |
+| `OTEL_SDK_DISABLED`           | `true` forces logs-only even with an endpoint set                                                                             |
+| `OTEL_TRACES_SAMPLER(_ARG)`   | default `parentbased_traceidratio` at 5%; also honors `always_on`, `always_off`, `traceidratio`, and their parent-based forms |
+
+**What carries a span**
+
+- HTTP requests: `http` span named by route template (`http.route`,
+  `http.request.method`, `url.path`, `request_id`), parented from an inbound W3C
+  `traceparent` when present; INFO — it is also the request's JSON access-log
+  line (status + latency on close).
+- SQL: `postgresql <family>` spans in `dbq::timed` — `db.system.name`,
+  `db.query.summary`, `db.operation.name`, and the pool's endpoint
+  (`rw`/`ro`/`pooler`/`primary`), DEBUG so stdout stays quiet while the export
+  still gets them.
+- libvips work: every `spawn_blocking` call site routes through
+  `telemetry::blocking`, which carries the current span into the blocking thread
+  — pixel spans join the request trace instead of becoming disconnected roots.
+
+**Rules** (same doc): no orphan spans — `dbq::timed` creates its span only under
+an existing one, so the workers' once-a-second polls stay spanless; W3C
+`traceparent` propagator is installed whenever export is on; SIGTERM/SIGINT
+force-flushes the batch processor.
+
+**Log/trace join**: every JSON line's span block carries `trace_id`/`span_id`;
+responses echo `x-request-id` (set per request by the request-id middleware).
+Pin set: `opentelemetry` 0.33, `opentelemetry_sdk` 0.33, `opentelemetry-otlp`
+0.33, `tracing-opentelemetry` 0.34.
+
 ## Known risks / limits
 
 - Crash window: chunk rasters are written before the manifest row commits; a

@@ -207,7 +207,7 @@ pub(crate) async fn process_original(
         return Err(AppError::TooLarge);
     }
     let (stripped, format, (w, h), derivative_bytes) =
-        tokio::task::spawn_blocking(move || -> AppResult<_> {
+        crate::telemetry::blocking(move || -> AppResult<_> {
             let (src, format) = img::decode(&image_bytes, max_decode_pixels)?;
             let src_w = i64::from(src.get_width());
             let src_h = i64::from(src.get_height());
@@ -286,7 +286,7 @@ pub async fn place(
     // re-save in the source codec, hash; then build the deterministic
     // webp derivative from the stripped raster.
     let max_pixels = app.cfg.max_decode_pixels;
-    let pipeline = tokio::task::spawn_blocking(move || -> AppResult<_> {
+    let pipeline = crate::telemetry::blocking(move || -> AppResult<_> {
         let (src, format) = img::decode(&image_bytes, max_pixels)?;
         let (w, h) = derive_w_h(
             i64::from(src.get_width()),

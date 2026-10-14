@@ -881,7 +881,7 @@ async fn tile_bytes_inner(
     // Zero-cost placeholder — served even under congestion (it never
     // queues and never renders).
     if seq == 0 {
-        let bytes = tokio::task::spawn_blocking(empty_tile_bytes)
+        let bytes = crate::telemetry::blocking(empty_tile_bytes)
             .await
             .map_err(internal)??;
         crate::metrics::tile_done(crate::metrics::tile_outcome("empty"), t0.elapsed());
@@ -1049,7 +1049,7 @@ async fn render_tile(app: &App, ctx: &TileCtx, z: i64, x: i64, y: i64) -> AppRes
         let chunk = crate::store::get_bytes(&app.store, &key).await?;
         let (ox, oy) = tile_offset_in_chunk(z, x, y);
         let native = tile_native_size(z);
-        tokio::task::spawn_blocking(move || img::render_leaf_tile(chunk, ox, oy, native))
+        crate::telemetry::blocking(move || img::render_leaf_tile(chunk, ox, oy, native))
             .await
             .map_err(internal)?
             .map_err(internal)?
@@ -1088,7 +1088,7 @@ async fn render_tile(app: &App, ctx: &TileCtx, z: i64, x: i64, y: i64) -> AppRes
             }
         }
         let kids: [Vec<u8>; 4] = kids.try_into().map_err(|_| internal("children count"))?;
-        tokio::task::spawn_blocking(move || img::render_parent_tile(&kids))
+        crate::telemetry::blocking(move || img::render_parent_tile(&kids))
             .await
             .map_err(internal)?
             .map_err(internal)?

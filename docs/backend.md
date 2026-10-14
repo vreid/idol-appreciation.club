@@ -478,15 +478,15 @@ max-delay anchor) and `last_bump_at` (the quiet anchor):
   live seq via one grouped GiST query, plus the tiles-table rows for the root
   and lazily, one brief hold per level, for deeper levels) and the walk itself
   is **connection-free**: pure Rust + object storage + pixels, children resolved
-  sequentially. A leaf composites ≤4 chunk rasters; a parent composites ≤4
-  child tiles. Snapshot semantics are deliberately not transaction-perfect: a
+  sequentially. A leaf composites ≤4 chunk rasters; a parent composites ≤4 child
+  tiles. Snapshot semantics are deliberately not transaction-perfect: a
   placement landing mid-render advances the covering seq, the next GET
   stale-serves + re-enqueues, and the system self-heals. On top of that, a
   **pyramid gate** (`TILE_PYRAMID_ACTIVE`, 2 leases) bounds concurrent
   full-pyramid renders; entry GETs beyond the cap shed with 202 + Retry-After
   instead of stacking another minutes-long walk. Pool doctrine: **a connection
-  must never be held across external I/O (S3, vips)** — the audit table lives
-  in the PR; the import batch handler is the remaining known offender (#119).
+  must never be held across external I/O (S3, vips)** — the audit table lives in
+  the PR; the import batch handler is the remaining known offender (#119).
 - **Decode-budget boundary.** `MAX_DECODE_PIXELS` (default 64 MPx) is an
   ingestion gate: the placement path probes and decodes uploads against it
   (`img::probe` / `img::decode`) before anything is stored. The raster cache's

@@ -29,17 +29,21 @@ import type { AppStore } from "./lib/state";
    placing flow; runs inside the component so the effect tracks the store. */
 function wireGhostSync(map: MapHandle, store: AppStore): void {
   createEffect(() => {
-    const controller = map.current;
-    if (controller === null) return;
+    // Reactive reads come FIRST: an early return before them would leave
+    // the effect with no dependencies, so it would never re-run when the
+    // placing flow (or the map ref, set later in onMount) changes.
     const mode = store.placeMode;
     const prepared = store.prepared;
+    const rotation = store.rotation;
+    const controller = map.current;
+    if (controller === null) return;
     if (mode === "choose" && prepared !== null) {
       const size = store.ghostSize();
       controller.setGhost({
         url: prepared.previewUrl,
         w: size.w,
         h: size.h,
-        rot: store.rotation,
+        rot: rotation,
       });
       controller.setPlacing(true);
     } else {
@@ -53,9 +57,9 @@ function wireGhostSync(map: MapHandle, store: AppStore): void {
    highlight always wraps the pixels the panel describes. */
 function wireSelectionSync(map: MapHandle, store: AppStore): void {
   createEffect(() => {
+    const selected = store.selectedPlace;
     const controller = map.current;
     if (controller === null) return;
-    const selected = store.selectedPlace;
     if (selected !== null) controller.showSelection(selected);
   });
 }
@@ -229,7 +233,11 @@ export default function App() {
 
   return (
     <>
-      <div class="map-root" ref={map.el}>
+      <div class="map-root" ref={map.el} />
+
+      {/* Anchored overlays live OUTSIDE the Leaflet container: inside it,
+          every panel click also fires the map's click handler. */}
+      <div class="panel-layer">
         <PlaceDetail
           store={store}
           container={map.el}

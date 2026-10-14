@@ -7,6 +7,9 @@ use std::path::PathBuf;
 pub struct Config {
     pub listen_addr: SocketAddr,
     pub database_url: String,
+    /// Optional read-replica pool (the CNPG `-ro` service) for versioned
+    /// tile-read lookups. Absent ⇒ the main pool serves them.
+    pub database_ro_url: Option<String>,
     /// sqlx pool ceiling. Stopgap for #120: deep-zoom renders can hold
     /// connections for minutes and starve the pool; idle-held connections
     /// are free on the managed PG. DATABASE_POOL_MAX overrides the default.
@@ -100,6 +103,7 @@ impl Config {
                 .parse()
                 .expect("invalid LISTEN_ADDR"),
             database_url: env_req("DATABASE_URL"),
+            database_ro_url: std::env::var("DATABASE_RO_URL").ok(),
             database_pool_max: env_or("DATABASE_POOL_MAX", "15")
                 .parse()
                 .expect("invalid DATABASE_POOL_MAX"),

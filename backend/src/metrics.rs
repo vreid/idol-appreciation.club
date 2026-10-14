@@ -209,8 +209,9 @@ pub const S3_OPS: [&str; 2] = ["get", "put"];
 /// tiles-table seq read/write on the render path, `tile_queue` the
 /// background render queue's bookkeeping. Session-level advisory locks
 /// and migrations stay unlabeled (lock waits are not query time).
-pub const DB_FAMILIES: [&str; 14] = [
+pub const DB_FAMILIES: [&str; 15] = [
     "near",
+    "tile_versions",
     "dig",
     "tile_seq",
     "tile_rows",

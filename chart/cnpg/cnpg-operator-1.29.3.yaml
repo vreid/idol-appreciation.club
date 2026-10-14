@@ -1,17 +1,16 @@
 # CloudNativePG operator, consolidated upstream manifest, pinned.
 #
 # Source: https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.29.3/cnpg-1.29.3.yaml
-# Upstream manifest sha256: b6c2afe80d6e2103 (first 16 hex; verify with
-#   curl -sL <url> | sha256sum | head -c 16)
-# Modification: the controller image was rewritten from the mutable tag
-# ghcr.io/cloudnative-pg/cloudnative-pg:1.29.3 to the registry-resolved
-# digest sha256:cc0594bd9fd8cdd654dfbd91e4cf2c8fc1bfc4e3a09c4a90a2ab4ffc524f1db5
-# (HEAD manifest via GHCR API, 2026-10-14) — same digest-pin rule as the
-# Cluster Autoscaler: a mutable tag is not acceptable for a component
-# that owns the database.
-# Install: task cnpg:operator:install (applies this file and
-# kubeconform-validates it; CRD instances validated server-side).
-
+# Upstream manifest sha256 prefix: b6c2afe80d6e2103 (verify: curl -sL <url> | sha256sum)
+# Modification: controller image rewritten from the mutable tag
+# ghcr.io/cloudnative-pg/cloudnative-pg:1.29.3 to the registry-resolved digest
+# sha256:cc0594bd9fd8cdd654dfbd91e4cf2c8fc1bfc4e3a09c4a90a2ab4ffc524f1db5
+# (HEAD manifest via GHCR API, 2026-10-14) - same digest-pin rule as the
+# Cluster Autoscaler: a mutable tag is not acceptable for a component that
+# owns the database.
+# Applied by `task cnpg:operator:install` (kubeconform gate + provenance
+# check: the body after the header must equal upstream v1.29.3 with the
+# digest rewrite).
 apiVersion: v1
 kind: Namespace
 metadata:

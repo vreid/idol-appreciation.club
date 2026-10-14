@@ -11,6 +11,7 @@
 
 import type {
   CenterInfo,
+  DigStack,
   Feed,
   Hot,
   Me,
@@ -22,6 +23,7 @@ import type {
 } from "@contract";
 import {
   centerInfoSchema,
+  digStackSchema,
   feedSchema,
   hotSchema,
   meSchema,
@@ -35,6 +37,8 @@ import {
 export type {
   CenterHolder,
   CenterInfo,
+  DigEntry,
+  DigStack,
   Feed,
   FeedEntry,
   Hot,
@@ -100,6 +104,8 @@ export interface ApiClient {
     before?: number;
     limit?: number;
   }) => Promise<Feed>;
+  /** Strata under one point, newest-first (the pile model). */
+  dig: (x: number, y: number) => Promise<DigStack>;
   /** Busiest z6 regions over a recent window (hottest first). */
   hot: (opts: { window?: number; limit?: number }) => Promise<Hot>;
   removePlacement: (placementId: string) => Promise<void>;
@@ -333,6 +339,10 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         await request(`/api/placements/near?${query}`),
         "placements/near",
       );
+    },
+    dig: async (x, y) => {
+      const query = new URLSearchParams({ x: String(x), y: String(y) });
+      return parseOk(digStackSchema, await request(`/api/dig?${query}`), "dig");
     },
     center: async () =>
       parseOk(centerInfoSchema, await request("/api/center"), "center"),

@@ -8,6 +8,7 @@ import type {
 } from "./api";
 import { ApiError, MAX_UPLOAD_BYTES } from "./api";
 import { describeApiError, isAuthStatus } from "./apiErrors";
+import { createPileState } from "./pile";
 import { confirmAt, type PlaceConfirmDeps } from "./placeConfirm";
 import {
   clampLongEdge,
@@ -67,6 +68,11 @@ export function createAppStore(
   const [selectedPlace, setSelectedPlace] = createSignal<Placement | null>(
     null,
   );
+  const pile = createPileState({
+    client,
+    selected: selectedPlace,
+    setSelected: (p) => void setSelectedPlace(p),
+  });
   const toastHub = createToastHub(deps);
   const { push: pushToast, dismiss: dismissToast } = toastHub;
 
@@ -192,11 +198,35 @@ export function createAppStore(
     get selectedPlace() {
       return selectedPlace();
     },
-    selectPlace(placement: Placement): void {
+    get digStack() {
+      return pile.stack();
+    },
+    get digTotal() {
+      return pile.total();
+    },
+    get digIndex() {
+      return pile.index();
+    },
+    selectPlace(placement: Placement, point?: { x: number; y: number }): void {
       setSelectedPlace(placement);
+      if (point === undefined) {
+        pile.reset();
+        return;
+      }
+      pile.load(placement, point);
+    },
+    queryPile(x: number, y: number): Promise<boolean> {
+      return pile.query(x, y);
+    },
+    adoptPile(top: Placement): void {
+      pile.adopt(top);
+    },
+    stepDig(delta: number): boolean {
+      return pile.step(delta);
     },
     deselectPlace(): void {
       setSelectedPlace(null);
+      pile.reset();
     },
     get prepared() {
       return prepared();

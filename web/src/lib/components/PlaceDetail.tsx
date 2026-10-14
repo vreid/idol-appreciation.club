@@ -16,6 +16,8 @@ export interface PlaceDetailActions {
   onDeselect(): void;
   /** Replaces a placement's tag set via the store (toasts on failure). */
   onUpdateTags(placementId: string, tags: string[]): Promise<void>;
+  /** Steps the selection through the pile under it (wrapping). */
+  onStepDig(delta: number): void;
 }
 
 /** Anchor geometry for the current selection, read from the live map. */
@@ -37,6 +39,65 @@ interface Position {
  * bottom), repositioned on every map pan/zoom. Replaces the old Leaflet
  * popup, which rendered on top of the image it described.
  */
+/** Panel keyboard: Escape deselects; left/right step through the pile.
+ * Never while typing in an input. Lives module-level (called inside the
+ * component so the reactive scope survives). */
+function wirePanelKeys(actions: () => PlaceDetailActions): void {
+  createEffect(() => {
+    if (actions().isLoggedIn() === undefined) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") actions().onDeselect();
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      if (event.key === "ArrowLeft") actions().onStepDig(-1);
+      if (event.key === "ArrowRight") actions().onStepDig(1);
+    };
+    window.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      window.removeEventListener("keydown", onKey);
+    });
+  });
+}
+
+/** ‹ n of m › steppers: cycle the selection through its pile. Hidden
+ * for single-stratum piles or when the selection isn't in the pile. */
+function DepthSteppers(props: {
+  store: AppStore;
+  actions: PlaceDetailActions;
+}) {
+  return (
+    <Show when={props.store.digTotal > 1 && props.store.digIndex >= 0}>
+      <span class="pd-depth">
+        <button
+          aria-label="Previous stratum"
+          title="Previous stratum (left arrow)"
+          onClick={() => {
+            props.actions.onStepDig(-1);
+          }}
+        >
+          ‹
+        </button>
+        {props.store.digIndex + 1} of {props.store.digTotal}
+        <button
+          aria-label="Next stratum"
+          title="Next stratum (right arrow)"
+          onClick={() => {
+            props.actions.onStepDig(1);
+          }}
+        >
+          ›
+        </button>
+      </span>
+    </Show>
+  );
+}
+
 export default function PlaceDetail(props: {
   store: AppStore;
   container: HTMLElement | undefined;
@@ -68,20 +129,7 @@ export default function PlaceDetail(props: {
     setPosition(panelLayout(aabb, size, viewport));
   });
 
-  // Escape closes the panel (deselect) — panel-scoped UX, so the
-  // listener lives here alongside the rest of the panel's behavior.
-  createEffect(() => {
-    if (store.selectedPlace === null) return;
-    // Closes over props.actions — the scoping heuristic can't see it.
-    // eslint-disable-next-line unicorn/consistent-function-scoping
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") props.actions.onDeselect();
-    };
-    window.addEventListener("keydown", onKey);
-    onCleanup(() => {
-      window.removeEventListener("keydown", onKey);
-    });
-  });
+  wirePanelKeys(() => props.actions);
 
   // Non-keyed on purpose: the panel must survive the selection changing
   // underneath it (wheel flips read through the reactive store getters).
@@ -97,6 +145,7 @@ export default function PlaceDetail(props: {
       >
         <div class="pd-head">
           <strong class="pd-user">@{store.selectedPlace?.username}</strong>
+          <DepthSteppers store={store} actions={props.actions} />
           <button
             class="pd-close"
             type="button"

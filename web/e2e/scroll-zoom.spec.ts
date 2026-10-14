@@ -20,6 +20,17 @@ function makeEntry(id: string, username: string): Placement {
 const TOP = makeEntry("pile-top", "wren");
 
 async function stubPile(page: Page): Promise<void> {
+  await page.route("**/api/dig**", (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        stack: [{ ...TOP, depth: 1 }],
+        total: 1,
+        truncated: false,
+      }),
+    });
+  });
   await page.route("**/api/placements/near**", (route) => {
     const url = new URL(route.request().url());
     const x = Number(url.searchParams.get("x") ?? "0");

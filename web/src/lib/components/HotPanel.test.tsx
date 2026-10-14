@@ -31,6 +31,9 @@ function makeClient(page: Hot = PAGE): ApiClient {
     removePlacement: vi.fn(),
     updateTags: vi.fn(),
     feed: vi.fn(),
+    dig: vi.fn(() =>
+      Promise.resolve({ stack: [], total: 0, truncated: false }),
+    ),
     hot: vi.fn(() => Promise.resolve(page)),
     pendingAccounts: vi.fn(),
     approveAccount: vi.fn(),

@@ -139,3 +139,8 @@ chart/cnpg/barman-cloud-plugin-0.15.1.yaml:kubernetes-secret-yaml:976
 # same finding after digest-pinning the sidecar ref: the upstream example
 # Secret still carries the (now digest-pinned) public image ref, base64
 chart/cnpg/barman-cloud-plugin-0.15.1.yaml:kubernetes-secret-yaml:965
+# CI job wiring (PR #137): throwaway postgres service for the integration
+# harness — job-scoped, localhost-only, not a real credential.
+.github/workflows/ci.yml:generic-password:192
+.github/workflows/ci.yml:generic-credential-uri:206
+backend/tests/common/mod.rs:generic-password:310

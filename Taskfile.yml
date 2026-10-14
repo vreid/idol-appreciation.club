@@ -462,10 +462,12 @@ tasks:
         # (recreate ruling) the managed service does not exist — its tofu
         # outputs and API calls must never run. The CNPG branch sets $db
         # below, next to the app-env synthesis.
-        cnpg_ready="$(kubectl -n idol get postgresql.cnpg.io/idol-db \
-          -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+        # State-truth detection: the CNPG-native tofu config has NO
+        # app_database_uri output at all, so a missing output means CNPG.
+        # (A runtime kubectl probe proved flaky across runner versions.)
         db_source="managed"
-        if [ "${DATABASE_SOURCE:-auto}" = "cnpg" ] || { [ "${DATABASE_SOURCE:-auto}" = "auto" ] && [ "$cnpg_ready" = "True" ]; }; then
+        if [ "${DATABASE_SOURCE:-auto}" = "cnpg" ] || { [ "${DATABASE_SOURCE:-auto}" = "auto" ] \
+             && ! tofu output -raw app_database_uri >/dev/null 2>&1; }; then
           db_source="cnpg"
         fi
         if [ "$db_source" = "managed" ]; then
@@ -812,8 +814,13 @@ tasks:
     cmds:
       - |
         set -o pipefail; set -e
+        # helm lookup can miss freshly-written secrets; hand the endpoint
+        # explicitly from the backup secret (set by cnpg:backup:secret).
+        ep="$(kubectl -n idol get secret cnpg-backup-s3 -o jsonpath='{.data.S3_ENDPOINT}' | base64 -d)"
+        test -n "$ep" || { echo "cnpg-backup-s3 missing S3_ENDPOINT" >&2; exit 1; }
         helm template chart --show-only templates/cnpg-cluster.yaml \
-          --set cnpg.enabled=true > /tmp/cnpg-cluster.yaml
+          --set cnpg.enabled=true \
+          --set-string cnpg.backup.endpointURL="$ep" > /tmp/cnpg-cluster.yaml
         kubectl apply --dry-run=server -f /tmp/cnpg-cluster.yaml
         kubectl apply -f /tmp/cnpg-cluster.yaml
         kubectl -n idol wait cluster.idol-db --for=condition=Ready --timeout=600s \

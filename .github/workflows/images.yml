@@ -210,5 +210,10 @@ jobs:
           # satisfy strict up-to-date) separately
           gh pr update-branch bot/image-versions || true
           gh pr merge bot/image-versions --squash --auto
+        # OMP_PAT when present: PRs created with the workflow's GITHUB_TOKEN
+        # do not fire pull_request/push events, so the bot's lock PR never
+        # gets checks and the auto-merge gate can never satisfy. A PAT
+        # identity does fire them. Fall back to GITHUB_TOKEN when the
+        # secret is absent (loud-failure semantics unchanged).
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.OMP_PAT || secrets.GITHUB_TOKEN }}

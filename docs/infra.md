@@ -120,13 +120,24 @@ Policy:
 - **`main` rolling guard.** Pushes touching `backend/**` or `web/**` also build
   the `main` rolling tag + lock update without a semver — src-touching commits
   that strict conventional rules don't bump still get fresh images.
+- **One build per tree, warm layer cache.** A release tag and the `main` push
+  for the same commit fire together, and a second merge can land before the
+  first lock PR does. Each `images.yml` run first waits for earlier runs of its
+  commit, then reuses any image (current `main` or the lock pin) whose
+  `club.idol.build.tree` label matches the build-context tree and only re-tags
+  it. Real builds import and export the BuildKit layer cache through
+  `<package>:buildcache` (`mode=max`). The backend Dockerfile compiles
+  dependencies in their own cargo-chef layer, so a source-only change rebuilds
+  just the crate. A lock job whose digests the open lock PR already records does
+  not re-push (that would restart the PR's checks).
 - **GHCR retention.** After every images build and nightly (`ghcr-prune.yml`),
-  `task image:prune` keeps the `main` tag + the last 10 `vX.Y.Z` tags per
-  package and prunes the rest; digests pinned by `images.lock.json` are verified
-  protected before any deletion, and untagged versions are kept (their digest
-  can't be verified against the pin).
+  `task image:prune` keeps the `main` and `buildcache` tags + the last 10
+  `vX.Y.Z` tags per package and prunes the rest; digests pinned by
+  `images.lock.json` are verified protected before any deletion, and untagged
+  versions are kept (their digest can't be verified against the pin).
 - **tofu is decoupled** on its own `infra/**` paths (apply/destroy/ recreate
-  workflows); `deploy.yml` only runs the harmless state-settle refresh.
+  workflows); `deploy.yml` only runs the harmless state-settle refresh, with its
+  output kept out of the (public) Actions log.
 
 ### OMP_PAT secret (one-time, user-added)
 

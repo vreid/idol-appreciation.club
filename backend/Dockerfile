@@ -11,15 +11,34 @@
 # NOTE: the builder needs libvips-dev (the `libvips` crate links against
 # it); the runtime only needs libvips42.
 
-FROM rust:trixie AS builder
+# Dependency caching (cargo-chef): `planner` reduces the crate to a recipe
+# (manifests + target layout), `builder` compiles the dependencies from that
+# recipe in their own layer, then the crate itself. The dependency layer is
+# keyed only on the recipe, so a source-only change rebuilds just the crate.
+# CI exports this layer cache to the registry (images.yml, BUILD_CACHE_REF);
+# the BuildKit cache mounts below only help warm local builders.
+# `builder` stays the full-source stage: task backend:image builds
+# --target builder for the fmt/clippy/test gate.
+FROM rust:trixie AS chef
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libvips-dev=8.16.1-1+deb13u2 \
         pkg-config \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef --locked --version 0.1.78
 WORKDIR /app
-# Registry + git caches keep dependency builds warm across image builds.
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations

@@ -158,7 +158,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Fail if any tier-1 check failed (skips allowed — pr-title is PR-only)
+      - name:
+          Fail if any tier-1 check failed (skips allowed — pr-title is PR-only)
         run: |
           failed=0
           for r in ${{ join(needs.*.result, ' ') }}; do
@@ -176,7 +177,10 @@ jobs:
     needs: [changed, tier1]
     if: needs.changed.outputs.backend == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The test leg now actually runs the container-based suites
+    # (integration + tile_queue against sibling docker); the dev-profile
+    # compile of the test binaries dominates the budget.
+    timeout-minutes: 40
     env:
       RUNNER: docker
     steps:
@@ -224,7 +228,10 @@ jobs:
   web-test:
     name: web-test (vp test)
     needs: [changed, tier1, lint]
-    if: always() && needs.changed.outputs.web == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    if:
+      always() && needs.changed.outputs.web == 'true' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result,
+      'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -237,7 +244,9 @@ jobs:
   tofu-plan:
     name: tofu validate (PRs, tofu paths, credential-less)
     needs: [changed, tier1]
-    if: github.event_name == 'pull_request' && needs.changed.outputs.tofu == 'true'
+    if:
+      github.event_name == 'pull_request' && needs.changed.outputs.tofu ==
+      'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -258,7 +267,10 @@ jobs:
     # container convention as the backend gates) and parses every live
     # response/SSE event against contract/zod.
     needs: [changed, tier1, lint]
-    if: always() && needs.changed.outputs.web == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    if:
+      always() && needs.changed.outputs.web == 'true' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result,
+      'cancelled')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:

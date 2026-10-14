@@ -952,7 +952,14 @@ pub async fn import(
 /// failure — so every committed row is counted exactly once.
 fn finish_metrics(summary: &mut ImportSummary, t0: Instant) {
     let elapsed = t0.elapsed();
-    crate::metrics::import_done(summary.imported, summary.chunk_writes, elapsed);
+    // A pure resume-skip (re-POST of a fully-committed batch_id) commits
+    // nothing: it must not count as a completed batch (its own regression
+    // test pins batches_total at the first run's count). Mid-batch
+    // failures with partial commits still count — every committed row is
+    // counted exactly once.
+    if summary.imported > 0 {
+        crate::metrics::import_done(summary.imported, summary.chunk_writes, elapsed);
+    }
     summary.duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
     let secs = elapsed.as_secs_f64();
     summary.images_per_second = if secs > 0.0 {

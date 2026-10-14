@@ -1756,35 +1756,31 @@ async fn read_sse_until(addr: std::net::SocketAddr, needle: &str) -> Option<Stri
 /// every import_* series while 38k+ placements committed — the bump
 /// site (`metrics::import_done`) must run per batch POST and the
 /// exposition must surface all five series.
+/// Import tests assert ABSOLUTE import_* counter values against the
+/// process-global metrics registry; run them serialized.
+static IMPORT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test(flavor = "multi_thread")]
 async fn import_metrics_move_on_batch() {
+    let _serial = IMPORT_LOCK.lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "metrics-importer").await; // first account = admin
 
-    // Series exist and start at zero on a fresh server.
+    // Series EXIST on a fresh server. The registry is process-global and
+    // shared by every test in this binary, so all value assertions below
+    // are deltas against this snapshot, never absolutes.
     let before = metrics_map(&server).await;
-    assert_eq!(
-        before.get("import_batches_total").map(String::as_str),
-        Some("0"),
-        "import_batches_total missing or nonzero on fresh server"
-    );
-    assert_eq!(
-        before.get("import_images_total").map(String::as_str),
-        Some("0"),
-        "import_images_total missing or nonzero on fresh server"
-    );
-    assert_eq!(
-        before.get("import_chunk_writes_total").map(String::as_str),
-        Some("0"),
-        "import_chunk_writes_total missing or nonzero on fresh server"
-    );
-    assert_eq!(
-        before
-            .get("import_duration_seconds_count")
-            .map(String::as_str),
-        Some("0"),
-        "import_duration_seconds_count missing or nonzero on fresh server"
-    );
+    for series in [
+        "import_batches_total",
+        "import_images_total",
+        "import_chunk_writes_total",
+        "import_duration_seconds_count",
+    ] {
+        assert!(
+            before.contains_key(series),
+            "{series} missing on a fresh server"
+        );
+    }
 
     // One real batch: 3 entries across 2 chunks (two piled + one far).
     let maps = preupload(&server, &admin, &[png(48, 48), png(32, 32)]).await;
@@ -1803,25 +1799,34 @@ async fn import_metrics_move_on_batch() {
     assert_eq!(summary["imported"], 3);
 
     let after = metrics_map(&server).await;
-    let n = |k: &str| after.get(k).expect(k).parse::<f64>().expect(k);
-    assert_eq!(n("import_batches_total"), 1.0, "batch counter did not move");
-    assert_eq!(n("import_images_total"), 3.0, "images counter did not move");
-    let writes = n("import_chunk_writes_total");
+    let d = |k: &str| {
+        after.get(k).expect(k).parse::<f64>().expect(k)
+            - before.get(k).expect(k).parse::<f64>().expect(k)
+    };
+    assert_eq!(d("import_batches_total"), 1.0, "batch counter did not move");
+    assert_eq!(d("import_images_total"), 3.0, "images counter did not move");
+    let writes = d("import_chunk_writes_total");
     assert!(
         (1.0..=3.0).contains(&writes),
         "chunk_writes {writes} outside [1,3] — must count chunk raster writes, not images"
     );
     assert!(
-        n("import_duration_seconds_count") >= 1.0,
+        d("import_duration_seconds_count") >= 1.0,
         "duration histogram did not observe the batch"
     );
-    let amp = n("chunk_write_amplification");
+    // The gauge is the registry-CUMULATIVE images/writes ratio at
+    // exposition time (sibling import tests contribute) — assert its
+    // definition holds against the same snapshot; the batch-local ratio
+    // is pinned by the deltas above (3 images / {writes} chunks).
+    let cum = |k: &str| after.get(k).expect(k).parse::<f64>().expect(k);
+    let amp = cum("chunk_write_amplification");
+    let expect_amp = match cum("import_chunk_writes_total") {
+        0.0 => 0.0,
+        w => cum("import_images_total") / w,
+    };
     assert!(
-        (amp - 3.0 / writes).abs() < 1e-6,
-        "amplification {amp} != images/writes ({}/{} = {})",
-        3.0,
-        writes,
-        3.0 / writes
+        (amp - expect_amp).abs() < 1e-6,
+        "amplification {amp} != cumulative images/writes ({expect_amp})"
     );
 
     // The resume-skip path is NOT a batch: counters must hold.
@@ -1841,20 +1846,25 @@ async fn import_metrics_move_on_batch() {
     assert_eq!(again.status, 200);
     assert_eq!(again.json()["imported"], 0);
     let final_ = metrics_map(&server).await;
+    let d2 = |k: &str| {
+        final_.get(k).expect(k).parse::<f64>().expect(k)
+            - before.get(k).expect(k).parse::<f64>().expect(k)
+    };
     assert_eq!(
-        final_.get("import_batches_total").map(String::as_str),
-        Some("1"),
+        d2("import_batches_total"),
+        1.0,
         "a pure resume-skip must not count as a completed batch"
     );
     assert_eq!(
-        final_.get("import_images_total").map(String::as_str),
-        Some("3"),
+        d2("import_images_total"),
+        3.0,
         "resume-skip must not count images"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_batch_chunk_grouping_and_sse() {
+    let _serial = IMPORT_LOCK.lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "importer").await; // first account = admin
 
@@ -1976,6 +1986,7 @@ async fn import_batch_chunk_grouping_and_sse() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_rotated_corner_entry_and_prewarm() {
+    let _serial = IMPORT_LOCK.lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "corner").await;
     let maps = preupload(&server, &admin, &[png(32, 32)]).await;
@@ -2007,6 +2018,7 @@ async fn import_rotated_corner_entry_and_prewarm() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_resolves_derivative_from_source_sha() {
+    let _serial = IMPORT_LOCK.lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "resolver").await;
     let image = png(48, 48);
@@ -2034,6 +2046,7 @@ async fn import_resolves_derivative_from_source_sha() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_rejects_bad_manifests() {
+    let _serial = IMPORT_LOCK.lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "gatekeeper").await;
     let other = register(&server, "pleb").await;

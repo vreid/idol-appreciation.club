@@ -157,7 +157,46 @@ pub async fn request(
     headers: &[(&str, &str)],
     body: Vec<u8>,
 ) -> Resp {
-    let mut stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    request_addr(
+        server.addr,
+        method,
+        path,
+        headers,
+        body,
+        Duration::from_secs(20),
+    )
+    .await
+}
+
+/// Long-budget variant for slow batch endpoints (multi-block imports).
+pub async fn request_long(
+    server: &Server,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+) -> Resp {
+    request_addr(
+        server.addr,
+        method,
+        path,
+        headers,
+        body,
+        Duration::from_secs(120),
+    )
+    .await
+}
+
+/// Server-less request form for use inside spawned tasks.
+pub async fn request_addr(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+    deadline: Duration,
+) -> Resp {
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n");
     if !body.is_empty() || method == "POST" || method == "DELETE" {
         req.push_str(&format!("Content-Length: {}\r\n", body.len()));
@@ -169,9 +208,9 @@ pub async fn request(
     stream.write_all(req.as_bytes()).await.unwrap();
     stream.write_all(&body).await.unwrap();
     let mut raw = Vec::new();
-    tokio::time::timeout(Duration::from_secs(20), stream.read_to_end(&mut raw))
+    tokio::time::timeout(deadline, stream.read_to_end(&mut raw))
         .await
-        .expect("response within 20s")
+        .expect("response within deadline")
         .unwrap();
     parse_response(&raw)
 }
@@ -356,8 +395,95 @@ pub async fn set_render_pause_ms(ms: u64) -> PauseGuard {
     PauseGuard { _perm: perm }
 }
 
+/// Hold every pyramid (z < BASE_Z) render for `ms` — deterministic
+/// gate/shed windows without touching leaf-render or worker timing.
+/// Callers already hold the serial pause lock (set_render_pause_ms).
+pub fn set_pyramid_pause_ms(ms: u64) {
+    idol_appreciation_club_backend::tiles::set_pyramid_pause_for_tests(ms);
+}
+
 impl Drop for PauseGuard {
     fn drop(&mut self) {
         tiles::set_render_pause_for_tests(0);
     }
+}
+
+// ---------------------------------------------------- batch import ----
+
+/// Multi-image multipart body for the originals preupload endpoint.
+pub fn multipart_images(images: &[Vec<u8>]) -> (String, Vec<u8>) {
+    let boundary = format!("b{}", uuid::Uuid::now_v7().simple());
+    let mut body = Vec::new();
+    for image in images {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"i.png\"\r\nContent-Type: image/png\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(image);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (boundary, body)
+}
+
+/// Preupload `images`; returns the response JSON array of mappings.
+pub async fn preupload(server: &Server, cookie: &str, images: &[Vec<u8>]) -> serde_json::Value {
+    let (boundary, body) = multipart_images(images);
+    let resp = request(
+        server,
+        "POST",
+        "/api/admin/import/originals",
+        &[
+            ("Cookie", cookie),
+            (
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            ),
+        ],
+        body,
+    )
+    .await;
+    assert_eq!(
+        resp.status,
+        200,
+        "preupload: {}",
+        String::from_utf8_lossy(&resp.body)
+    );
+    resp.json()
+}
+
+pub async fn import_manifest(server: &Server, cookie: &str, manifest: serde_json::Value) -> Resp {
+    request_long(
+        server,
+        "POST",
+        "/api/admin/import",
+        &[("Cookie", cookie), ("Content-Type", "application/json")],
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .await
+}
+
+pub fn entry(
+    map: &serde_json::Value,
+    idx: usize,
+    x: i64,
+    y: i64,
+    rot: f32,
+    override_w: Option<i64>,
+) -> serde_json::Value {
+    let mut e = serde_json::json!({
+        "source_sha": map[idx]["source_sha"],
+        "derivative_sha": map[idx]["derivative_sha"],
+        "x": x,
+        "y": y,
+        "w": map[idx]["w"],
+        "h": map[idx]["h"],
+        "rot": rot,
+    });
+    if let Some(w) = override_w {
+        e["w"] = serde_json::json!(w);
+    }
+    e
 }

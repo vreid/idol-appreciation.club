@@ -1,0 +1,789 @@
+#!/bin/bash
+# Vite+ CLI Installer
+# https://vite.plus
+#
+# Usage:
+#   curl -fsSL https://vite.plus | bash
+#
+# Environment variables:
+#   VP_VERSION - Version to install (default: latest)
+#   VP_HOME - Optional pin for the monolithic layout. If unset, Vite+ reuses an
+#             existing ~/.vite-plus install. Otherwise, the complete VP_*_DIR
+#             group, XDG_*, or platform defaults select the split roots.
+#   VP_BIN_DIR / VP_DATA_DIR / VP_CACHE_DIR - Complete group of absolute
+#                                             category overrides
+#   XDG_DATA_HOME / XDG_CONFIG_HOME / … - Unix split defaults
+#   NPM_CONFIG_REGISTRY - Custom npm registry URL (default: https://registry.npmjs.org)
+#   VP_NODE_MANAGER - Set to "yes" or "no" to skip interactive prompt (for CI/devcontainers)
+#   VP_LOCAL_TGZ - Path to local vite-plus.tgz (for development/testing)
+#   VP_PR_VERSION - PR number or commit SHA to install from the registry bridge
+#                   (for temporary testing of unreleased builds, e.g. VP_PR_VERSION=1569).
+#                   When set, overrides VP_VERSION and installs the clearly-defined
+#                   0.0.0-commit.<sha> build through the bridge instead of npm.
+
+# When sourced, returns INSTALL_DIR, SHIM_DIR, CACHE_DIR, CONFIG_DIR, and STATE_DIR.
+# These are resolved paths, not VP_* overrides for subsequent commands.
+set -e
+
+VP_VERSION="${VP_VERSION:-latest}"
+# npm registry URL (strip trailing slash if present)
+NPM_REGISTRY="${NPM_CONFIG_REGISTRY:-https://registry.npmjs.org}"
+NPM_REGISTRY="${NPM_REGISTRY%/}"
+# Local tarball for development/testing
+LOCAL_TGZ="${VP_LOCAL_TGZ:-}"
+# Local binary path (set by install-global-cli.ts for local dev)
+LOCAL_BINARY="${VP_LOCAL_BINARY:-}"
+# PR number or commit SHA to install as a test build (registry bridge mode)
+PR_VERSION="${VP_PR_VERSION:-}"
+# Registry bridge that serves PR preview builds as clearly-versioned packages.
+# The pkg.pr.new-style download URL (BRIDGE_DOWNLOAD_BASE) 302-redirects to a
+# canonical 0.0.0-commit.<sha> tarball; the registry (BRIDGE_REGISTRY) resolves
+# those commit versions (and proxies everything else to npmjs) so a full install
+# pulls a coherent, clearly-defined test build.
+BRIDGE_DOWNLOAD_BASE="https://registry-bridge.viteplus.dev/voidzero-dev/vite-plus"
+BRIDGE_REGISTRY="https://registry-bridge.viteplus.dev/"
+
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+PACKAGE_METADATA=""
+PLATFORM_TARBALL_URL=""
+PLATFORM_INTEGRITY=""
+# Legacy is published beside this bootstrap; preview builds rewrite this origin.
+LEGACY_INSTALLER_URL="${VP_LEGACY_INSTALLER_URL:-https://viteplus.dev/install-legacy.sh}"
+INSTALLER_PATH="${BASH_SOURCE[0]:-}"
+
+info() {
+  echo -e "${BLUE}info${NC}: $1" >&2
+}
+
+warn() {
+  echo -e "${YELLOW}warn${NC}: $1" >&2
+}
+
+error() {
+  echo -e "${RED}error${NC}: $1" >&2
+  exit 1
+}
+
+print_curl_error() {
+  local exit_code="$1"
+  local url="$2"
+
+  # Map curl exit codes to user-friendly messages
+  local error_desc
+  case $exit_code in
+    6)
+      error_desc="DNS resolution failed - could not resolve hostname"
+      ;;
+    7)
+      error_desc="Connection refused - the server may be down or unreachable"
+      ;;
+    28)
+      error_desc="Connection timed out"
+      ;;
+    35)
+      error_desc="SSL/TLS connection error"
+      ;;
+    60)
+      error_desc="SSL certificate verification failed"
+      ;;
+    *)
+      error_desc="Network error"
+      ;;
+  esac
+
+  echo ""
+  echo -e "${RED}error${NC}: ${error_desc} (curl exit code ${exit_code})"
+  echo ""
+  echo "  This may be caused by:"
+  echo "    - Network connectivity issues"
+  echo "    - Firewall or proxy blocking the connection"
+  echo "    - DNS configuration problems"
+  if [ $exit_code -eq 35 ] || [ $exit_code -eq 60 ]; then
+    echo "    - Outdated SSL/TLS libraries"
+  fi
+  echo ""
+  if [ -n "$url" ]; then
+    echo "  Failed URL: $url"
+    echo ""
+    echo "  To debug, run:"
+    echo "    curl -v \"$url\""
+    echo ""
+  fi
+  exit 1
+} >&2
+
+curl_with_error_handling() {
+  local url=""
+  local args=()
+
+  # Parse arguments to find the URL (for error messages)
+  for arg in "$@"; do
+    case "$arg" in
+      http://*|https://*)
+        url="$arg"
+        ;;
+    esac
+    args+=("$arg")
+  done
+
+  # Run curl and capture exit code
+  set +e
+  local output exit_code
+  output=$(curl "${args[@]}" 2>&1)
+  exit_code=$?
+  set -e
+
+  if [ $exit_code -eq 0 ]; then
+    echo "$output"
+    return 0
+  fi
+
+  print_curl_error "$exit_code" "$url"
+}
+
+detect_libc() {
+  # Prefer positive glibc detection first.
+  # This avoids false musl detection on systems where musl is installed
+  # but the distro itself is glibc-based (common on WSL/Ubuntu).
+  if command -v getconf &> /dev/null; then
+    if getconf GNU_LIBC_VERSION > /dev/null 2>&1; then
+      echo "gnu"
+      return
+    fi
+  fi
+
+  # Check ldd output for musl/glibc
+  if command -v ldd &> /dev/null; then
+    ldd_out="$(ldd --version 2>&1 || true)"
+    if echo "$ldd_out" | grep -qi musl; then
+      echo "musl"
+      return
+    fi
+    if echo "$ldd_out" | grep -qi 'gnu libc'; then
+      echo "gnu"
+      return
+    fi
+    if echo "$ldd_out" | grep -qi 'glibc'; then
+      echo "gnu"
+      return
+    fi
+  fi
+
+  # Final fallback: musl loader present usually indicates musl-based distro,
+  # but only check this after glibc detection to avoid false positives.
+  if [ -e /lib/ld-musl-x86_64.so.1 ] || [ -e /lib/ld-musl-aarch64.so.1 ]; then
+    echo "musl"
+  else
+    echo "gnu"
+  fi
+}
+
+detect_platform() {
+  local os arch
+
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "$os" in
+    Darwin) os="darwin" ;;
+    Linux) os="linux" ;;
+    MINGW*|MSYS*|CYGWIN*) os="win32" ;;
+    *) error "Unsupported operating system: $os" ;;
+  esac
+
+  case "$arch" in
+    x86_64|amd64) arch="x64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) error "Unsupported architecture: $arch" ;;
+  esac
+
+  # For Linux, append libc type to distinguish gnu vs musl
+  if [ "$os" = "linux" ]; then
+    local libc
+    libc=$(detect_libc)
+    echo "${os}-${arch}-${libc}"
+  else
+    echo "${os}-${arch}"
+  fi
+}
+
+check_requirements() {
+  local missing=()
+
+  if ! command -v curl &> /dev/null; then
+    missing+=("curl")
+  fi
+
+  if ! command -v tar &> /dev/null; then
+    missing+=("tar")
+  fi
+
+  if [ ${#missing[@]} -ne 0 ]; then
+    error "Missing required commands: ${missing[*]}"
+  fi
+}
+
+# Fetch package metadata from npm registry (cached for reuse)
+# Uses VP_VERSION to fetch the correct version's metadata
+fetch_package_metadata() {
+  if [ -z "$PACKAGE_METADATA" ]; then
+    local version_path metadata_url
+    version_path="$VP_VERSION"
+    metadata_url="${NPM_REGISTRY}/vite-plus/${version_path}"
+    PACKAGE_METADATA=$(curl_with_error_handling -s "$metadata_url")
+    if [ -z "$PACKAGE_METADATA" ]; then
+      error "Failed to fetch package metadata from: $metadata_url"
+    fi
+    # Check for npm registry error response
+    # npm can return either {"error":"..."} or a plain JSON string like "version not found: test"
+    if echo "$PACKAGE_METADATA" | grep -q '"error"'; then
+      local error_msg
+      error_msg=$(echo "$PACKAGE_METADATA" | grep -o '"error" *: *"[^"]*"' | cut -d'"' -f4)
+      error "Failed to fetch version '${version_path}': ${error_msg:-unknown error}\n  URL: $metadata_url"
+    fi
+    # Check if response is a plain error string (not a valid package object)
+    # Use '"version":' to match JSON property, not just the word "version"
+    if ! echo "$PACKAGE_METADATA" | grep -q '"version" *:'; then
+      # Remove surrounding quotes from the error message if present
+      local error_msg
+      error_msg=$(echo "$PACKAGE_METADATA" | sed 's/^"//;s/"$//')
+      error "Failed to fetch version '${version_path}': ${error_msg:-unknown error}\n  URL: $metadata_url"
+    fi
+  fi
+  # PACKAGE_METADATA is set as a global variable, no need to echo
+}
+
+get_version_from_metadata() {
+  # Call fetch_package_metadata to populate PACKAGE_METADATA global
+  # Don't use command substitution as it would swallow the exit from error()
+  fetch_package_metadata
+  RESOLVED_VERSION=$(echo "$PACKAGE_METADATA" | grep -o '"version" *: *"[^"]*"' | head -1 | cut -d'"' -f4)
+  if [ -z "$RESOLVED_VERSION" ]; then
+    error "Failed to extract version from package metadata"
+  fi
+}
+
+# Extract the platform tarball URL, integrity, and provenance predicate from npm version
+# metadata. Bootstrap runs before Node.js is available and cannot require jq,
+# so this parser tracks each JSON path segment and container boundary rather
+# than matching key names or dot-joined paths. Keeping segments separate means
+# a package-defined key containing dots cannot impersonate npm's nested
+# `dist.attestations.provenance` metadata. Invalid JSON fails closed.
+parse_platform_distribution_metadata() {
+  awk '
+    function fail_json(message) {
+      print message > "/dev/stderr"
+      exit 2
+    }
+
+    function skip_whitespace(    c) {
+      while (json_pos <= json_length) {
+        c = substr(json_text, json_pos, 1)
+        if (c == " " || c == "\t" || c == "\r" || c == "\n") {
+          json_pos++
+        } else {
+          return
+        }
+      }
+    }
+
+    function parse_string(    result, c, escaped, hex, code, i) {
+      skip_whitespace()
+      if (substr(json_text, json_pos, 1) != "\"") {
+        fail_json("expected JSON string")
+      }
+      json_pos++
+
+      while (json_pos <= json_length) {
+        c = substr(json_text, json_pos, 1)
+        json_pos++
+        if (c == "\"") {
+          return result
+        }
+        if (c == "\\") {
+          if (json_pos > json_length) {
+            fail_json("unterminated JSON escape")
+          }
+          escaped = substr(json_text, json_pos, 1)
+          json_pos++
+          if (escaped == "\"" || escaped == "\\" || escaped == "/") {
+            result = result escaped
+          } else if (escaped == "b" || escaped == "f" || escaped == "n" || escaped == "r" || escaped == "t") {
+            # Keep control escapes printable so extracted values cannot inject lines.
+            result = result "\\" escaped
+          } else if (escaped == "u") {
+            hex = substr(json_text, json_pos, 4)
+            if (length(hex) != 4 || hex ~ /[^0-9A-Fa-f]/) {
+              fail_json("invalid JSON unicode escape")
+            }
+            code = 0
+            for (i = 1; i <= 4; i++) {
+              code = code * 16 + index("0123456789abcdef", tolower(substr(hex, i, 1))) - 1
+            }
+            # Decode printable ASCII once, including all SRI characters and
+            # inspected keys. Keep other escapes printable so control characters
+            # cannot inject lines into the extracted metadata.
+            if (code >= 32 && code <= 126) {
+              result = result sprintf("%c", code)
+            } else {
+              result = result "\\u" hex
+            }
+            json_pos += 4
+          } else {
+            fail_json("invalid JSON escape")
+          }
+        } else {
+          if (c ~ /[[:cntrl:]]/) {
+            fail_json("unescaped control character in JSON string")
+          }
+          result = result c
+        }
+      }
+
+      fail_json("unterminated JSON string")
+    }
+
+    function is_object_key(depth, key) {
+      return path_kind[depth] == "object-key" && path_key[depth] == key
+    }
+
+    function remember_string(depth, value) {
+      if (depth == 2 && is_object_key(1, "dist") && is_object_key(2, "tarball")) {
+        if (++tarball_count != 1) fail_json("duplicate dist.tarball")
+        tarball = value
+      } else if (depth == 2 && is_object_key(1, "dist") && is_object_key(2, "integrity")) {
+        integrity = value
+      } else if (depth == 4 && is_object_key(1, "dist") &&
+                 is_object_key(2, "attestations") &&
+                 is_object_key(3, "provenance") &&
+                 is_object_key(4, "predicateType")) {
+        if (++predicate_count != 1) fail_json("duplicate provenance predicateType")
+        predicate_type = value
+      } else if (depth == 1 && is_object_key(1, "error")) {
+        if (++error_count != 1) fail_json("duplicate registry error")
+        registry_error = value
+      }
+    }
+
+    function parse_number(    start, value, c) {
+      start = json_pos
+      while (json_pos <= json_length) {
+        c = substr(json_text, json_pos, 1)
+        if (c ~ /[-+0-9.eE]/) json_pos++
+        else break
+      }
+      value = substr(json_text, start, json_pos - start)
+      if (value !~ /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) {
+        fail_json("invalid JSON number")
+      }
+    }
+
+    function parse_literal(literal) {
+      if (substr(json_text, json_pos, length(literal)) != literal) {
+        fail_json("invalid JSON literal")
+      }
+      json_pos += length(literal)
+    }
+
+    function parse_array(depth,    c, child_depth) {
+      json_pos++
+      skip_whitespace()
+      if (substr(json_text, json_pos, 1) == "]") {
+        json_pos++
+        return
+      }
+
+      while (1) {
+        child_depth = depth + 1
+        path_kind[child_depth] = "array-item"
+        path_key[child_depth] = ""
+        parse_value(child_depth)
+        delete path_kind[child_depth]
+        delete path_key[child_depth]
+        skip_whitespace()
+        c = substr(json_text, json_pos, 1)
+        if (c == "]") {
+          json_pos++
+          return
+        }
+        if (c != ",") fail_json("expected comma in JSON array")
+        json_pos++
+      }
+    }
+
+    function parse_object(depth,    key, child_depth, c, object_id) {
+      json_pos++
+      object_id = ++object_count
+      skip_whitespace()
+      if (substr(json_text, json_pos, 1) == "}") {
+        json_pos++
+        return
+      }
+
+      while (1) {
+        key = parse_string()
+        if ((object_id SUBSEP key) in object_keys) {
+          fail_json("duplicate key in JSON object")
+        }
+        object_keys[object_id SUBSEP key] = 1
+        skip_whitespace()
+        if (substr(json_text, json_pos, 1) != ":") {
+          fail_json("expected colon in JSON object")
+        }
+        json_pos++
+        child_depth = depth + 1
+        path_kind[child_depth] = "object-key"
+        path_key[child_depth] = key
+        parse_value(child_depth)
+        delete path_kind[child_depth]
+        delete path_key[child_depth]
+        skip_whitespace()
+        c = substr(json_text, json_pos, 1)
+        if (c == "}") {
+          json_pos++
+          return
+        }
+        if (c != ",") fail_json("expected comma in JSON object")
+        json_pos++
+      }
+    }
+
+    function parse_value(depth,    c, value) {
+      skip_whitespace()
+      c = substr(json_text, json_pos, 1)
+      if (c == "{") {
+        parse_object(depth)
+      } else if (c == "[") {
+        parse_array(depth)
+      } else if (c == "\"") {
+        value = parse_string()
+        remember_string(depth, value)
+      } else if (c == "t") {
+        parse_literal("true")
+      } else if (c == "f") {
+        parse_literal("false")
+      } else if (c == "n") {
+        parse_literal("null")
+      } else if (c == "-" || c ~ /[0-9]/) {
+        parse_number()
+      } else {
+        fail_json("invalid JSON value")
+      }
+    }
+
+    { json_text = json_text $0 "\n" }
+
+    END {
+      json_length = length(json_text)
+      json_pos = 1
+      parse_value(0)
+      skip_whitespace()
+      if (json_pos <= json_length) fail_json("unexpected data after JSON value")
+
+      print tarball
+      print predicate_type
+      print registry_error
+      print integrity
+    }
+  '
+}
+
+# Resolve the exact platform tarball and check release provenance before download.
+# Registry signatures alone do not satisfy this check.
+resolve_platform_distribution() {
+  local package_name="$1"
+  local package_version="$2"
+  local registry="${3:-$NPM_REGISTRY}"
+  local encoded_package_name="${package_name/\//%2F}"
+  local metadata_url="${registry%/}/${encoded_package_name}/${package_version}"
+  local metadata parsed registry_error predicate_type
+
+  metadata=$(curl_with_error_handling -s "$metadata_url")
+  if [ -z "$metadata" ]; then
+    error "Failed to fetch CLI package metadata from: $metadata_url"
+  fi
+
+  if ! parsed=$(printf '%s\n' "$metadata" | parse_platform_distribution_metadata); then
+    error "Failed to parse CLI package metadata for ${package_name}@${package_version}\n  URL: $metadata_url"
+  fi
+
+  PLATFORM_TARBALL_URL=$(printf '%s\n' "$parsed" | sed -n '1p')
+  predicate_type=$(printf '%s\n' "$parsed" | sed -n '2p')
+  registry_error=$(printf '%s\n' "$parsed" | sed -n '3p')
+  PLATFORM_INTEGRITY=$(printf '%s\n' "$parsed" | sed -n '4p')
+
+  if [ -n "$registry_error" ]; then
+    error "Failed to fetch CLI package metadata '${package_name}@${package_version}': ${registry_error}\n  URL: $metadata_url"
+  fi
+
+  # Commit preview builds do not carry npm provenance, regardless of registry.
+  if [[ ! "$package_version" =~ ^0\.0\.0-commit\.[0-9a-fA-F]{40}$ ]]; then
+    case "$predicate_type" in
+      https://slsa.dev/provenance/v1|https://slsa.dev/provenance/v0.2) ;;
+      *)
+        error "Refusing to install ${package_name}@${package_version}: the package does not contain supported npm provenance metadata. Vite+ only installs release binaries published with npm provenance."
+        ;;
+    esac
+  fi
+
+  if [ -z "$PLATFORM_TARBALL_URL" ]; then
+    error "CLI package metadata for ${package_name}@${package_version} does not include dist.tarball\n  URL: $metadata_url"
+  fi
+  # A SHA-512 digest is 64 bytes, encoded as 86 base64 characters and two padding
+  # characters. Require canonical padding bits as well as the supported algorithm.
+  if [[ ! "$PLATFORM_INTEGRITY" =~ ^sha512-[A-Za-z0-9+/]{85}[AQgw]==$ ]]; then
+    error "CLI package metadata for ${package_name}@${package_version} does not include a valid SHA-512 dist.integrity\n  URL: $metadata_url"
+  fi
+}
+
+# Get platform suffix for CLI package download
+# Sets PLATFORM_SUFFIX global variable
+# Platform format from detect_platform(): darwin-arm64, darwin-x64, linux-x64-gnu, linux-arm64-gnu, win32-x64, etc.
+# CLI package format: @voidzero-dev/vite-plus-cli-darwin-arm64, @voidzero-dev/vite-plus-cli-linux-x64-gnu, etc.
+get_platform_suffix() {
+  local platform="$1"
+  case "$platform" in
+    win32-*) PLATFORM_SUFFIX="${platform}-msvc" ;;  # Windows needs -msvc suffix
+    *) PLATFORM_SUFFIX="$platform" ;;               # macOS/Linux map directly
+  esac
+}
+
+verify_archive_integrity() (
+  set -o pipefail
+  local archive="$1"
+  local integrity="$2"
+  local expected actual
+  local -a hash_command
+
+  if command -v sha512sum &> /dev/null; then
+    hash_command=(sha512sum)
+  elif command -v shasum &> /dev/null; then
+    hash_command=(shasum -a 512)
+  elif command -v openssl &> /dev/null; then
+    hash_command=(openssl dgst -sha512 -r)
+  else
+    warn "Skipping platform package integrity verification: sha512sum, shasum, and openssl are unavailable."
+    return 0
+  fi
+
+  actual=$("${hash_command[@]}" < "$archive") || error "Failed to hash platform package"
+  actual="${actual%% *}"
+
+  # base64 -d and od work with macOS, GNU coreutils, and BusyBox.
+  if ! expected=$(printf '%s' "${integrity#sha512-}" | base64 -d | od -An -v -tx1 | tr -d ' \n'); then
+    error "Failed to decode platform package integrity"
+  fi
+  if [ "$actual" != "$expected" ]; then
+    error "Platform package integrity mismatch: the downloaded archive does not match dist.integrity"
+  fi
+)
+
+download_and_extract() (
+  local url="$1"
+  local dest_dir="$2"
+  local integrity="$3"
+
+  # Download to temp file (silent mode)
+  local temp_file
+  temp_file=$(mktemp)
+  trap 'rm -f "$temp_file"' EXIT
+
+  # Run curl and capture exit code for error handling
+  set +e
+  curl -fsSL "$url" -o "$temp_file"
+  local exit_code=$?
+  set -e
+
+  if [ $exit_code -ne 0 ]; then
+    rm -f "$temp_file"
+    print_curl_error "$exit_code" "$url"
+  fi
+
+  verify_archive_integrity "$temp_file" "$integrity" || exit $?
+  tar xzf "$temp_file" -C "$dest_dir" --strip-components=1
+
+)
+
+resolve_bridge_commit_version() {
+  local ref="$1"
+  local sha="$ref"
+  if [[ ! "$ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    sha="$(curl -fsSIL "${BRIDGE_DOWNLOAD_BASE}@${ref}" 2>/dev/null | tr -d '\r' | awk -F ': ' '
+      tolower($1) == "x-commit-key" { count = split($2, parts, ":"); print parts[count]; exit }')"
+  fi
+  case "$sha" in
+    '' | *[!0-9a-fA-F]*) return 1 ;;
+  esac
+  [ "${#sha}" -eq 40 ] || return 1
+  printf '0.0.0-commit.%s' "$sha"
+}
+
+is_windows_uname() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+resolution_home_dir() {
+  if is_windows_uname; then
+    printf '%s\n' "${USERPROFILE:-$HOME}"
+  else
+    printf '%s\n' "${HOME:-$USERPROFILE}"
+  fi
+}
+
+# Released setup-vp versions add ~/.vite-plus/bin to the GitHub Actions or
+# GitLab CI/CD PATH. They do this after the installer exits. Use the monolithic
+# layout until setup-vp declares support for VP_DUMP_DIRS.
+enable_setup_vp_legacy_compatibility() {
+  if [ "${GITHUB_ACTION_REPOSITORY:-}" != "voidzero-dev/setup-vp" ]; then
+    [ "${GITLAB_CI:-}" = "true" ] || return 0
+    [ -n "${SETUP_VP_SETUP_REF:-}" ] || return 0
+  fi
+  [ "${VP_VPDIRS_AWARE:-}" != "1" ] || return 0
+  [ -z "${VP_HOME:-}" ] || return 0
+  [ -z "${VP_BIN_DIR:-}" ] || return 0
+  [ -z "${VP_DATA_DIR:-}" ] || return 0
+  [ -z "${VP_CACHE_DIR:-}" ] || return 0
+
+  local resolution_home
+  resolution_home="$(resolution_home_dir)"
+  [ -n "$resolution_home" ] || error "Vite+ could not resolve the user home directory."
+  VP_HOME="$resolution_home/.vite-plus"
+  export VP_HOME
+}
+
+main() {
+  enable_setup_vp_legacy_compatibility
+
+  if [ -n "$PR_VERSION" ] && [ -n "$LOCAL_TGZ" ]; then
+    error "VP_PR_VERSION and VP_LOCAL_TGZ cannot be used together"
+  fi
+
+  check_requirements
+
+  # Local development mode: use local tgz
+  if [ -n "$LOCAL_TGZ" ]; then
+    # Validate local tgz
+    if [ ! -f "$LOCAL_TGZ" ]; then
+      error "Local tarball not found: $LOCAL_TGZ"
+    fi
+    # Use version as-is (default to "local-dev")
+    if [ "$VP_VERSION" = "latest" ] || [ "$VP_VERSION" = "test" ]; then
+      VP_VERSION="local-dev"
+    fi
+    if [ -z "$LOCAL_BINARY" ] || [ ! -f "$LOCAL_BINARY" ]; then
+      error "Set VP_LOCAL_BINARY when you use VP_LOCAL_TGZ."
+    fi
+  elif [ -n "$PR_VERSION" ]; then
+    # Registry bridge mode: resolve the requested PR/SHA to the bridge's
+    # immutable commit version (0.0.0-commit.<sha>), the clearly-defined test
+    # version we install. Legacy receives the full SHA as its preview ref.
+    # `|| true` keeps `set -e` from aborting this assignment when resolution
+    # fails (unregistered ref / transient bridge error), so the actionable
+    # error below is reachable instead of the installer exiting silently.
+    PR_COMMIT_VERSION="$(resolve_bridge_commit_version "$PR_VERSION" || true)"
+    if [ -z "$PR_COMMIT_VERSION" ]; then
+      error "Could not resolve a registry bridge build for ${PR_VERSION}"
+    fi
+    VP_VERSION="$PR_COMMIT_VERSION"
+    info "Using registry bridge build: ${PR_COMMIT_VERSION}"
+  else
+    # Fetch package metadata and resolve version from npm
+    get_version_from_metadata
+    VP_VERSION="$RESOLVED_VERSION"
+  fi
+
+  local platform
+  platform=$(detect_platform)
+  local result
+  result="$(set -e; acquire_and_handoff "$platform")" || return $?
+  # setup-vp reads these assignments in the shell that sourced this installer.
+  eval "$result"
+}
+
+acquire_and_handoff() (
+  local platform="$1"
+  local binary_name="vp"
+  if [[ "$platform" == win32* ]]; then
+    binary_name="vp.exe"
+  fi
+
+  # Keep acquisition separate from permanent installation. The bootstrap owns cleanup.
+  local binary_source platform_temp_dir=""
+  if [ -z "$LOCAL_TGZ" ]; then
+    # npm registry or registry bridge (when PR_VERSION is set)
+    get_platform_suffix "$platform"
+    local package_name="@voidzero-dev/vite-plus-cli-${PLATFORM_SUFFIX}"
+    local registry="$NPM_REGISTRY"
+    if [ -n "$PR_VERSION" ]; then registry="$BRIDGE_REGISTRY"; fi
+    # Preview metadata binds the same immutable commit version to its archive.
+    resolve_platform_distribution "$package_name" "$VP_VERSION" "$registry" || exit $?
+
+    # Create temp directory for extraction
+    platform_temp_dir=$(mktemp -d)
+    platform_temp_dir=$(cd "$platform_temp_dir" && pwd -P)
+    trap "rm -rf -- $(printf '%q' "$platform_temp_dir")" EXIT
+    download_and_extract "$PLATFORM_TARBALL_URL" "$platform_temp_dir" "$PLATFORM_INTEGRITY" || exit $?
+    binary_source="$platform_temp_dir/$binary_name"
+    [ -f "$binary_source" ] || error "Downloaded package does not contain $binary_name"
+    chmod +x "$binary_source"
+  else
+    binary_source="$(cd "$(dirname "$LOCAL_BINARY")" && pwd -P)/$(basename "$LOCAL_BINARY")"
+  fi
+
+  if supports_self_setup "$binary_source"; then
+    handoff_install "$binary_source"
+  else
+    run_legacy_installer "$binary_source"
+  fi
+)
+
+supports_self_setup() {
+  local response
+  # Old binaries must exit with help rather than opening an interactive picker.
+  response=$(VP_SELF_SETUP_SUPPORT_CHECK=1 "$1" --help 2>/dev/null && printf '.') || return 1
+  [ "$response" = $'vite-plus-self-setup-v1\n.' ]
+}
+
+run_legacy_installer() (
+  local binary_source="$1"
+  local legacy_script=""
+  if [ -n "$INSTALLER_PATH" ] && [ -f "$INSTALLER_PATH" ]; then
+    legacy_script="$(dirname "$INSTALLER_PATH")/install-legacy.sh"
+  fi
+  if [ -z "$legacy_script" ] || [ ! -f "$legacy_script" ]; then
+    legacy_script=$(mktemp)
+    trap "rm -f -- $(printf '%q' "$legacy_script")" EXIT
+    curl_with_error_handling -fsSL "$LEGACY_INSTALLER_URL" -o "$legacy_script" >&2
+  fi
+  # Preserve the child status explicitly, including when a caller disables errexit.
+  local status=0
+  source "$legacy_script" "$binary_source" "$VP_VERSION" "$PR_VERSION" >&2 || status=$?
+  [ "$status" -eq 0 ] || exit "$status"
+  local name
+  for name in INSTALL_DIR SHIM_DIR CACHE_DIR CONFIG_DIR STATE_DIR; do
+    printf '%s=%q\n' "$name" "${!name}"
+  done
+)
+
+handoff_install() (
+  unset VP_SELF_SETUP_SUPPORT_CHECK
+  # Preview dependencies must use the same registry as the downloaded binary.
+  if [ -n "$PR_VERSION" ]; then
+    export NPM_CONFIG_REGISTRY="$BRIDGE_REGISTRY"
+  fi
+  # curl | bash leaves stdin on the script pipe; setup consent must read from the terminal.
+  if [ -t 2 ] && [ -z "${CI+x}" ]; then
+    exec < /dev/tty
+  fi
+  local status=0
+  VP_SELF_SETUP_SHELL=sh "$1" || status=$?
+  exit "$status"
+)
+
+main "$@"

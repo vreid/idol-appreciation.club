@@ -1,121 +1,29 @@
 import { createEffect, onCleanup, onMount, createSignal, Show } from "solid-js";
-import { createApiClient } from "./lib/api";
-import { createAppStore } from "./lib/state";
-import { burstConfetti } from "./lib/confetti";
-import { readNaturalSize } from "./lib/images";
-import { SseClient, eventTouchesCenter } from "./lib/sse";
-import { createWorldMap, type WorldMapController } from "./lib/worldMap";
+import { createApiClient, type ApiClient } from "./lib/api";
 import {
-  queryRadiusForZoom,
-  rotAABB,
-  worldScale,
-  type BBox,
-} from "./lib/world";
+  jumpToPlacement,
+  onFileChosen,
+  onLongPress,
+  onMapClick,
+  placeDetailActions,
+  releaseSelection,
+  type MapHandle,
+} from "./lib/appActions";
+import { createAppStore } from "./lib/state";
+import { SseClient, eventTouchesCenter } from "./lib/sse";
+import { createWorldMap } from "./lib/worldMap";
+import { rotAABB, worldScale, type BBox } from "./lib/world";
 import type { Placement } from "./lib/api";
 import PlaceDetail, {
-  type PlaceDetailActions,
   type SelectionGeometry,
 } from "./lib/components/PlaceDetail";
 import TopBar from "./lib/components/TopBar";
 import FeedPanel from "./lib/components/FeedPanel";
+import HotPanel from "./lib/components/HotPanel";
 import PlacePanel from "./lib/components/PlacePanel";
 import Toasts from "./lib/components/Toasts";
 import AboutModal from "./lib/components/AboutModal";
 import type { AppStore } from "./lib/state";
-
-/** The imperative map bits the async handlers need access to. */
-interface MapHandle {
-  current: WorldMapController | null;
-  el: HTMLDivElement | undefined;
-}
-
-/** One deselect path: selection, highlight, wheel all released. */
-function releaseSelection(map: MapHandle, store: AppStore): void {
-  store.deselectPlace();
-  map.current?.clearSelection();
-  map.current?.setDigMode(false);
-}
-
-/** Long-press target: deselect, pin the spot, open the upload flow. */
-function onLongPress(
-  map: MapHandle,
-  store: AppStore,
-  openPicker: () => void,
-  x: number,
-  y: number,
-): void {
-  releaseSelection(map, store);
-  store.pinSpot(x, y);
-  openPicker();
-}
-
-async function onMapClick(
-  map: MapHandle,
-  store: AppStore,
-  x: number,
-  y: number,
-): Promise<void> {
-  const controller = map.current;
-  if (controller === null) return;
-  if (store.placeMode === "choose") {
-    const attempt = await store.confirmSpot(x, y);
-    if (attempt.ok && map.current !== null) {
-      const p = attempt.placement;
-      map.current.pulse({ x: p.x, y: p.y, w: p.w, h: p.h });
-      const at = map.current.worldToScreenPoint(p.x + p.w / 2, p.y + p.h / 2);
-      if (map.el !== undefined) burstConfetti(map.el, at.x, at.y);
-    }
-    return;
-  }
-  const zoom = controller.currentZoom();
-  const near = await store.refreshNear(x, y, queryRadiusForZoom(zoom));
-  const top = near[0];
-  // Empty spots silently deselect (and restore wheel-zoom).
-  if (top === undefined) {
-    releaseSelection(map, store);
-    return;
-  }
-  store.selectPlace(top, { x, y });
-  controller.showSelection(top);
-  // Wheel now peels the stack under the click point instead of zooming.
-  controller.setDigMode(true, (deltaY) => {
-    store.flipDig(deltaY > 0 ? 1 : -1);
-  });
-}
-
-async function onRemove(
-  map: MapHandle,
-  store: AppStore,
-  id: string,
-  bbox: BBox,
-): Promise<void> {
-  const controller = map.current;
-  if (controller === null) return;
-  const removed = await store.removePlacement(id);
-  if (removed) {
-    // Optimistic: drop the pixels right away; SSE confirms later.
-    controller.invalidateBBox(bbox);
-    releaseSelection(map, store);
-  }
-}
-
-async function onFileChosen(event: Event, store: AppStore): Promise<void> {
-  const input = event.target;
-  if (!(input instanceof HTMLInputElement)) return;
-  const file = input.files?.[0];
-  input.value = "";
-  if (file === undefined) return;
-  if (!file.type.startsWith("image/")) {
-    store.notify("That file is not an image");
-    return;
-  }
-  const size = await readNaturalSize(file);
-  if (size === null) {
-    store.notify("Could not read that image");
-    return;
-  }
-  store.startPlace(file, file.name, size.w, size.h);
-}
 
 /** Keeps the map ghost (preview image + AABB outline) in sync with the
    placing flow; runs inside the component so the effect tracks the store. */
@@ -214,38 +122,68 @@ function sseConfig(
   };
 }
 
-/** Jumps the map to a placement and selects it at its centre (the dig
- * query fills the depth cue). */
-function jumpToPlacement(
-  map: MapHandle,
-  store: AppStore,
-  place: Placement,
-): void {
-  const cx = place.x + place.w / 2;
-  const cy = place.y + place.h / 2;
-  map.current?.centerOn(cx, cy);
-  store.selectPlace(place, { x: cx, y: cy });
+/** The About/GitHub strip under the map. */
+function FooterChip(props: { onAbout(): void }) {
+  return (
+    <div class="footer-chip">
+      <button
+        class="linkish"
+        type="button"
+        onClick={() => {
+          props.onAbout();
+        }}
+      >
+        About
+      </button>
+      <span aria-hidden="true">·</span>
+      <a
+        href="https://github.com/vreid/idol-appreciation.club"
+        target="_blank"
+        rel="noreferrer"
+      >
+        GitHub
+      </a>
+    </div>
+  );
 }
 
-function placeDetailActions(
-  map: MapHandle,
-  store: AppStore,
-): PlaceDetailActions {
-  return {
-    isLoggedIn: () => store.me !== null,
-    onReport: (id) => void store.reportPlacement(id),
-    isAdmin: () => store.me?.is_admin === true,
-    onRemove: (id, bbox) => void onRemove(map, store, id, bbox),
-    onUpdateTags: async (id, tags) => {
-      await store.updateTags(id, tags);
-    },
-    onAuthPrompt: () => {
-      store.promptAuth();
-    },
-    onDeselect: () => {
-      releaseSelection(map, store);
-    },
-  };
+/** The toggleable side panels. The visibility flips live in App; jump
+ * behavior is shared with the map click paths. */
+function WorldPanels(props: {
+  client: ApiClient;
+  map: MapHandle;
+  store: AppStore;
+  showFeed: boolean;
+  showHot: boolean;
+  closeFeed(): void;
+  closeHot(): void;
+}) {
+  return (
+    <>
+      <Show when={props.showFeed}>
+        <FeedPanel
+          client={props.client}
+          onClose={() => {
+            props.closeFeed();
+          }}
+          onJump={(place) => {
+            jumpToPlacement(props.map, props.store, place);
+          }}
+        />
+      </Show>
+      <Show when={props.showHot}>
+        <HotPanel
+          client={props.client}
+          onClose={() => {
+            props.closeHot();
+          }}
+          onJump={(target) => {
+            props.map.current?.centerOn(target.x, target.y, target.zoom);
+          }}
+        />
+      </Show>
+    </>
+  );
 }
 
 export default function App() {
@@ -256,6 +194,7 @@ export default function App() {
   let fileInput: HTMLInputElement | undefined;
   const [showAbout, setShowAbout] = createSignal(false);
   const [showFeed, setShowFeed] = createSignal(false);
+  const [showHot, setShowHot] = createSignal(false);
 
   const sse = new SseClient(sseConfig(map, store));
 
@@ -320,39 +259,30 @@ export default function App() {
         onToggleFeed={() => {
           setShowFeed(!showFeed());
         }}
+        onToggleHot={() => {
+          setShowHot(!showHot());
+        }}
       />
 
-      <Show when={showFeed()}>
-        <FeedPanel
-          client={client}
-          onClose={() => {
-            setShowFeed(false);
-          }}
-          onJump={(place) => {
-            jumpToPlacement(map, store, place);
-          }}
-        />
-      </Show>
+      <WorldPanels
+        client={client}
+        map={map}
+        store={store}
+        showFeed={showFeed()}
+        showHot={showHot()}
+        closeFeed={() => {
+          setShowFeed(false);
+        }}
+        closeHot={() => {
+          setShowHot(false);
+        }}
+      />
 
-      <div class="footer-chip">
-        <button
-          class="linkish"
-          type="button"
-          onClick={() => {
-            setShowAbout(true);
-          }}
-        >
-          About
-        </button>
-        <span aria-hidden="true">·</span>
-        <a
-          href="https://github.com/vreid/idol-appreciation.club"
-          target="_blank"
-          rel="noreferrer"
-        >
-          GitHub
-        </a>
-      </div>
+      <FooterChip
+        onAbout={() => {
+          setShowAbout(true);
+        }}
+      />
 
       <PlacePanel store={store} />
       <Toasts toasts={store.toasts} onDismiss={store.dismissToast} />

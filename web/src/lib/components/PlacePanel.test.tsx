@@ -40,6 +40,9 @@ function makeClient(): ApiClient {
       Promise.resolve({ stack: [], total: 0, truncated: false }),
     ),
     feed: vi.fn(() => Promise.resolve({ items: [], next_before: null })),
+    hot: vi.fn(() =>
+      Promise.resolve({ window_hours: 24, total: 0, cells: [] }),
+    ),
   };
 }
 

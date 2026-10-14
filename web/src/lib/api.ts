@@ -13,6 +13,7 @@ import type {
   CenterInfo,
   DigStack,
   Feed,
+  Hot,
   Me,
   PendingAccount,
   Placement,
@@ -24,6 +25,7 @@ import {
   centerInfoSchema,
   digStackSchema,
   feedSchema,
+  hotSchema,
   meSchema,
   pendingAccountsSchema,
   placementsNearSchema,
@@ -39,6 +41,8 @@ export type {
   DigStack,
   Feed,
   FeedEntry,
+  Hot,
+  HotCell,
   Me,
   PendingAccount,
   Placement,
@@ -101,6 +105,8 @@ export interface ApiClient {
     before?: number;
     limit?: number;
   }) => Promise<Feed>;
+  /** Busiest z6 regions over a recent window (hottest first). */
+  hot: (opts: { window?: number; limit?: number }) => Promise<Hot>;
   removePlacement: (placementId: string) => Promise<void>;
   pendingAccounts: () => Promise<PendingAccount[]>;
   approveAccount: (username: string) => Promise<void>;
@@ -216,6 +222,26 @@ function feedQuery(opts: {
   }
   const qs = query.toString();
   return qs ? `?${qs}` : "";
+}
+
+/** GET /api/hot — busiest z6 cells over a recent window. */
+async function fetchHot(
+  request: RequestFn,
+  opts: { window?: number; limit?: number },
+): Promise<Hot> {
+  const query = new URLSearchParams();
+  if (opts.window !== undefined) {
+    query.set("window", String(opts.window));
+  }
+  if (opts.limit !== undefined) {
+    query.set("limit", String(opts.limit));
+  }
+  const qs = query.toString();
+  return parseOk(
+    hotSchema,
+    await request(`/api/hot${qs ? `?${qs}` : ""}`),
+    "hot",
+  );
 }
 
 /** GET /api/feed — the newest placements, newest-first. */
@@ -339,5 +365,6 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
     },
     updateTags: (placementId, tags) => putTags(request, placementId, tags),
     feed: (opts) => fetchFeed(request, opts),
+    hot: (opts) => fetchHot(request, opts),
   };
 }

@@ -26,34 +26,6 @@ output "node_count" {
   value       = upcloud_kubernetes_node_group.this.node_count
 }
 
-output "pg_host" {
-  description = "Managed PostgreSQL primary host."
-  value       = upcloud_managed_database_postgresql.this.service_host
-}
-
-output "pg_port" {
-  description = "Managed PostgreSQL port."
-  value       = upcloud_managed_database_postgresql.this.service_port
-}
-
-output "pg_admin_uri" {
-  description = "Admin connection URI (root user, keep private)."
-  value       = upcloud_managed_database_postgresql.this.service_uri
-  sensitive   = true
-}
-
-output "app_database_uri" {
-  description = "Application DATABASE_URL (app user on the app database)."
-  value = format(
-    "postgres://%s:%s@%s:%s/%s?sslmode=require",
-    upcloud_managed_database_user.app.username,
-    upcloud_managed_database_user.app.password,
-    upcloud_managed_database_postgresql.this.service_host,
-    upcloud_managed_database_postgresql.this.service_port,
-    upcloud_managed_database_logical_database.app.name,
-  )
-  sensitive = true
-}
 
 output "s3_endpoint" {
   description = "Public S3 endpoint of the object storage service."

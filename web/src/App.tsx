@@ -229,7 +229,11 @@ export default function App() {
 
   return (
     <>
-      <div class="map-root" ref={map.el}>
+      <div class="map-root" ref={map.el} />
+
+      {/* Anchored overlays live OUTSIDE the Leaflet container: inside it,
+          every panel click also fires the map's click handler. */}
+      <div class="panel-layer">
         <PlaceDetail
           store={store}
           container={map.el}

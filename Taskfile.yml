@@ -89,7 +89,7 @@ tasks:
         echo "tagged $next (${last:-none} -> $next)"
 
   image:prune:
-    desc: GHCR retention — keep main + last 10 vX.Y.Z tags per package; never prune digests pinned by images.lock.json
+    desc: GHCR retention — keep main, buildcache + last 10 vX.Y.Z tags per package; never prune digests pinned by images.lock.json
     env:
       GH_TOKEN: '{{.GH_TOKEN | default ""}}'
     cmds:
@@ -112,7 +112,12 @@ tasks:
           for t in "${tags[@]}"; do digests["$t"]="$(crane digest "$repo:$t")"; done
           mapfile -t keep_ver_tags < <(printf '%s\n' "${tags[@]}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n "$keep_ver")
           declare -A keep=()
-          for t in main "${keep_ver_tags[@]}"; do keep["${digests[$t]}"]=1; done
+          # buildcache = the BuildKit layer cache images.yml exports (absent
+          # until the first cached build, hence the guard).
+          for t in main buildcache "${keep_ver_tags[@]}"; do
+            d="${digests[$t]:-}"
+            if [ -n "$d" ]; then keep["$d"]=1; fi
+          done
           keep["$lock_digest"]=1
           kept=0; pruned=0
           for t in "${tags[@]}"; do
@@ -341,6 +346,16 @@ tasks:
         if [ -n "${SEMVER:-}" ]; then tags+=("${BACKEND_IMAGE%:*}:$SEMVER"); fi
         args=()
         for t in "${tags[@]}"; do args+=(-t "$t"); done
+        # BUILD_CACHE_REF (images.yml only): import/export the BuildKit layer
+        # cache through the registry so the cargo-chef dependency layer
+        # survives ephemeral runners. BUILD_TREE labels the image with its
+        # build-context tree so images.yml can reuse it instead of rebuilding.
+        if [ -n "${BUILD_CACHE_REF:-}" ]; then
+          args+=(--cache-from "type=registry,ref=$BUILD_CACHE_REF" \
+                 --cache-to "type=registry,ref=$BUILD_CACHE_REF,mode=max")
+        fi
+        if [ -n "${BUILD_TREE:-}" ]; then args+=(--label "club.idol.build.tree=$BUILD_TREE"); fi
+        if [ -n "${GITHUB_SHA:-}" ]; then args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA"); fi
         docker buildx build --platform linux/amd64 --push "${args[@]}" \
           --metadata-file /tmp/backend-image-metadata.json .
         jq -r '."containerimage.digest"' /tmp/backend-image-metadata.json
@@ -355,6 +370,13 @@ tasks:
         if [ -n "${SEMVER:-}" ]; then tags+=("${WEB_IMAGE%:*}:$SEMVER"); fi
         args=()
         for t in "${tags[@]}"; do args+=(-t "$t"); done
+        # Same opt-in registry cache + reuse labels as image:backend.
+        if [ -n "${BUILD_CACHE_REF:-}" ]; then
+          args+=(--cache-from "type=registry,ref=$BUILD_CACHE_REF" \
+                 --cache-to "type=registry,ref=$BUILD_CACHE_REF,mode=max")
+        fi
+        if [ -n "${BUILD_TREE:-}" ]; then args+=(--label "club.idol.build.tree=$BUILD_TREE"); fi
+        if [ -n "${GITHUB_SHA:-}" ]; then args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA"); fi
         docker buildx build --platform linux/amd64 --push "${args[@]}" \
           -f web/Dockerfile \
           --metadata-file /tmp/web-image-metadata.json .
@@ -401,7 +423,12 @@ tasks:
       - |
         set -euo pipefail
         cd tofu
-        tofu apply -auto-approve -refresh-only -input=false || true
+        # Quiet on purpose: this repo's Actions logs are public, and the
+        # refresh lists every resource id (including the S3 access key id).
+        # Non-fatal as before; only error lines are surfaced.
+        tofu apply -auto-approve -refresh-only -input=false -no-color > /tmp/tofu-refresh.log 2>&1 \
+          && echo "tofu refresh-only: $(grep -E '^Apply complete' /tmp/tofu-refresh.log || echo done)" \
+          || { echo "tofu refresh-only failed (non-fatal):" >&2; grep -E '^(│ )?Error' /tmp/tofu-refresh.log >&2 || true; }
       - |
         set -euo pipefail
         cd tofu
@@ -413,7 +440,7 @@ tasks:
           if [ -n "$ep" ] && [ "$ep" != "null" ]; then
             break
           fi
-          tofu apply -auto-approve -refresh-only -input=false || true
+          tofu apply -auto-approve -refresh-only -input=false -no-color > /tmp/tofu-refresh.log 2>&1 || true
           sleep 20
           i=$((i + 1))
         done
@@ -468,10 +495,17 @@ tasks:
         # exactly the state that must rotate. Fall back to the secret when
         # no pod is up yet (fresh installs).
         if kubectl -n idol get secret app-env > /dev/null 2>&1; then
-          ak="$(kubectl -n idol exec deployment/backend -- printenv S3_ACCESS_KEY_ID 2>/dev/null || true)"
-          sk="$(kubectl -n idol exec deployment/backend -- printenv S3_SECRET_ACCESS_KEY 2>/dev/null || true)"
-          pep="$(kubectl -n idol exec deployment/backend -- printenv S3_ENDPOINT 2>/dev/null || true)"
-          pbucket="$(kubectl -n idol exec deployment/backend -- printenv S3_BUCKET 2>/dev/null || true)"
+          # One exec instead of four round trips: printenv prints the values
+          # in argument order and exits non-zero if any is unset — then all
+          # four stay empty and the secret fallback below applies, exactly
+          # as when any single printenv came back empty.
+          ak=""; sk=""; pep=""; pbucket=""
+          if podenv="$(kubectl -n idol exec deployment/backend -- printenv S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY S3_ENDPOINT S3_BUCKET 2>/dev/null)"; then
+            ak="$(printf '%s\n' "$podenv" | sed -n 1p)"
+            sk="$(printf '%s\n' "$podenv" | sed -n 2p)"
+            pep="$(printf '%s\n' "$podenv" | sed -n 3p)"
+            pbucket="$(printf '%s\n' "$podenv" | sed -n 4p)"
+          fi
           if [ -z "$ak" ] || [ -z "$sk" ] || [ -z "$pep" ] || [ -z "$pbucket" ]; then
             ak="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ACCESS_KEY_ID}' | base64 -d)"
             sk="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_SECRET_ACCESS_KEY}' | base64 -d)"

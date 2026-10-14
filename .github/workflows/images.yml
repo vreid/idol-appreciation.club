@@ -29,17 +29,25 @@ concurrency:
 #                         record in images.lock.json via auto-merge PR.
 # deploy.yml consumes images.lock.json only; it builds nothing and never
 # touches the registry.
+#
+# One build per tree: a release tag and the `main` push for the same commit
+# fire concurrently, and a second merge can land before the first lock PR
+# does. Each run waits for earlier images runs of its commit, then reuses
+# any image (current `main` or the lock pin) whose build-context tree label
+# matches instead of rebuilding it. Builds import/export the BuildKit layer
+# cache via `<package>:buildcache` (cargo-chef dependency layer included).
 jobs:
   images:
     name: build images (${{ startsWith(github.ref, 'refs/tags/') && 'release tag' || 'main rolling' }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
+      actions: read # list earlier images runs of the same commit
       contents: read
       packages: write
     outputs:
-      backend: ${{ steps.backend.outputs.digest }}
-      web: ${{ steps.web.outputs.digest }}
+      backend: ${{ steps.backend.outputs.digest || steps.reuse.outputs.backend_digest }}
+      web: ${{ steps.web.outputs.digest || steps.reuse.outputs.web_digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -85,19 +93,83 @@ jobs:
         with:
           cache-binary: false
 
+      # Serialize runs of the same commit (tag push + main push): the
+      # earliest run builds, later runs wait and then reuse its images.
+      # Ordering by run id means no two runs ever wait on each other.
+      # Best effort: an API error or the 15 min cap just stops waiting.
+      - name: wait for earlier images runs of this commit
+        if: steps.mode.outputs.backend == 'true' || steps.mode.outputs.web == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            n="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/images.yml/runs?head_sha=${GITHUB_SHA}&per_page=50" \
+              --jq "[.workflow_runs[] | select(.id < ${GITHUB_RUN_ID} and .status != \"completed\")] | length" \
+              2>/dev/null || echo 0)"
+            [ "$n" = "0" ] && break
+            echo "waiting for $n earlier images run(s) of ${GITHUB_SHA:0:7} ($i/60)"
+            sleep 15
+          done
+
+      # Reuse instead of rebuild: an image whose club.idol.build.tree label
+      # equals this checkout's build-context tree was built from identical
+      # inputs. Candidates: the current `main` image and the lock pin. Any
+      # lookup failure means "not reusable" and falls through to a build.
+      - name: reuse images already built from this tree
+        id: reuse
+        env:
+          TAG: ${{ steps.mode.outputs.tag }}
+          WANT_BACKEND: ${{ steps.mode.outputs.backend }}
+          WANT_WEB: ${{ steps.mode.outputs.web }}
+        run: |
+          set -euo pipefail
+          backend_tree="$(git rev-parse HEAD:backend)"
+          web_tree="$(git rev-parse HEAD:web)-$(git rev-parse HEAD:contract)"
+          echo "backend_tree=$backend_tree" >> "$GITHUB_OUTPUT"
+          echo "web_tree=$web_tree" >> "$GITHUB_OUTPUT"
+          find_reusable() { # $1 = package, $2 = tree; prints a matching digest
+            local repo="ghcr.io/vreid/idol-appreciation.club-$1" pin ref d label
+            pin="$(jq -r ".$1.digest // empty" images.lock.json)"
+            for ref in "$repo:main" ${pin:+"$repo@$pin"}; do
+              d="$(crane digest "$ref" 2>/dev/null)" || continue
+              label="$(crane config --platform linux/amd64 "$repo@$d" 2>/dev/null \
+                | jq -r '.config.Labels["club.idol.build.tree"] // empty' 2>/dev/null)" || continue
+              if [ -n "$label" ] && [ "$label" = "$2" ]; then echo "$d"; return 0; fi
+            done
+          }
+          for pkg in backend web; do
+            if [ "$pkg" = backend ]; then want="$WANT_BACKEND" tree="$backend_tree"; else want="$WANT_WEB" tree="$web_tree"; fi
+            build=false
+            if [ "$want" = "true" ]; then
+              d="$(find_reusable "$pkg" "$tree" || true)"
+              if [ -n "$d" ] && crane tag "ghcr.io/vreid/idol-appreciation.club-$pkg@$d" "$TAG"; then
+                echo "${pkg}_digest=$d" >> "$GITHUB_OUTPUT"
+                echo "$pkg: reused $d (tree ${tree:0:12}), tagged $TAG"
+              else
+                build=true
+              fi
+            fi
+            echo "${pkg}_build=$build" >> "$GITHUB_OUTPUT"
+          done
+
       - name: build and push backend image
         id: backend
-        if: steps.mode.outputs.backend == 'true'
+        if: steps.reuse.outputs.backend_build == 'true'
         run: echo "digest=$(task image:backend | tail -1)" >> "$GITHUB_OUTPUT"
         env:
           BACKEND_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:${{ steps.mode.outputs.tag }}
+          BUILD_CACHE_REF: ghcr.io/vreid/idol-appreciation.club-backend:buildcache
+          BUILD_TREE: ${{ steps.reuse.outputs.backend_tree }}
 
       - name: build and push web image
         id: web
-        if: steps.mode.outputs.web == 'true'
+        if: steps.reuse.outputs.web_build == 'true'
         run: echo "digest=$(task image:web | tail -1)" >> "$GITHUB_OUTPUT"
         env:
           WEB_IMAGE: ghcr.io/vreid/idol-appreciation.club-web:${{ steps.mode.outputs.tag }}
+          BUILD_CACHE_REF: ghcr.io/vreid/idol-appreciation.club-web:buildcache
+          BUILD_TREE: ${{ steps.reuse.outputs.web_tree }}
 
       # Release tag with NO component drift: the version's images are the
       # current lock digests — alias them with the version tag so every
@@ -179,6 +251,16 @@ jobs:
         if: steps.lockfile.outputs.changed == 'true'
         run: |
           set -euo pipefail
+          # Another run already recorded exactly these digests in the open
+          # lock PR (e.g. tag + main runs of one commit): re-pushing would
+          # only restart that PR's checks. Keep it current with main and stop.
+          if [ "$(gh pr view bot/image-versions --json state --jq .state 2>/dev/null || echo MISSING)" = "OPEN" ] \
+            && git fetch --quiet origin bot/image-versions \
+            && git show FETCH_HEAD:images.lock.json | cmp -s - images.lock.json; then
+            echo "open lock PR already records these digests; not re-pushing"
+            gh pr update-branch bot/image-versions || true
+            exit 0
+          fi
           git config user.name "idol-images-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B bot/image-versions

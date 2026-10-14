@@ -577,22 +577,22 @@ struct TileCtx {
 impl TileCtx {
     async fn prefetch(app: &App, z: i64, x: i64, y: i64) -> AppResult<Self> {
         let rect = tile_bounds(z, x, y);
-        // Per-chunk max live placement seq, from the rect columns (core
-        // PG — the generated bbox has no corner accessors): each
-        // placement CROSS JOIN LATERAL-expands to its full chunk span —
-        // exactly the bbox's span. Two bare generate_series in one
-        // SELECT list would ZIP to the diagonal instead of crossing.
-        let chunk_rows: Vec<(i64, i64, i64)> = sqlx::query_as(
-            "SELECT cx, cy, max(seq)
-             FROM placements p
-             CROSS JOIN LATERAL generate_series(floor(p.x / 1024.0)::bigint,
-                                                floor((p.x + p.w - 1) / 1024.0)::bigint) AS cx
-             CROSS JOIN LATERAL generate_series(floor(p.y / 1024.0)::bigint,
-                                                floor((p.y + p.h - 1) / 1024.0)::bigint) AS cy
-             WHERE p.removed_at IS NULL
-               AND p.bbox && box(point($1::float8, $2::float8),
-                                 point($3::float8, $4::float8))
-             GROUP BY cx, cy",
+        // Per-chunk max live placement seq: a PLAIN GiST-probe retrieval
+        // (Index Scan on placements_bbox_gist, ~0.1 ms for tile-sized
+        // boxes on the 51k-row prod pile), with the chunk-span expansion
+        // and per-chunk max done in Rust. Never aggregate this in SQL:
+        // `max(seq)` lets the planner pick a placements_seq_key BACKWARD
+        // scan that filters bbox row-by-row (51750 rows removed, ~150
+        // ms-1.3 s per probe — the 2026-10-14 pile-wedge shape), and a
+        // CROSS JOIN LATERAL generate_series expansion poisons the row
+        // estimate (~149M planned rows, ~1.1 s). Prod-verified plans in
+        // PR #134.
+        let rows: Vec<(i64, i64, i64, i32, i32)> = sqlx::query_as(
+            "SELECT seq, x, y, w, h
+             FROM placements
+             WHERE removed_at IS NULL
+               AND bbox && box(point($1::float8, $2::float8),
+                               point($3::float8, $4::float8))",
         )
         .bind(rect.x)
         .bind(rect.y)
@@ -600,11 +600,24 @@ impl TileCtx {
         .bind(rect.y + rect.h - 1)
         .fetch_all(&app.pool)
         .await?;
+        let mut chunk_seqs: HashMap<(i64, i64), i64> = HashMap::new();
+        for (seq, x, y, w, h) in rows {
+            let (w, h) = (i64::from(w), i64::from(h));
+            let cx0 = x / CHUNK_PX;
+            let cx1 = (x + w - 1) / CHUNK_PX;
+            let cy0 = y / CHUNK_PX;
+            let cy1 = (y + h - 1) / CHUNK_PX;
+            for cx in cx0..=cx1 {
+                for cy in cy0..=cy1 {
+                    let slot = chunk_seqs.entry((cx, cy)).or_default();
+                    if seq > *slot {
+                        *slot = seq;
+                    }
+                }
+            }
+        }
         Ok(Self {
-            chunk_seqs: chunk_rows
-                .into_iter()
-                .map(|(cx, cy, s)| ((cx, cy), s))
-                .collect(),
+            chunk_seqs,
             stored_levels: StdMutex::new(HashMap::new()),
             node_seqs: StdMutex::new(HashMap::new()),
             root_z: z,

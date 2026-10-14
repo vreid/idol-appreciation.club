@@ -1758,6 +1758,7 @@ async fn read_sse_until(addr: std::net::SocketAddr, needle: &str) -> Option<Stri
 /// exposition must surface all five series.
 #[tokio::test(flavor = "multi_thread")]
 async fn import_metrics_move_on_batch() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "metrics-importer").await; // first account = admin
 
@@ -1855,6 +1856,7 @@ async fn import_metrics_move_on_batch() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_batch_chunk_grouping_and_sse() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "importer").await; // first account = admin
 
@@ -1976,6 +1978,7 @@ async fn import_batch_chunk_grouping_and_sse() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_rotated_corner_entry_and_prewarm() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "corner").await;
     let maps = preupload(&server, &admin, &[png(32, 32)]).await;
@@ -2007,6 +2010,7 @@ async fn import_rotated_corner_entry_and_prewarm() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_resolves_derivative_from_source_sha() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "resolver").await;
     let image = png(48, 48);
@@ -2034,6 +2038,7 @@ async fn import_resolves_derivative_from_source_sha() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_rejects_bad_manifests() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "gatekeeper").await;
     let other = register(&server, "pleb").await;

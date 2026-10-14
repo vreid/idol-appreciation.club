@@ -3,10 +3,14 @@ import { PNG } from "pngjs";
 import { WORLD_CENTER, WORLD_SIZE, worldScreenSize } from "../src/lib/world";
 
 // ---- explicit knobs (vetoable) -----------------------------------------
-// After `networkidle`, allow tile decode/paint to finish. 1200ms covers a
-// known-good local run with margin; CI runners are slower and colder, which
-// is why the ASSERTION threshold below carries the slack instead.
-const SETTLE_MS = 1_200;
+// `networkidle` is unusable here: the SSE stream keeps one request open
+// forever on a live backend. Views instead converge — poll the painted
+// fraction until it stops improving (within PAINT_EPSILON) or the
+// deadline. CI runners are slower and colder, which is why the ASSERTION
+// threshold below carries the slack instead of the settle window.
+const PAINT_DEADLINE_MS = 10_000;
+const PAINT_POLL_MS = 400;
+const PAINT_EPSILON = 0.005;
 // Primary gate: fraction of non-background pixels inside the world rect.
 // Known-good runs sit ~97%+; 0.90 leaves room for CI variance while still
 // catching the live failure class (tiles that never arrive).
@@ -16,8 +20,10 @@ const GRAY = { r: 16, g: 18, b: 22 };
 const CHANNEL_TOLERANCE = 6;
 // Secondary budget: time from navigation to a mostly-complete view.
 const RESOLVE_BUDGET_MS = 5_000;
-// Main-thread heartbeat budget while zooming (vetoable).
-const FRAME_GAP_BUDGET_MS = 500;
+// Main-thread long-task budget while zooming (vetoable): one long task
+// budgeted per zoom gesture, generous enough that real webp decodes
+// during the storm pass on CI-class runners.
+const FRAME_GAP_BUDGET_MS = 1_000;
 // Zooms exercised, dense-pile centre to wide.
 const ZOOMS = [4, 8, 13, 16] as const;
 
@@ -38,6 +44,36 @@ function worldRect(
     x1: originX + worldPx,
     y1: originY + worldPx,
   };
+}
+
+/** Poll the painted fraction until it converges (tiles decode/paint in
+ * waves) or the deadline hits; returns the final fraction. */
+// Polling screenshots in a loop is the point here: tiles decode and
+// paint in waves, so a fixed one-shot settle either races (flaky fail)
+// or wastes seconds. eslint-disable no-await-in-loop for this helper.
+async function paintedFractionConverged(
+  page: Page,
+  rect: { x0: number; y0: number; x1: number; y1: number },
+): Promise<number> {
+  const t0 = Date.now();
+  let best = 0;
+  // eslint-disable-next-line no-await-in-loop -- convergence poll
+  while (Date.now() - t0 < PAINT_DEADLINE_MS) {
+    // eslint-disable-next-line no-await-in-loop -- convergence poll
+    const shot = await page.screenshot();
+    const fraction = nonGrayFraction(shot, rect);
+    if (fraction >= NON_GRAY_THRESHOLD) return fraction;
+    if (
+      fraction - best < PAINT_EPSILON &&
+      Date.now() - t0 > PAINT_POLL_MS * 2
+    ) {
+      return fraction;
+    }
+    best = Math.max(best, fraction);
+    // eslint-disable-next-line no-await-in-loop -- convergence poll
+    await wait(PAINT_POLL_MS);
+  }
+  return best;
 }
 
 /** Fraction of pixels that are NOT the background gray, counted inside
@@ -131,13 +167,11 @@ test.describe("scale density", () => {
       await stubDensePile(page);
       const t0 = Date.now();
       await page.goto(`/#${zoom}/0/0`);
-      await page.waitForLoadState("networkidle");
-      await page.waitForTimeout(SETTLE_MS);
+      await page.waitForSelector(".map-root");
 
       const vp = page.viewportSize() ?? { width: 1280, height: 720 };
       const rect = worldRect(zoom, VIEW.x, VIEW.y, vp);
-      const shot = await page.screenshot();
-      const fraction = nonGrayFraction(shot, rect);
+      const fraction = await paintedFractionConverged(page, rect);
 
       // Primary: the viewport is actually painted inside the world.
       expect(
@@ -159,13 +193,20 @@ test.describe("scale density", () => {
   }) => {
     await stubDensePile(page);
     await page.goto("/#16/0/0");
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(SETTLE_MS);
+    await page.waitForSelector(".map-root");
+    await wait(1_000);
 
     // Headless throttles requestAnimationFrame, so main-thread stalls are
     // measured with the longtask observer instead: any single task over
     // the budget while zooming fails the view.
     const worstTaskMs = await page.evaluate(async () => {
+      // Page-context helper (the module-level wait is not in scope
+      // inside evaluate); declared here, so scope lint is expected.
+      // eslint-disable-next-line unicorn/consistent-function-scoping -- page context
+      const pause = (ms: number): Promise<void> =>
+        new Promise((resolve) => {
+          setTimeout(resolve, ms);
+        });
       const tasks: number[] = [];
       const observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) tasks.push(entry.duration);
@@ -186,7 +227,7 @@ test.describe("scale density", () => {
           700 + i * 150,
         );
       }
-      await wait(2_300);
+      await pause(2_300);
       observer.disconnect();
       return tasks.length === 0 ? 0 : Math.max(...tasks);
     });

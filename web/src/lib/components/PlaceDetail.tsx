@@ -58,9 +58,13 @@ function wirePanelKeys(actions: () => PlaceDetailActions): void {
       if (event.key === "ArrowLeft") actions().onStepDig(-1);
       if (event.key === "ArrowRight") actions().onStepDig(1);
     };
-    window.addEventListener("keydown", onKey);
+    // Capture phase: Leaflet's container-level keyboard handling (map
+    // panning) sees keydown first once the map container holds focus and
+    // stops the event before it can bubble back out to window — the
+    // panel's arrows would never fire. Capturing at the top wins.
+    window.addEventListener("keydown", onKey, true);
     onCleanup(() => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
     });
   });
 }

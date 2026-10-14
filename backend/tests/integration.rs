@@ -1302,6 +1302,7 @@ async fn two_instance_composite_no_lost_update() {
     let mk_cfg = || Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         database_url: db_url.clone(),
+        database_pool_max: 30,
         s3_endpoint: Some(format!("file://{}", store_dir.display())),
         s3_bucket: "test-bucket".to_string(),
         s3_access_key_id: None,
@@ -1397,6 +1398,7 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
     let mk_cfg = || Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         database_url: db_url.clone(),
+        database_pool_max: 30,
         s3_endpoint: Some(format!("file://{}", store_dir.display())),
         s3_bucket: "test-bucket".to_string(),
         s3_access_key_id: None,

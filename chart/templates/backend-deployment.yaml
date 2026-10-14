@@ -62,6 +62,8 @@ spec:
           env:
             - name: REGISTRATION_APPROVAL_REQUIRED
               value: {{ .Values.backend.registrationApprovalRequired | quote }}
+            - name: DATABASE_POOL_MAX
+              value: "30"
           envFrom:
             - secretRef:
                 name: app-env

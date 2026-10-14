@@ -25,6 +25,9 @@ function makeClient(
     pendingAccounts: vi.fn(() => Promise.resolve([])),
     approveAccount: vi.fn(() => Promise.resolve()),
     feed: vi.fn(() => Promise.resolve({ items: [], next_before: null })),
+    dig: vi.fn(() =>
+      Promise.resolve({ stack: [], total: 0, truncated: false }),
+    ),
     me: vi.fn(() => Promise.resolve(null)),
     place: vi.fn((req: PlaceRequest) => {
       placeCalls.push({ x: req.x, y: req.y, size: req.size });

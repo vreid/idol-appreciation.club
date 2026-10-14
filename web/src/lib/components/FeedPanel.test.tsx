@@ -51,6 +51,9 @@ function makeClient(page: Feed = PAGE): ApiClient {
     removePlacement: vi.fn(),
     updateTags: vi.fn(),
     feed: vi.fn(() => Promise.resolve(page)),
+    dig: vi.fn(() =>
+      Promise.resolve({ stack: [], total: 0, truncated: false }),
+    ),
     hot: vi.fn(() =>
       Promise.resolve({ window_hours: 24, total: 0, cells: [] }),
     ),

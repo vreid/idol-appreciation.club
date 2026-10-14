@@ -45,6 +45,9 @@ function makeClient(): ApiClient {
     pendingAccounts: vi.fn(() => Promise.resolve([])),
     approveAccount: vi.fn(() => Promise.resolve()),
     feed: vi.fn(() => Promise.resolve({ items: [], next_before: null })),
+    dig: vi.fn(() =>
+      Promise.resolve({ stack: [], total: 0, truncated: false }),
+    ),
     hot: vi.fn(() =>
       Promise.resolve({ window_hours: 24, total: 0, cells: [] }),
     ),
@@ -70,6 +73,9 @@ function makeActions(
     onAuthPrompt: vi.fn(),
     onUpdateTags: vi.fn(() => Promise.resolve()),
     onDeselect: vi.fn(() => store?.deselectPlace()),
+    onStepDig: vi.fn((delta: number) => {
+      store?.stepDig(delta);
+    }),
     ...overrides,
   };
 }
@@ -170,6 +176,77 @@ describe("PlaceDetail", () => {
     expect(calls).toBeGreaterThan(0);
     bump(1);
     expect(geometry.mock.calls.length).toBeGreaterThan(calls);
+  });
+});
+
+function digClient(stack: Placement[]): ApiClient {
+  const client = makeClient();
+  client.dig = vi.fn(() =>
+    Promise.resolve({
+      stack: stack.map((p, i) => ({ ...p, depth: i + 1 })),
+      total: stack.length,
+      truncated: false,
+    }),
+  );
+  return client;
+}
+
+function stratum(id: string, username: string): Placement {
+  return { ...PLACEMENT, id, username };
+}
+
+describe("PlaceDetail depth steppers", () => {
+  it("cycles via the stepper buttons", async () => {
+    const store = makeStore(
+      digClient([
+        stratum("p1", "wren"),
+        stratum("p2", "noor"),
+        stratum("p3", "sable"),
+      ]),
+    );
+    store.selectPlace(stratum("p1", "wren"), { x: 10, y: 10 });
+    mount(store);
+    await waitFor(() => {
+      expect(screen.getByText("1 of 3")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByLabelText("Next stratum"));
+    await waitFor(() => {
+      expect(screen.getByText("2 of 3")).toBeTruthy();
+    });
+    expect(screen.getByText("@noor")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Previous stratum"));
+    await waitFor(() => {
+      expect(screen.getByText("1 of 3")).toBeTruthy();
+    });
+  });
+
+  it("hides the steppers for single-stratum piles", async () => {
+    const single = makeStore(digClient([stratum("p1", "wren")]));
+    single.selectPlace(stratum("p1", "wren"), { x: 10, y: 10 });
+    mount(single);
+    await waitFor(() => {
+      expect(screen.getByText("@wren")).toBeTruthy();
+    });
+    expect(screen.queryByText("1 of 1")).toBeNull();
+  });
+
+  it("steps with the keyboard and leaves inputs alone", async () => {
+    const store = makeStore(
+      digClient([stratum("p1", "wren"), stratum("p2", "noor")]),
+    );
+    store.selectPlace(stratum("p1", "wren"), { x: 10, y: 10 });
+    mount(store);
+    await waitFor(() => {
+      expect(screen.getByText("1 of 2")).toBeTruthy();
+    });
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    await waitFor(() => {
+      expect(screen.getByText("2 of 2")).toBeTruthy();
+    });
+    fireEvent.keyDown(window, { key: "ArrowLeft" });
+    await waitFor(() => {
+      expect(screen.getByText("1 of 2")).toBeTruthy();
+    });
   });
 });
 

@@ -82,10 +82,43 @@ clusterAutoscaler:
   clusterId: ""
   # worker node group managed by tofu (tofu/ var.node_group_name).
   nodeGroup: default
-  minSize: 1
-  maxSize: 2
+  minSize: 3
+  maxSize: 4
   scaleDownEnabled: true
   # Digest pins tag v1.29.5 (verified anonymously pullable from GHCR,
   # 2026-10-13); a mutable tag is not acceptable for a component that
   # adds and removes nodes.
   image: ghcr.io/upcloudltd/autoscaler@sha256:54aa2662c57e58961080436bb27e70c3a9670ec582001ffd36a6573649de35c5
+
+# CloudNativePG (migration off the managed 1-CPU Postgres; staged).
+# Operator install is NOT chart-managed: the pinned upstream manifest
+# lives at chart/cnpg/cnpg-operator-1.29.3.yaml and is applied by
+# `task cnpg:operator:install` (one-time bootstrap with operator
+# credentials, not a deploy-side step). The Cluster CR below ships in
+# the chart so its shape is lint-gated, but stays disabled until the
+# cutover flips it; kubeconform skips CRD instances (no offline
+# schema) — the install task dry-runs server-side instead.
+cnpg:
+  enabled: false
+  # Cluster CR name; the -rw/-ro/-r services derive from it.
+  clusterName: idol-db
+  # Digest pin resolved from ghcr.io/cloudnative-pg/postgresql:16-bookworm
+  # (HEAD manifest via GHCR API, 2026-10-14). Mutable tags are not
+  # acceptable for the database.
+  imageName: ghcr.io/cloudnative-pg/postgresql@sha256:bf0b0ec764b26fbb9136476ed29ad92abdc1277d0465194b8bf420f0116b974d
+  # Created once by `task cnpg:cluster:secret` (openssl rand, operator
+  # creds) — never minted deploy-side.
+  superuserSecretName: cnpg-pg-superuser
+  appDatabase: idol-canvas
+  storage:
+    # Chart-owned class (cnpg-storageclass.yaml): Delete-reclaim like
+    # caddy-data, so recreate cycles never orphan disks again.
+    storageClass: idol-pg-data
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1.5Gi
+    limits:
+      cpu: "2"
+      memory: 3Gi

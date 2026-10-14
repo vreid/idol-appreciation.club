@@ -324,26 +324,26 @@ independently. Knobs: `IMPORT_BLOCK_ENTRIES` (500), `IMPORT_GROUP_CONCURRENCY`
 
 Client driver (`import-bulk.sh`):
 
-- **Chunking**: default `--chunk 750`, sized so one POST fits the 3600 s
-  client timeout at the observed live rate (1.7 img/s single client,
-  ~2.5 img/s with 4 concurrent clients — real in-region S3, latency-bound;
-  the node sits at ~0.8/4 CPUs, so parallel clients scale sublinearly).
-  Chunk size is **fixed per run**: it feeds the entry ids, so changing
-  `--chunk` mid-run re-places the same coordinates — use a new `--tag`.
-- **Retry**: a chunk POST is retried up to 4× with backoff (safe: the
-  server commits per block and entry identity is `uuid5(batch_id, entry)`,
-  so a timed-out-then-retried chunk can never double-place).
+- **Chunking**: default `--chunk 750`, sized so one POST fits the 3600 s client
+  timeout at the observed live rate (1.7 img/s single client, ~2.5 img/s with 4
+  concurrent clients — real in-region S3, latency-bound; the node sits at ~0.8/4
+  CPUs, so parallel clients scale sublinearly). Chunk size is **fixed per run**:
+  it feeds the entry ids, so changing `--chunk` mid-run re-places the same
+  coordinates — use a new `--tag`.
+- **Retry**: a chunk POST is retried up to 4× with backoff (safe: the server
+  commits per block and entry identity is `uuid5(batch_id, entry)`, so a
+  timed-out-then-retried chunk can never double-place).
 - **Preupload cache**: `(sha256,size) → response map` is kept in
   `/tmp/import-bulk-preupload-cache-<host>.json` (content-addressed, shared
-  across tags, keyed per server). Re-runs only upload sources the server
-  has never seen — the server dedupes by source sha regardless; the cache
-  saves the 100-file multipart and ~3.3 s/source of server-side decode per
-  preupload. After a full wipe/re-seed the cached derivative objects are
-  gone: delete the cache file to force a full re-upload.
-- **Live numbers** (production, 51,487 placements, radius 12000): ~2.49
-  img/s sustained over 2 h20m with 4 concurrent clients; single client
-  ~1.7 img/s; the wall is per-entry chunk-canvas S3 round-trips + composite
-  serialization, not CPU.
+  across tags, keyed per server). Re-runs only upload sources the server has
+  never seen — the server dedupes by source sha regardless; the cache saves the
+  100-file multipart and ~3.3 s/source of server-side decode per preupload.
+  After a full wipe/re-seed the cached derivative objects are gone: delete the
+  cache file to force a full re-upload.
+- **Live numbers** (production, 51,487 placements, radius 12000): ~2.49 img/s
+  sustained over 2 h20m with 4 concurrent clients; single client ~1.7 img/s; the
+  wall is per-entry chunk-canvas S3 round-trips + composite serialization, not
+  CPU.
 
 Metrics (see Metrics): `import_batches_total`, `import_images_total`,
 `import_chunk_writes_total`, `import_duration_seconds`, and the derived gauge

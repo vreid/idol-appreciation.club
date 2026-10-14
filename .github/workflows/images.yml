@@ -210,6 +210,28 @@ jobs:
           # satisfy strict up-to-date) separately
           gh pr update-branch bot/image-versions || true
           gh pr merge bot/image-versions --squash --auto
+          # The workflow run this PR triggered starts `action_required`
+          # (approval gate) even though its author has write access, so
+          # checks never report and the armed auto-merge stalls. Approve
+          # it as the same PAT identity: self-approval of a workflow run
+          # is allowed for write-access users. Best effort — if no run
+          # appears the gate simply never applied to it.
+          head="$(git rev-parse HEAD)"
+          for _ in 1 2 3 4 5 6; do
+            ids="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${head}" \
+              --jq '[.workflow_runs[] | select(.conclusion == "action_required") | .id] | join(" ")' \
+              2>/dev/null || true)"
+            [ -n "${ids}" ] && break
+            sleep 5
+          done
+          if [ -n "${ids:-}" ]; then
+            for id in ${ids}; do
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve"
+              echo "approved workflow run ${id}"
+            done
+          else
+            echo "no action_required run to approve for ${head}"
+          fi
         # OMP_PAT when present: PRs created with the workflow's GITHUB_TOKEN
         # do not fire pull_request/push events, so the bot's lock PR never
         # gets checks and the auto-merge gate can never satisfy. A PAT

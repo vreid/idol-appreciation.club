@@ -100,7 +100,7 @@ impl Config {
                 .parse()
                 .expect("invalid LISTEN_ADDR"),
             database_url: env_req("DATABASE_URL"),
-            database_pool_max: env_or("DATABASE_POOL_MAX", "30")
+            database_pool_max: env_or("DATABASE_POOL_MAX", "15")
                 .parse()
                 .expect("invalid DATABASE_POOL_MAX"),
             s3_endpoint: std::env::var("S3_ENDPOINT").ok(),
@@ -163,6 +163,21 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::parse_bool;
+
+    /// The env var is the deployment's per-replica pool lever (the chart
+    /// sets it); if the pool size ever stops reading it, this fails.
+    #[test]
+    fn database_pool_max_env_override() {
+        std::env::set_var("DATABASE_URL", "postgres://u:p@localhost/db");
+        std::env::set_var("S3_BUCKET", "test-bucket");
+        std::env::set_var("SESSION_SECRET", "x".repeat(32));
+        std::env::set_var("DATABASE_POOL_MAX", "7");
+        assert_eq!(super::Config::from_env().database_pool_max, 7);
+        std::env::remove_var("DATABASE_POOL_MAX");
+        // Default matches the chart: 15/pod x 2 replicas = 30 total, under
+        // the managed instance's connection ceiling.
+        assert_eq!(super::Config::from_env().database_pool_max, 15);
+    }
 
     #[test]
     fn registration_flag_parsing() {

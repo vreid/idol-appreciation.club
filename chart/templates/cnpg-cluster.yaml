@@ -1,0 +1,46 @@
+{{- if .Values.cnpg.enabled }}
+# CloudNativePG Cluster: 3 Postgres replicas, one per worker node
+# (required pod anti-affinity; the worker floor is 3 — tofu/ var
+# .node_count, bumped by `task cnpg:node-scale`).
+#
+# CRD instances have no offline kubeconform schema; the install task
+# (`cnpg:cluster:install`) gates this with `kubectl apply --dry-run=server`
+# before the real apply.
+#
+# Bootstrap/runtime split: the superuser secret is created once by
+# `task cnpg:cluster:secret` with operator credentials; nothing here
+# mints or embeds credentials. The application role and its password are
+# re-created from the live app-env values by `task cnpg:cutover:restore`
+# after initdb, so the DATABASE_URL swap changes the host only.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.cnpg.clusterName }}
+  namespace: idol
+  labels:
+    app.kubernetes.io/part-of: idol-appreciation.club
+spec:
+  imageName: {{ .Values.cnpg.imageName }}
+  instances: 3
+  superuserSecret:
+    name: {{ .Values.cnpg.superuserSecretName }}
+  enableSuperuserAccess: false
+  bootstrap:
+    initdb:
+      database: {{ .Values.cnpg.appDatabase }}
+      # No import: the data lands via `cnpg:cutover:dump|restore`
+      # (pg_dump from the managed service while prod still serves from
+      # it; the switch is the only blip).
+  storage:
+    size: {{ .Values.cnpg.storage.size }}
+    storageClass: {{ .Values.cnpg.storage.storageClass }}
+  resources:
+    {{- toYaml .Values.cnpg.resources | nindent 4 }}
+  affinity:
+    podAntiAffinityType: required
+  postgresql:
+    parameters:
+      # Shared 4 vCPU nodes; leave headroom for the app fleet.
+      max_connections: "100"
+      shared_buffers: "512MB"
+{{- end }}

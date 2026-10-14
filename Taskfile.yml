@@ -737,10 +737,11 @@ tasks:
       - |
         set -o pipefail; set -e
         # The live app credential carries over so the DATABASE_URL swap
-        # changes the host only. Read from the running app-env secret
-        # (runtime state, not re-minted).
-        APPUSER="$(kubectl -n idol get secret app-env -o jsonpath='{.data.PGUSER}' | base64 -d)"
-        APPPW="$(kubectl -n idol get secret app-env -o jsonpath='{.data.PGPASSWORD}' | base64 -d)"
+        # changes the host only. app-env stores the URI with the creds
+        # inline (no PGUSER/PGPASSWORD keys) — parse them out.
+        OLDURL="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' | base64 -d)"
+        APPUSER="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
+        APPPW="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
         SUPPW="$(kubectl -n idol get secret cnpg-pg-superuser -o jsonpath='{.data.password}' | base64 -d)"
         test -f /tmp/idol-canvas.dump || { echo "run cnpg:cutover:dump first" >&2; exit 1; }
         kubectl -n idol delete pod cnpg-restore --ignore-not-found --force --grace-period=0 >/dev/null 2>&1 || true
@@ -778,9 +779,11 @@ tasks:
     cmds:
       - |
         set -o pipefail; set -e
-        APPUSER="$(kubectl -n idol get secret app-env -o jsonpath='{.data.PGUSER}' | base64 -d)"
-        APPPW="$(kubectl -n idol get secret app-env -o jsonpath='{.data.PGPASSWORD}' | base64 -d)"
-        NEWURL="postgresql://$APPUSER:$APPPW@idol-db-rw:5432/idol-canvas"
+        OLDURL="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' | base64 -d)"
+        APPUSER="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
+        APPPW="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
+        DBNAME="$(printf '%s' "$OLDURL" | sed -E 's#.*/([^/?]+)(\?.*)?$#\1#')"
+        NEWURL="postgresql://$APPUSER:$APPPW@idol-db-rw.idol.svc:5432/$DBNAME"
         kubectl -n idol patch secret app-env -p "{\"stringData\":{\"DATABASE_URL\":\"$NEWURL\"}}"
         kubectl -n idol rollout restart deploy/backend
         kubectl -n idol rollout status deploy/backend --timeout=300s
@@ -794,11 +797,13 @@ tasks:
         echo "health: $(curl -s https://idol-appreciation.club/api/health)"
         echo "placements-near: $(curl -s -o /dev/null -w '%{http_code}' 'https://idol-appreciation.club/api/placements/near?x=134217728&y=134217728')"
         echo "tile z16: $(curl -s -o /dev/null -w '%{http_code}' https://idol-appreciation.club/api/tiles/16/32768/32768.webp)"
-        APPUSER="$(kubectl -n idol get secret app-env -o jsonpath='{.data.PGUSER}' | base64 -d)"
-        APPPW="$(kubectl -n idol get secret app-env -o jsonpath='{.data.PGPASSWORD}' | base64 -d)"
+        OLDURL="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' | base64 -d)"
+        APPUSER="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
+        APPPW="$(printf '%s' "$OLDURL" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
+        DBNAME="$(printf '%s' "$OLDURL" | sed -E 's#.*/([^/?]+)(\?.*)?$#\1#')"
         kubectl -n idol delete pod cnpg-verify --ignore-not-found --force --grace-period=0 >/dev/null 2>&1 || true
         kubectl -n idol run cnpg-verify --restart=Never --image=postgres:16-alpine \
-          --env="PGURI=postgresql://$APPUSER:$APPPW@idol-db-rw:5432/idol-canvas" \
+          --env="PGURI=postgresql://$APPUSER:$APPPW@idol-db-rw.idol.svc:5432/$DBNAME" \
           -- sh -c 'psql "$PGURI" -t -c "SELECT '"'"'placements: '"'"' || count(*) FROM placements"'
         sleep 8; kubectl -n idol logs cnpg-verify
         kubectl -n idol delete pod cnpg-verify --force --grace-period=0 >/dev/null 2>&1

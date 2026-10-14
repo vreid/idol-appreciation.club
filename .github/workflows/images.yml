@@ -147,6 +147,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -194,13 +195,20 @@ jobs:
             echo
             echo "Squash-merges automatically once checks are green; the merge triggers deploy (images.lock.json consumer)."
           } > "$body"
-          gh pr create --head bot/image-versions --base main \
-            --title "chore(images): update digests" \
-            --body-file "$body" \
-            || echo "PR for bot/image-versions already open; branch updated in place"
+          # Fail loudly if PR creation breaks (issue: GITHUB_TOKEN lacked
+          # pull-requests:write and the `|| echo` here swallowed it, so
+          # built digests never reached a PR). Only a genuinely existing
+          # open PR is a benign skip.
+          if [ "$(gh pr view bot/image-versions --json state --jq .state 2>/dev/null || echo MISSING)" = "OPEN" ]; then
+            echo "PR for bot/image-versions already open; branch updated in place"
+          else
+            gh pr create --head bot/image-versions --base main \
+              --title "chore(images): update digests" \
+              --body-file "$body"
+          fi
           # this gh has no `pr create --auto`; arm the auto-merge (and
           # satisfy strict up-to-date) separately
           gh pr update-branch bot/image-versions || true
-          gh pr merge bot/image-versions --squash --auto || true
+          gh pr merge bot/image-versions --squash --auto
         env:
           GH_TOKEN: ${{ github.token }}

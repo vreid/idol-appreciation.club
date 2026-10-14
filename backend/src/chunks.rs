@@ -169,17 +169,20 @@ async fn replay_chunks_locked(
         let key = chunk_key(*cx, *cy);
         let (qx0, qy0) = (*cx * CHUNK_PX, *cy * CHUNK_PX);
         let (qx1, qy1) = (qx0 + CHUNK_PX - 1, qy0 + CHUNK_PX - 1);
-        let rows = sqlx::query(
-            "SELECT image_key, x, y, w, h, rot FROM placements
+        let rows = crate::dbq::timed(
+            "tile_rows",
+            sqlx::query(
+                "SELECT image_key, x, y, w, h, rot FROM placements
              WHERE removed_at IS NULL
                AND bbox && box(point($1::float8, $2::float8), point($3::float8, $4::float8))
              ORDER BY seq",
+            )
+            .bind(qx0)
+            .bind(qy0)
+            .bind(qx1)
+            .bind(qy1)
+            .fetch_all(&mut **tx),
         )
-        .bind(qx0)
-        .bind(qy0)
-        .bind(qx1)
-        .bind(qy1)
-        .fetch_all(&mut **tx)
         .await?;
         let canvas = crate::store::get_bytes(&app.store, &key).await?;
         let mut overlays: Vec<(Vec<u8>, i64, i64, f32)> = Vec::with_capacity(rows.len());

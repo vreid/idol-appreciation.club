@@ -7,6 +7,7 @@ pub mod api;
 pub mod auth;
 pub mod chunks;
 pub mod config;
+pub mod dbq;
 pub mod error;
 pub mod events;
 pub mod handlers;

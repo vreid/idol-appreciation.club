@@ -120,8 +120,10 @@ impl RenderQueue {
     ///   stale GET after it completes re-enqueues;
     /// - at cap with no row: dropped (caller served stale bytes anyway).
     pub async fn enqueue(&self, z: i64, x: i64, y: i64) {
-        let recorded: Result<(bool, bool), _> = sqlx::query_as(
-            "WITH bump AS (
+        let recorded: Result<(bool, bool), _> = crate::dbq::timed(
+            "tile_queue",
+            sqlx::query_as(
+                "WITH bump AS (
                  UPDATE tile_render_jobs SET last_bump_at = now()
                  WHERE z = $1 AND x = $2 AND y = $3 AND state = 'pending'
                  RETURNING 1
@@ -138,12 +140,13 @@ impl RenderQueue {
                  RETURNING 1
              )
              SELECT EXISTS(SELECT 1 FROM bump), EXISTS(SELECT 1 FROM ins)",
+            )
+            .bind(z as i16)
+            .bind(x as i32)
+            .bind(y as i32)
+            .bind(self.cap as i64)
+            .fetch_one(&self.pool),
         )
-        .bind(z as i16)
-        .bind(x as i32)
-        .bind(y as i32)
-        .bind(self.cap as i64)
-        .fetch_one(&self.pool)
         .await;
         match recorded {
             Ok((bumped, inserted)) if bumped || inserted => {}
@@ -157,11 +160,13 @@ impl RenderQueue {
 
     /// Pending coords — the queue-depth gauge.
     pub async fn depth(&self) -> u64 {
-        let (n,): (i64,) =
+        let (n,): (i64,) = crate::dbq::timed(
+            "tile_queue",
             sqlx::query_as("SELECT count(*) FROM tile_render_jobs WHERE state = 'pending'")
-                .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
+                .fetch_one(&self.pool),
+        )
+        .await
+        .unwrap_or((0,));
         n.max(0) as u64
     }
 
@@ -186,8 +191,10 @@ impl RenderQueue {
         quiet_secs: f64,
         max_delay_secs: f64,
     ) -> AppResult<Option<(i64, i64, i64)>> {
-        let row: Option<(i16, i32, i32)> = sqlx::query_as(
-            "WITH picked AS (
+        let row: Option<(i16, i32, i32)> = crate::dbq::timed(
+            "tile_queue",
+            sqlx::query_as(
+                "WITH picked AS (
                  SELECT z, x, y FROM tile_render_jobs
                  WHERE (state = 'pending' AND (
                             last_bump_at <= now() - ($1::float8 * interval '1 second')
@@ -203,11 +210,12 @@ impl RenderQueue {
              FROM picked
              WHERE j.z = picked.z AND j.x = picked.x AND j.y = picked.y
              RETURNING j.z, j.x, j.y",
+            )
+            .bind(quiet_secs)
+            .bind(max_delay_secs)
+            .bind(RENDER_LEASE_SECS)
+            .fetch_optional(&self.pool),
         )
-        .bind(quiet_secs)
-        .bind(max_delay_secs)
-        .bind(RENDER_LEASE_SECS)
-        .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|(z, x, y)| (i64::from(z), i64::from(x), i64::from(y))))
     }
@@ -215,17 +223,20 @@ impl RenderQueue {
     /// Seconds until the next pending entry could possibly fire (for the
     /// worker's sleep). None when the queue is empty.
     async fn next_due(&self, quiet_secs: f64, max_delay_secs: f64) -> AppResult<Option<f64>> {
-        let row: (Option<f64>,) = sqlx::query_as(
-            "SELECT EXTRACT(EPOCH FROM (min_due - now()))::float8 FROM (
+        let row: (Option<f64>,) = crate::dbq::timed(
+            "tile_queue",
+            sqlx::query_as(
+                "SELECT EXTRACT(EPOCH FROM (min_due - now()))::float8 FROM (
                  SELECT min(least(
                      last_bump_at + ($1::float8 * interval '1 second'),
                      enqueued_at + ($2::float8 * interval '1 second'))) AS min_due
                  FROM tile_render_jobs WHERE state = 'pending'
              ) t",
+            )
+            .bind(quiet_secs)
+            .bind(max_delay_secs)
+            .fetch_one(&self.pool),
         )
-        .bind(quiet_secs)
-        .bind(max_delay_secs)
-        .fetch_one(&self.pool)
         .await?;
         Ok(row.0)
     }
@@ -234,14 +245,17 @@ impl RenderQueue {
     /// `rendering` until the lease expires: reclaim is the retry, with a
     /// 60 s natural backoff.
     async fn mark_done(&self, z: i64, x: i64, y: i64) {
-        let _ = sqlx::query(
-            "UPDATE tile_render_jobs SET state = 'done', claimed_at = NULL
+        let _ = crate::dbq::timed(
+            "tile_queue",
+            sqlx::query(
+                "UPDATE tile_render_jobs SET state = 'done', claimed_at = NULL
              WHERE z = $1 AND x = $2 AND y = $3 AND state = 'rendering'",
+            )
+            .bind(z as i16)
+            .bind(x as i32)
+            .bind(y as i32)
+            .execute(&self.pool),
         )
-        .bind(z as i16)
-        .bind(x as i32)
-        .bind(y as i32)
-        .execute(&self.pool)
         .await;
     }
 }
@@ -347,17 +361,20 @@ async fn render_worker(app: App, executor: impl RenderExecutor) {
 
 /// Max non-removed placement seq whose bbox intersects the rect (0 = none).
 pub async fn max_seq_covering(app: &App, rect: Rect) -> AppResult<i64> {
-    let row: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(max(seq), 0) FROM placements
+    let row: (i64,) = crate::dbq::timed(
+        "tile_seq",
+        sqlx::query_as(
+            "SELECT COALESCE(max(seq), 0) FROM placements
          WHERE removed_at IS NULL
            AND bbox && box(point($1::float8, $2::float8),
                            point($3::float8, $4::float8))",
+        )
+        .bind(rect.x)
+        .bind(rect.y)
+        .bind(rect.x + rect.w - 1)
+        .bind(rect.y + rect.h - 1)
+        .fetch_one(&app.pool),
     )
-    .bind(rect.x)
-    .bind(rect.y)
-    .bind(rect.x + rect.w - 1)
-    .bind(rect.y + rect.h - 1)
-    .fetch_one(&app.pool)
     .await?;
     Ok(row.0)
 }
@@ -543,13 +560,15 @@ async fn tile_bytes_inner(
         });
     }
     let object_key = tile_key(z, x, y);
-    let stored: Option<(i64,)> =
+    let stored: Option<(i64,)> = crate::dbq::timed(
+        "tiles_meta",
         sqlx::query_as("SELECT seq FROM tiles WHERE z = $1 AND x = $2 AND y = $3")
             .bind(z as i16)
             .bind(x as i32)
             .bind(y as i32)
-            .fetch_optional(&app.pool)
-            .await?;
+            .fetch_optional(&app.pool),
+    )
+    .await?;
     if stored.map(|(s,)| s) == Some(seq) {
         if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
             let bytes = Bytes::from(bytes);
@@ -592,16 +611,19 @@ async fn tile_bytes_inner(
     let encoded = render_tile(app, z, x, y).await?;
     // Write-through: object storage + staleness row + memory cache.
     crate::store::put(&app.store, &object_key, encoded.to_vec()).await?;
-    sqlx::query(
-        "INSERT INTO tiles (z, x, y, seq) VALUES ($1, $2, $3, $4)
+    crate::dbq::timed(
+        "tiles_meta",
+        sqlx::query(
+            "INSERT INTO tiles (z, x, y, seq) VALUES ($1, $2, $3, $4)
          ON CONFLICT (z, x, y) DO UPDATE
          SET seq = EXCLUDED.seq, rendered_at = now()",
+        )
+        .bind(z as i16)
+        .bind(x as i32)
+        .bind(y as i32)
+        .bind(seq)
+        .execute(&app.pool),
     )
-    .bind(z as i16)
-    .bind(x as i32)
-    .bind(y as i32)
-    .bind(seq)
-    .execute(&app.pool)
     .await?;
     app.tile_cache.put(z, key, encoded.clone());
     crate::metrics::tile_done(crate::metrics::tile_outcome("render"), t0.elapsed());

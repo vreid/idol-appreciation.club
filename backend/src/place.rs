@@ -30,26 +30,31 @@ pub fn cooldown_check(elapsed_secs: f64, threshold_secs: i64) -> Result<(), i64>
 /// intersection); the transactional UPDATE stays the authoritative gate
 /// under races.
 async fn cooldown_precheck(app: &App, account_id: Uuid, aabb: &Rect) -> AppResult<()> {
-    let acct: (bool, Option<chrono::DateTime<Utc>>) =
+    let acct: (bool, Option<chrono::DateTime<Utc>>) = crate::dbq::timed(
+        "place",
         sqlx::query_as("SELECT cooldown_exempt, last_placement_at FROM accounts WHERE id = $1")
             .bind(account_id)
-            .fetch_one(&app.pool)
-            .await?;
+            .fetch_one(&app.pool),
+    )
+    .await?;
     if acct.0 {
         return Ok(());
     }
-    let intersects: (bool,) = sqlx::query_as(
-        "SELECT EXISTS(
+    let intersects: (bool,) = crate::dbq::timed(
+        "place",
+        sqlx::query_as(
+            "SELECT EXISTS(
              SELECT 1 FROM placements
              WHERE removed_at IS NULL
                AND bbox && box(point($1::float8, $2::float8),
                                point($3::float8, $4::float8)))",
+        )
+        .bind(aabb.x)
+        .bind(aabb.y)
+        .bind(aabb.x + aabb.w - 1)
+        .bind(aabb.y + aabb.h - 1)
+        .fetch_one(&app.pool),
     )
-    .bind(aabb.x)
-    .bind(aabb.y)
-    .bind(aabb.x + aabb.w - 1)
-    .bind(aabb.y + aabb.h - 1)
-    .fetch_one(&app.pool)
     .await?;
     let threshold = if intersects.0 {
         app.cfg.cooldown_paint_secs
@@ -324,48 +329,58 @@ pub async fn place(
     // Cooldown exemption (admin-granted): skip both cooldowns entirely —
     // no 429 path. Everyone else: paints (overlapping existing art) wait
     // 300 s, empty space 1 s.
-    let acct: (bool,) =
+    let acct: (bool,) = crate::dbq::timed(
+        "place",
         sqlx::query_as("SELECT cooldown_exempt FROM accounts WHERE id = $1 FOR UPDATE")
             .bind(account_id)
-            .fetch_one(&mut *tx)
-            .await?;
+            .fetch_one(&mut *tx),
+    )
+    .await?;
     if !acct.0 {
-        let intersects: (bool,) = sqlx::query_as(
-            "SELECT EXISTS(
+        let intersects: (bool,) = crate::dbq::timed(
+            "place",
+            sqlx::query_as(
+                "SELECT EXISTS(
                  SELECT 1 FROM placements
                  WHERE removed_at IS NULL
                    AND bbox && box(point($1::float8, $2::float8),
                                    point($3::float8, $4::float8)))",
+            )
+            .bind(aabb.x)
+            .bind(aabb.y)
+            .bind(aabb.x + aabb.w - 1)
+            .bind(aabb.y + aabb.h - 1)
+            .fetch_one(&mut *tx),
         )
-        .bind(aabb.x)
-        .bind(aabb.y)
-        .bind(aabb.x + aabb.w - 1)
-        .bind(aabb.y + aabb.h - 1)
-        .fetch_one(&mut *tx)
         .await?;
         let threshold = if intersects.0 {
             app.cfg.cooldown_paint_secs
         } else {
             app.cfg.cooldown_empty_secs
         };
-        let updated: Option<(chrono::DateTime<Utc>,)> = sqlx::query_as(
-            "UPDATE accounts SET last_placement_at = now()
+        let updated: Option<(chrono::DateTime<Utc>,)> = crate::dbq::timed(
+            "place",
+            sqlx::query_as(
+                "UPDATE accounts SET last_placement_at = now()
              WHERE id = $1
                AND (last_placement_at IS NULL
                     OR now() - last_placement_at >= make_interval(secs => $2))
              RETURNING last_placement_at",
+            )
+            .bind(account_id)
+            .bind(threshold)
+            .fetch_optional(&mut *tx),
         )
-        .bind(account_id)
-        .bind(threshold)
-        .fetch_optional(&mut *tx)
         .await?;
         if updated.is_none() {
             tx.rollback().await.map_err(internal)?;
-            let last: Option<(chrono::DateTime<Utc>,)> =
+            let last: Option<(chrono::DateTime<Utc>,)> = crate::dbq::timed(
+                "place",
                 sqlx::query_as("SELECT last_placement_at FROM accounts WHERE id = $1")
                     .bind(account_id)
-                    .fetch_optional(&app.pool)
-                    .await?;
+                    .fetch_optional(&app.pool),
+            )
+            .await?;
             let elapsed = last
                 .map(|(t,)| (Utc::now() - t).num_milliseconds() as f64 / 1000.0)
                 .unwrap_or(0.0);
@@ -377,15 +392,20 @@ pub async fn place(
     } else {
         // Keep last_placement_at fresh so a later un-exempt state starts
         // from the real last placement, not an ancient one.
-        sqlx::query("UPDATE accounts SET last_placement_at = now() WHERE id = $1")
-            .bind(account_id)
-            .execute(&mut *tx)
-            .await?;
+        crate::dbq::timed(
+            "place",
+            sqlx::query("UPDATE accounts SET last_placement_at = now() WHERE id = $1")
+                .bind(account_id)
+                .execute(&mut *tx),
+        )
+        .await?;
     }
 
-    let seq: (i64,) = sqlx::query_as("SELECT nextval('placement_seq')")
-        .fetch_one(&mut *tx)
-        .await?;
+    let seq: (i64,) = crate::dbq::timed(
+        "place",
+        sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
+    )
+    .await?;
     let seq = seq.0;
 
     // Paint chunks before the row commits: tiles/ETags advance only when
@@ -393,40 +413,46 @@ pub async fn place(
     crate::chunks::composite_placement(&app, aabb, rot, derivative_bytes).await?;
     crate::metrics::chunk_composited();
 
-    let duplicate_count: (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM placements
+    let duplicate_count: (i64,) = crate::dbq::timed(
+        "place",
+        sqlx::query_as(
+            "SELECT count(*) FROM placements
          WHERE original_sha = $1 AND removed_at IS NULL",
+        )
+        .bind(&original_sha)
+        .fetch_one(&mut *tx),
     )
-    .bind(&original_sha)
-    .fetch_one(&mut *tx)
     .await?;
 
     // bbox column = AABB of the rotated rect (GiST-indexed); x/y/w/h stay
     // the unrotated rect top-left and size.
-    sqlx::query(
-        "INSERT INTO placements
+    crate::dbq::timed(
+        "place",
+        sqlx::query(
+            "INSERT INTO placements
              (id, account_id, image_key, x, y, w, h, seq, rot,
               bbox, original_sha, derivative_sha)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                  box(point($10::float8, $11::float8),
                      point($12::float8, $13::float8)), $14, $15)",
+        )
+        .bind(id)
+        .bind(account_id)
+        .bind(&image_key)
+        .bind(rect.x)
+        .bind(rect.y)
+        .bind(rect.w as i32)
+        .bind(rect.h as i32)
+        .bind(seq)
+        .bind(rot)
+        .bind(aabb.x as f64)
+        .bind(aabb.y as f64)
+        .bind((aabb.x + aabb.w - 1) as f64)
+        .bind((aabb.y + aabb.h - 1) as f64)
+        .bind(&original_sha)
+        .bind(&derivative_sha)
+        .execute(&mut *tx),
     )
-    .bind(id)
-    .bind(account_id)
-    .bind(&image_key)
-    .bind(rect.x)
-    .bind(rect.y)
-    .bind(rect.w as i32)
-    .bind(rect.h as i32)
-    .bind(seq)
-    .bind(rot)
-    .bind(aabb.x as f64)
-    .bind(aabb.y as f64)
-    .bind((aabb.x + aabb.w - 1) as f64)
-    .bind((aabb.y + aabb.h - 1) as f64)
-    .bind(&original_sha)
-    .bind(&derivative_sha)
-    .execute(&mut *tx)
     .await?;
 
     let event = json!({
@@ -435,10 +461,13 @@ pub async fn place(
         "bbox": [aabb.x, aabb.y, aabb.w, aabb.h]
     })
     .to_string();
-    let _: ((),) = sqlx::query_as("SELECT pg_notify('events', $1)")
-        .bind(&event)
-        .fetch_one(&mut *tx)
-        .await?;
+    let _: ((),) = crate::dbq::timed(
+        "place",
+        sqlx::query_as("SELECT pg_notify('events', $1)")
+            .bind(&event)
+            .fetch_one(&mut *tx),
+    )
+    .await?;
     tx.commit().await?;
 
     crate::metrics::place_done(t0.elapsed());
@@ -468,11 +497,14 @@ pub async fn admin_delete(
     crate::auth::require_admin(&app, admin_id).await?;
     // Peek the rect first so chunk locks can be acquired before any row
     // locks, matching the placement pipeline's lock order.
-    let peeked: Option<(i64, i64, i64, i64, f32)> = sqlx::query_as(
+    let peeked: Option<(i64, i64, i64, i64, f32)> = crate::dbq::timed(
+        "place",
+        sqlx::query_as(
         "SELECT x, y, w::bigint, h::bigint, rot FROM placements WHERE id = $1 AND removed_at IS NULL",
     )
     .bind(id)
-    .fetch_optional(&app.pool)
+    .fetch_optional(&app.pool),
+    )
     .await?;
     let Some((x, y, w, h, rot)) = peeked else {
         return Err(AppError::NotFound);
@@ -488,21 +520,27 @@ pub async fn admin_delete(
     let _guards = app.chunk_locks.lock_sorted(&lock_keys).await;
 
     let mut tx = app.pool.begin().await?;
-    let still_there: Option<(i64,)> = sqlx::query_as(
-        "SELECT 1::bigint FROM placements WHERE id = $1 AND removed_at IS NULL FOR UPDATE",
+    let still_there: Option<(i64,)> = crate::dbq::timed(
+        "place",
+        sqlx::query_as(
+            "SELECT 1::bigint FROM placements WHERE id = $1 AND removed_at IS NULL FOR UPDATE",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx),
     )
-    .bind(id)
-    .fetch_optional(&mut *tx)
     .await?;
     if still_there.is_none() {
         tx.rollback().await.map_err(internal)?;
         return Err(AppError::NotFound);
     }
 
-    sqlx::query("UPDATE placements SET removed_at = now() WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    crate::dbq::timed(
+        "place",
+        sqlx::query("UPDATE placements SET removed_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx),
+    )
+    .await?;
     crate::chunks::replay_chunks(&app, &mut tx, &chunk_keys).await?;
     let event = json!({
         "type": "remove",
@@ -510,10 +548,13 @@ pub async fn admin_delete(
         "bbox": [aabb.x, aabb.y, aabb.w, aabb.h]
     })
     .to_string();
-    let _: ((),) = sqlx::query_as("SELECT pg_notify('events', $1)")
-        .bind(&event)
-        .fetch_one(&mut *tx)
-        .await?;
+    let _: ((),) = crate::dbq::timed(
+        "place",
+        sqlx::query_as("SELECT pg_notify('events', $1)")
+            .bind(&event)
+            .fetch_one(&mut *tx),
+    )
+    .await?;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }

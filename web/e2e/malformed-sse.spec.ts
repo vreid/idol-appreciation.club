@@ -44,10 +44,14 @@ test("malformed SSE event: app stays alive, toasts, map still navigable", async 
 
   await page.mouse.move(640, 400);
   await page.mouse.down();
-  await page.mouse.move(520, 300, { steps: 5 });
+  // 10 steps: under full-suite CPU contention the 5-step drag could be
+  // coalesced to too few moves for Leaflet to register a pan.
+  await page.mouse.move(480, 260, { steps: 10 });
   await page.mouse.up();
-  await page.waitForTimeout(1000);
-  const afterDrag = new URL(page.url()).hash;
-  expect(afterDrag).toMatch(/^#16\/-?\d+\/-?\d+$/u);
-  expect(afterDrag).not.toBe("#16/0/0");
+  // Poll, don't sleep: the hash write is debounced, and a fixed 1s wait
+  // raced it under load (the flake). 5s covers the debounce worst case.
+  await expect
+    .poll(() => new URL(page.url()).hash, { timeout: 5000 })
+    .not.toBe("#16/0/0");
+  expect(new URL(page.url()).hash).toMatch(/^#16\/-?\d+\/-?\d+$/u);
 });

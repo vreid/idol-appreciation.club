@@ -181,6 +181,24 @@ order always matches `seq` order):
 Both cooldown knobs (`COOLDOWN_PAINT_SECS`, `COOLDOWN_EMPTY_SECS`) are env-
 configurable with spec defaults.
 
+### Placement tags
+
+Each placement carries a normalized label set: `placement_tags`
+(`placement_id`, `tag`) — one label per row, applied by migration
+`0006_placement_tags.sql`. Labels are lowercased, trimmed, deduped, and
+validated to 1..=32 chars of `[a-z0-9_-]`, at most 8 per placement
+(`api::normalize_tags` — the backend is the authority; the contract schema only
+fails fast client-side).
+
+- `PUT /api/placements/{id}/tags` (auth; owner or admin, else `403`) replaces
+  the whole set: DELETE + INSERT in one tx, response is the normalized
+  `{id, tags}` (`tagsSchema`). Tag edits never touch tiles/images and don't
+  bump `seq`, so no SSE event and no tile invalidation — reads pick the new
+  labels up on their next fetch.
+- Reads join the set everywhere a placement row ships: `placements/near`,
+  dig stack entries, and the place response (aggregated
+  `array_agg(tag ORDER BY tag)`).
+
 ## Batch import (bulk ingest)
 
 `POST /api/admin/import` (admin cookie) places many images in one call. SLO: **≥
@@ -205,7 +223,8 @@ Shape (single JSON document; `Content-Type: application/json`):
       "y": 0,
       "w": 512,
       "h": 384,
-      "rot": 7.5
+      "rot": 7.5,
+      "tags": ["duo", "acoustic"] // optional, normalized like the tags PUT
     }
   ]
 }
@@ -466,7 +485,7 @@ manifest-derived history).
 
 `GET /api/dig?x=&y=` (auth-free read) returns the wheel-dig stack: every
 placement whose **rotated** rect contains the point, newest-first —
-`{ stack: [{depth, id, username, x, y, w, h, rot, seq, created_at}], total, truncated }`,
+`{ stack: [{depth, id, username, x, y, w, h, rot, seq, created_at, tags], total, truncated }`,
 depth 1 = topmost. Candidates come from the GiST bbox (`bbox @> point`),
 membership is refined with the exact rotated hit-test
 (`world::rotated_contains`), so an AABB corner hit that misses the rotated

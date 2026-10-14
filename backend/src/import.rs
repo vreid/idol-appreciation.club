@@ -114,6 +114,9 @@ pub struct ImportEntry {
     /// Clockwise degrees (y-down), normalized server-side to [0, 360).
     #[serde(default)]
     rot: f32,
+    /// Optional label set, validated/normalized like the tags PUT.
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -231,6 +234,7 @@ struct PrePlan {
     x: i64,
     y: i64,
     aabb: Rect,
+    tags: Vec<String>,
 }
 
 struct Plan {
@@ -243,6 +247,7 @@ struct Plan {
     h: i64,
     rot: f32,
     aabb: Rect,
+    tags: Vec<String>,
 }
 
 fn normalize_sha(s: &str) -> Option<String> {
@@ -264,6 +269,7 @@ fn plan_entry(e: ImportEntry, min_size: i64, max_size: i64) -> Result<PrePlan, &
         return Err("rot must be finite");
     }
     let rot = normalize_rot(e.rot);
+    let tags = crate::api::normalize_tags(e.tags)?;
     // Identical semantics to the HTTP path: bounds checked on the rotated
     // AABB, bbox column = the AABB, x/y/w/h = the unrotated rect.
     let aabb = rotated_aabb(e.x, e.y, e.w, e.h, rot);
@@ -279,6 +285,7 @@ fn plan_entry(e: ImportEntry, min_size: i64, max_size: i64) -> Result<PrePlan, &
         x: e.x,
         y: e.y,
         aabb,
+        tags,
     })
 }
 
@@ -697,6 +704,21 @@ async fn run_group(
         .execute(&mut *tx)
         .await?
         .rows_affected();
+    // Tags ride the same transaction: a resumed chunk re-inserts its
+    // placements with ON CONFLICT DO NOTHING, so re-applying tags is a
+    // no-op there and an insert for freshly committed rows.
+    for (k, &i) in group.iter().enumerate() {
+        for tag in &plans[i].tags {
+            sqlx::query(
+                "INSERT INTO placement_tags (placement_id, tag)
+                 VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            )
+            .bind(ids[k])
+            .bind(tag)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
     tx.commit().await?;
 
     out.imported = inserted;
@@ -834,6 +856,7 @@ pub async fn import(
                 h: p.h,
                 rot: p.rot,
                 aabb: p.aabb,
+                tags: p.tags,
             }
         })
         .collect();
@@ -909,6 +932,7 @@ mod tests {
             h,
             rot,
             aabb,
+            tags: Vec::new(),
         }
     }
 
@@ -924,6 +948,7 @@ mod tests {
             x,
             y: 2,
             aabb: Rect::new(x, 2, 3, h),
+            tags: Vec::new(),
         };
         let a = entry_id(batch, &pp(1, 4, 0.0), "b");
         assert_eq!(a, entry_id(batch, &pp(1, 4, 0.0), "b"));
@@ -980,6 +1005,7 @@ mod tests {
             w,
             h,
             rot,
+            tags: Vec::new(),
         };
         // Bad sha.
         assert!(plan_entry(e("xyz", 16, 16, 0.0, 0, 0), 16, 4096).is_err());

@@ -20,6 +20,8 @@ import {
   digStackSchema,
   registerResultSchema,
   removeEventSchema,
+  tagsSchema,
+  tagsUpdateSchema,
   worldEventSchema,
 } from "./index";
 
@@ -113,6 +115,12 @@ describe("placements", () => {
     const parsed = placementSchema.safeParse({ ...valid, seq: 3 });
     expect(parsed.success).toBe(true);
     if (parsed.success) expect(parsed.data).toEqual(valid);
+  });
+
+  it("keeps tags optional and passes a populated set through", () => {
+    ok(placementSchema, valid); // legacy payloads may omit tags
+    ok(placementSchema, { ...valid, tags: ["idol", "stage"] });
+    rejected(placementSchema, { ...valid, tags: "stage" });
   });
 
   it("accepts a placement list", () => {
@@ -249,5 +257,48 @@ describe("auth", () => {
     ]);
     rejected(pendingAccountsSchema, { username: "newbie" });
     rejected(pendingAccountsSchema, [{ username: "n", created_at: 1 }]);
+  });
+});
+
+describe("tags", () => {
+  it("accepts a tag update within the rules", () => {
+    ok(tagsUpdateSchema, { tags: [] });
+    ok(tagsUpdateSchema, { tags: ["stage", "wonyo"] });
+    ok(tagsUpdateSchema, {
+      tags: ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"],
+    });
+  });
+
+  it("rejects oversized or excessive tag updates", () => {
+    rejected(tagsUpdateSchema, { tags: ["x".repeat(33)] });
+    rejected(tagsUpdateSchema, {
+      tags: ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"],
+    });
+    rejected(tagsUpdateSchema, {});
+    rejected(tagsUpdateSchema, { tags: "stage" });
+  });
+
+  it("accepts a tags response", () => {
+    ok(tagsSchema, {
+      id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a101",
+      tags: ["stage"],
+    });
+    rejected(tagsSchema, { id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a101" });
+  });
+
+  it("keeps dig entry tags optional like placements", () => {
+    const entry = {
+      id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a101",
+      username: "wonyoung",
+      x: 1,
+      y: 2,
+      w: 3,
+      h: 4,
+      rot: 0,
+      created_at: "2026-10-12T00:00:00Z",
+      depth: 1,
+    };
+    ok(digEntrySchema, entry);
+    ok(digEntrySchema, { ...entry, tags: ["encore"] });
   });
 });

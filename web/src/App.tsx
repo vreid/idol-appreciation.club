@@ -196,6 +196,9 @@ function placeDetailActions(
     onReport: (id) => void store.reportPlacement(id),
     isAdmin: () => store.me?.is_admin === true,
     onRemove: (id, bbox) => void onRemove(map, store, id, bbox),
+    onUpdateTags: async (id, tags) => {
+      await store.updateTags(id, tags);
+    },
     onAuthPrompt: () => {
       store.promptAuth();
     },

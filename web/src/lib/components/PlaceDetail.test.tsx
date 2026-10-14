@@ -41,6 +41,7 @@ function makeClient(dig?: ApiClient["dig"]): ApiClient {
     center: vi.fn(() => Promise.resolve({ current: null, all_time: [] })),
     report: vi.fn(() => Promise.resolve()),
     removePlacement: vi.fn(() => Promise.resolve()),
+    updateTags: vi.fn(() => Promise.resolve({ id: "p1", tags: [] })),
     pendingAccounts: vi.fn(() => Promise.resolve([])),
     approveAccount: vi.fn(() => Promise.resolve()),
     dig:
@@ -66,6 +67,7 @@ function makeActions(
     isAdmin: vi.fn(() => false),
     onRemove: vi.fn(),
     onAuthPrompt: vi.fn(),
+    onUpdateTags: vi.fn(() => Promise.resolve()),
     onDeselect: vi.fn(() => store?.deselectPlace()),
     ...overrides,
   };
@@ -206,5 +208,112 @@ describe("PlaceDetail dig depth cue", () => {
       expect(screen.getByText("@wren")).toBeTruthy();
     });
     expect(screen.queryByText("1 of 1")).toBeNull();
+  });
+
+  it("shows chips without an editor to anonymous viewers", async () => {
+    const store = makeStore();
+    store.selectPlace(
+      { ...PLACEMENT, tags: ["stage", "encore"] },
+      { x: 10, y: 10 },
+    );
+    mount(store);
+    await waitFor(() => {
+      expect(screen.getByText("encore")).toBeTruthy();
+    });
+    expect(screen.queryByLabelText("Add tag")).toBeNull();
+  });
+});
+
+describe("PlaceDetail tags", () => {
+  const TAGGED: Placement = { ...PLACEMENT, tags: ["stage", "encore"] };
+
+  async function mountSignedIn(
+    username: string,
+    is_admin: boolean,
+    overrides: Partial<PlaceDetailActions> = {},
+  ) {
+    const client = makeClient();
+    client.me = vi.fn(() =>
+      Promise.resolve({ id: "u9", username, is_admin, cooldown_until: null }),
+    );
+    const store = makeStore(client);
+    store.selectPlace(TAGGED, { x: 10, y: 10 });
+    const mounted = mount(store, overrides);
+    await store.refreshMe();
+    return mounted;
+  }
+
+  function mountAsOwner(overrides: Partial<PlaceDetailActions> = {}) {
+    return mountSignedIn("wren", false, overrides);
+  }
+
+  it("renders chips for a tagged selection", () => {
+    const store = makeStore();
+    store.selectPlace(TAGGED, { x: 10, y: 10 });
+    mount(store);
+    expect(screen.getByText("stage")).toBeTruthy();
+    expect(screen.getByText("encore")).toBeTruthy();
+  });
+
+  it("renders nothing for untagged selections viewed by others", () => {
+    const store = makeStore();
+    store.selectPlace(PLACEMENT, { x: 10, y: 10 });
+    mount(store);
+    expect(screen.queryByRole("list", { name: "Tags" })).toBeNull();
+  });
+
+  it("hides the editor from signed-in non-owners", async () => {
+    await mountSignedIn("noor", false);
+    await waitFor(() => {
+      expect(screen.getByText("stage")).toBeTruthy();
+    });
+    expect(screen.queryByLabelText("Add tag")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Remove tag stage" }),
+    ).toBeNull();
+  });
+
+  it("offers chips with removal and the add form to the owner", async () => {
+    const { actions } = await mountAsOwner();
+    fireEvent.click(screen.getByRole("button", { name: "Remove tag stage" }));
+    await waitFor(() => {
+      expect(actions.onUpdateTags).toHaveBeenCalledWith("p1", ["encore"]);
+    });
+    fireEvent.input(screen.getByLabelText("Add tag"), {
+      target: { value: "  finale  " },
+    });
+    fireEvent.submit(screen.getByLabelText("Add tag").closest("form")!);
+    await waitFor(() => {
+      expect(actions.onUpdateTags).toHaveBeenCalledWith("p1", [
+        "stage",
+        "encore",
+        "finale",
+      ]);
+    });
+  });
+
+  it("offers the editor to admins even when not the owner", async () => {
+    await mountSignedIn("mod", true, { isAdmin: () => true });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Add tag")).toBeTruthy();
+    });
+  });
+
+  it("clears the draft and ignores empty submissions", async () => {
+    const { actions } = await mountAsOwner();
+    const input = screen.getByLabelText("Add tag");
+    fireEvent.input(input, { target: { value: "   " } });
+    fireEvent.submit(input.closest("form")!);
+    expect(actions.onUpdateTags).not.toHaveBeenCalled();
+    fireEvent.input(input, { target: { value: "bisou" } });
+    fireEvent.submit(input.closest("form")!);
+    await waitFor(() => {
+      expect(actions.onUpdateTags).toHaveBeenCalledWith("p1", [
+        "stage",
+        "encore",
+        "bisou",
+      ]);
+    });
+    expect(screen.getByLabelText<HTMLInputElement>("Add tag").value).toBe("");
   });
 });

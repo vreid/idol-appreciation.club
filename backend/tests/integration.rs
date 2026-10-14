@@ -1873,3 +1873,153 @@ async fn import_rejects_bad_manifests() {
     .await;
     assert_eq!(count.json()["count"], 0);
 }
+
+// -------------------------------------------------------------------------
+// Placement tags: normalized label set, owner or admin editable
+
+#[tokio::test]
+async fn placement_tags_owner_admin_and_validation() {
+    let server = start_server(0, 0, 10 * 1024 * 1024).await;
+    // First account is admin; second owns the placement; third is a peer.
+    let admin = register(&server, "tagadmin").await;
+    let owner = register(&server, "tagowner").await;
+    let other = register(&server, "tagpeer").await;
+    let placed = place(&server, &owner, &png(32, 32), 500, 500, 32).await;
+    assert_eq!(placed.status, 201);
+    let id = placed.json()["id"].as_str().unwrap().to_string();
+    let tags_url = format!("/api/placements/{id}/tags");
+
+    // Unauthenticated edits are rejected.
+    let resp = request(
+        &server,
+        "PUT",
+        &tags_url,
+        &[("Content-Type", "application/json")],
+        br#"{"tags":["stage"]}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status, 401);
+
+    // The owner's set is normalized: trim, lowercase, drop empties,
+    // dedupe.
+    let resp = request(
+        &server,
+        "PUT",
+        &tags_url,
+        &[("Cookie", &owner), ("Content-Type", "application/json")],
+        br#"{"tags":[" Stage","stage","","ENCORE"]}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+    let body = resp.json();
+    assert_eq!(body["id"], id);
+    let mut got = body["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    got.sort();
+    assert_eq!(got, vec!["encore".to_string(), "stage".to_string()]);
+
+    // A peer who is neither owner nor admin is forbidden.
+    let resp = request(
+        &server,
+        "PUT",
+        &tags_url,
+        &[("Cookie", &other), ("Content-Type", "application/json")],
+        br#"{"tags":["hijack"]}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status, 403);
+
+    // Validation: charset, per-tag length, and the 8-tag cap.
+    for payload in [
+        r#"{"tags":["no spaces here"]}"#,
+        r#"{"tags":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}"#,
+        r#"{"tags":["a","b","c","d","e","f","g","h","i"]}"#,
+    ] {
+        let resp = request(
+            &server,
+            "PUT",
+            &tags_url,
+            &[("Cookie", &owner), ("Content-Type", "application/json")],
+            payload.as_bytes().to_vec(),
+        )
+        .await;
+        assert_eq!(
+            resp.status,
+            400,
+            "{payload}: {}",
+            String::from_utf8_lossy(&resp.body)
+        );
+    }
+
+    // Reads carry the normalized set: near rows and dig strata alike.
+    let near = request(
+        &server,
+        "GET",
+        "/api/placements/near?x=516&y=516&r=1024",
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(near.status, 200);
+    let arr = near.json();
+    let mine = arr
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .expect("placement row");
+    assert_eq!(mine["tags"], serde_json::json!(["encore", "stage"]));
+
+    let resp = dig(&server, 516, 516).await;
+    assert_eq!(resp.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+    assert_eq!(
+        body["stack"][0]["tags"],
+        serde_json::json!(["encore", "stage"])
+    );
+
+    // An admin may edit someone else's placement.
+    let resp = request(
+        &server,
+        "PUT",
+        &tags_url,
+        &[("Cookie", &admin), ("Content-Type", "application/json")],
+        br#"{"tags":["moderated"]}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.json()["tags"], serde_json::json!(["moderated"]));
+
+    // Emptying the set is allowed; reads reflect it.
+    let resp = request(
+        &server,
+        "PUT",
+        &tags_url,
+        &[("Cookie", &admin), ("Content-Type", "application/json")],
+        br#"{"tags":[]}"#.to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status, 200);
+    assert_eq!(resp.json()["tags"], serde_json::json!([]));
+    let near = request(
+        &server,
+        "GET",
+        "/api/placements/near?x=516&y=516&r=1024",
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(near.status, 200);
+    let arr = near.json();
+    let mine = arr
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .expect("placement row");
+    assert_eq!(mine["tags"], serde_json::json!([]));
+}

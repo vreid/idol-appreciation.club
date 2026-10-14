@@ -2,7 +2,7 @@
 
 use crate::state::App;
 use crate::{api, events, handlers, import, place, statics, tiles};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 
 pub fn router(state: App) -> Router {
@@ -21,6 +21,7 @@ pub fn router(state: App) -> Router {
         .route("/api/center", get(api::center))
         .route("/api/events", get(events::sse))
         .route("/api/reports", post(api::report))
+        .route("/api/placements/{id}/tags", put(api::tags_put))
         .route("/api/images/{sha}/count", get(api::image_count))
         .route("/api/admin/placements/{id}", delete(place::admin_delete))
         .route("/api/admin/accounts", get(api::admin_list_accounts))

@@ -5,6 +5,7 @@ import type {
   PendingAccount,
   Placement,
   PlacedPlacement,
+  TagList,
 } from "./api";
 import type { Toast } from "./toasts";
 
@@ -82,6 +83,10 @@ export interface AppStore {
   refreshNear(x: number, y: number, r: number): Promise<Placement[]>;
   reportPlacement(placementId: string): Promise<void>;
   removePlacement(placementId: string): Promise<boolean>;
+  /** Replaces a placement's tag set (owner or admin). On success the
+   * selection and dig stack carry the authoritative list; returns null
+   * on failure (a toast already describes the error). */
+  updateTags(placementId: string, tags: string[]): Promise<TagList | null>;
   /** The placement whose anchored detail panel is open, if any. */
   get selectedPlace(): Placement | null;
   /** Selects and queries the strata under the click point (async; the

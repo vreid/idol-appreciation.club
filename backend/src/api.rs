@@ -54,6 +54,38 @@ pub struct NearPlacement {
     /// Rotation in degrees, clockwise (y-down), normalized to [0, 360).
     pub rot: f32,
     pub created_at: DateTime<Utc>,
+    /// Normalized label set (sorted); empty when untagged. Tags are pure
+    /// metadata — they ride every placement read but never affect tiles,
+    /// seq, or hit-testing.
+    #[sqlx(default)]
+    pub tags: Vec<String>,
+}
+
+/// Tag rules: 1..=32 chars of `[a-z0-9_-]` after trim+lowercase, at most
+/// 8 per placement, duplicates dropped. Returns the message of the first
+/// violation so both the PUT handler and the import manifest map it to a
+/// 400.
+pub(crate) fn normalize_tags(raw: Vec<String>) -> Result<Vec<String>, &'static str> {
+    let mut out: Vec<String> = Vec::with_capacity(raw.len().min(8));
+    for t in raw {
+        let t = t.trim().to_ascii_lowercase();
+        if t.is_empty() {
+            continue;
+        }
+        let ok = t.len() <= 32
+            && t.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+        if !ok {
+            return Err("tags must be 1..=32 chars of [a-z0-9_-]");
+        }
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    if out.len() > 8 {
+        return Err("at most 8 tags per placement");
+    }
+    Ok(out)
 }
 
 /// Max entries a dig stack returns; a deeper stack reports `truncated`.
@@ -83,9 +115,13 @@ pub async fn near(
     }
     let r = r.min(65536);
     let rows = sqlx::query_as::<_, NearPlacement>(
-        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at
+        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
+                COALESCE(t.tags, '{}') AS tags
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
+         LEFT JOIN LATERAL (SELECT array_agg(pt.tag ORDER BY pt.tag) AS tags
+                            FROM placement_tags pt
+                            WHERE pt.placement_id = p.id) t ON true
          WHERE p.removed_at IS NULL
            AND p.bbox && box(point($1::float8, $2::float8),
                              point($3::float8, $4::float8))
@@ -152,9 +188,13 @@ pub async fn dig(
         return Err(AppError::BadRequest("x and y must be within world bounds"));
     }
     let rows = sqlx::query_as::<_, NearPlacement>(
-        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at
+        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
+                COALESCE(t.tags, '{}') AS tags
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
+         LEFT JOIN LATERAL (SELECT array_agg(pt.tag ORDER BY pt.tag) AS tags
+                            FROM placement_tags pt
+                            WHERE pt.placement_id = p.id) t ON true
          WHERE p.removed_at IS NULL
            AND p.bbox @> point($1::float8, $2::float8)
          ORDER BY p.seq DESC",
@@ -368,6 +408,55 @@ pub async fn report(
         .execute(&app.pool)
         .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+pub struct TagsReq {
+    pub tags: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct TagsRes {
+    pub id: Uuid,
+    pub tags: Vec<String>,
+}
+
+/// PUT /api/placements/{id}/tags → the placement's normalized tag set.
+/// Owner or admin; 404 for unknown/removed placements.
+pub async fn tags_put(
+    State(app): State<App>,
+    Authed(account_id): Authed,
+    Path(id): Path<Uuid>,
+    Json(req): Json<TagsReq>,
+) -> AppResult<Json<TagsRes>> {
+    let tags = normalize_tags(req.tags).map_err(AppError::BadRequest)?;
+    let owner: Option<(Uuid,)> =
+        sqlx::query_as("SELECT account_id FROM placements WHERE id = $1 AND removed_at IS NULL")
+            .bind(id)
+            .fetch_optional(&app.pool)
+            .await?;
+    let Some((owner,)) = owner else {
+        return Err(AppError::NotFound);
+    };
+    if owner != account_id {
+        crate::auth::require_admin(&app, account_id).await?;
+    }
+    let mut tx = app.pool.begin().await?;
+    sqlx::query("DELETE FROM placement_tags WHERE placement_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    for tag in &tags {
+        sqlx::query(
+            "INSERT INTO placement_tags (placement_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(tag)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(TagsRes { id, tags }))
 }
 
 fn valid_sha(s: &str) -> bool {

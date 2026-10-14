@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { panelLayout, type ScreenRect } from "../panelLayout";
 import type { AppStore } from "../state";
 import type { Placement } from "../api";
@@ -14,6 +14,8 @@ export interface PlaceDetailActions {
   onAuthPrompt(): void;
   /** Store deselect + map highlight clear, in one call. */
   onDeselect(): void;
+  /** Replaces a placement's tag set via the store (toasts on failure). */
+  onUpdateTags(placementId: string, tags: string[]): Promise<void>;
 }
 
 /** Anchor geometry for the current selection, read from the live map. */
@@ -115,6 +117,7 @@ export default function PlaceDetail(props: {
           {store.selectedPlace?.w}×{store.selectedPlace?.h} px ·{" "}
           {store.selectedPlace?.rot}°
         </div>
+        <TagsRow store={store} actions={props.actions} />
         <div class="pd-actions">
           <button
             class="pd-btn"
@@ -149,6 +152,87 @@ export default function PlaceDetail(props: {
             </button>
           </Show>
         </div>
+      </div>
+    </Show>
+  );
+}
+
+/** Normalized label chips for the selection. The owner or an admin can
+ * add chips (one input, Enter or the button commits) and remove them;
+ * the backend is the authority on the 1..=32 chars / max 8 rules and
+ * answers with the authoritative list. */
+function TagsRow(props: { store: AppStore; actions: PlaceDetailActions }) {
+  const [draft, setDraft] = createSignal("");
+  const tags = () => props.store.selectedPlace?.tags ?? [];
+  const canEdit = () => {
+    const me = props.store.me;
+    const placement = props.store.selectedPlace;
+    if (placement === null) return false;
+    return me?.username === placement.username || props.actions.isAdmin();
+  };
+
+  function commit(): void {
+    const tag = draft().trim();
+    setDraft("");
+    if (tag.length === 0) return;
+    const id = props.store.selectedPlace?.id;
+    if (id === undefined) return;
+    void props.actions.onUpdateTags(id, [...tags(), tag]);
+  }
+
+  function removeAt(index: number): void {
+    const id = props.store.selectedPlace?.id;
+    if (id === undefined) return;
+    void props.actions.onUpdateTags(
+      id,
+      tags().filter((_, i) => i !== index),
+    );
+  }
+
+  return (
+    <Show when={tags().length > 0 || canEdit()}>
+      <div class="pd-tags" role="list" aria-label="Tags">
+        <For each={tags()}>
+          {(tag, index) => (
+            <span class="pd-tag" role="listitem">
+              {tag}
+              <Show when={canEdit()}>
+                <button
+                  class="pd-tag-x"
+                  type="button"
+                  aria-label={`Remove tag ${tag}`}
+                  onClick={() => {
+                    removeAt(index());
+                  }}
+                >
+                  ✕
+                </button>
+              </Show>
+            </span>
+          )}
+        </For>
+        <Show when={canEdit()}>
+          <form
+            class="pd-tag-add"
+            onSubmit={(event) => {
+              event.preventDefault();
+              commit();
+            }}
+          >
+            <input
+              aria-label="Add tag"
+              placeholder="add tag"
+              maxLength={32}
+              value={draft()}
+              onInput={(event) => {
+                setDraft(event.currentTarget.value);
+              }}
+            />
+            <button class="pd-btn" type="submit">
+              Add
+            </button>
+          </form>
+        </Show>
       </div>
     </Show>
   );

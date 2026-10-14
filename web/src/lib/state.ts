@@ -18,6 +18,9 @@ import {
 } from "./sizing";
 import { clampToWorldPoint } from "./world";
 import { createToastHub } from "./toasts";
+import { createTagsEditor } from "./tagsEdit";
+import { createSessionRefresher } from "./session";
+import { createAdminAccounts } from "./adminAccounts";
 import type {
   AppStore,
   AppStoreDeps,
@@ -71,6 +74,18 @@ export function createAppStore(
   const toastHub = createToastHub(deps);
   const { push: pushToast, dismiss: dismissToast } = toastHub;
 
+  // Tag edits keep the open panel and dig stack consistent with the
+  // authoritative list (flipDig re-selects from the stack).
+  const tagsEditor = createTagsEditor({
+    client,
+    requireAuth,
+    toast: pushToast,
+    selected: selectedPlace,
+    // Signal setters return the new value; these slots are void.
+    setSelected: (p) => void setSelectedPlace(p),
+    setStack: (patch) => void setDigStack(patch),
+  });
+
   function requireAuth(): boolean {
     if (me() !== null) return true;
     setAuthPrompt(true);
@@ -106,24 +121,15 @@ export function createAppStore(
     setPendingSpot(null);
   }
 
-  async function doRefreshMe(): Promise<void> {
-    try {
-      setMe(await client.me());
-    } catch {
-      setMe(null);
-      pushToast("error", "Could not reach the server");
-    } finally {
-      setAuthChecked(true);
-    }
-  }
-
-  async function doRefreshCenter(): Promise<void> {
-    try {
-      setCenter(await client.center());
-    } catch {
-      /* keep the last known holder; the next poll may succeed */
-    }
-  }
+  const session = createSessionRefresher({
+    client,
+    setMe: (next) => void setMe(next),
+    setAuthChecked: (checked) => void setAuthChecked(checked),
+    setCenter: (c) => void setCenter(c),
+    onError: (message) => {
+      pushToast("error", message);
+    },
+  });
 
   async function authenticate(
     action: "login" | "register",
@@ -153,7 +159,7 @@ export function createAppStore(
       pushToast("error", message);
       return false;
     }
-    await doRefreshMe();
+    await session.refreshMe();
     setAuthPrompt(false);
     const who = me()?.username ?? username;
     const verb =
@@ -162,25 +168,16 @@ export function createAppStore(
     return true;
   }
 
-  async function loadAdminPending(): Promise<void> {
-    try {
-      setAdminPending(await client.pendingAccounts());
-    } catch (err) {
-      pushToast("error", describeApiError(err));
-    }
-  }
-
-  async function approveAccount(username: string): Promise<void> {
-    try {
-      await client.approveAccount(username);
+  const adminAccounts = createAdminAccounts({
+    client,
+    toast: pushToast,
+    setPending: (list) => void setAdminPending(list),
+    removePending: (username) => {
       setAdminPending((list) =>
         list.filter((account) => account.username !== username),
       );
-      pushToast("success", `Approved ${username}`);
-    } catch (err) {
-      pushToast("error", describeApiError(err));
-    }
-  }
+    },
+  });
 
   return {
     get me() {
@@ -266,8 +263,8 @@ export function createAppStore(
       pushToast("error", message);
     },
 
-    refreshMe: doRefreshMe,
-    refreshCenter: doRefreshCenter,
+    refreshMe: () => session.refreshMe(),
+    refreshCenter: () => session.refreshCenter(),
 
     login: (username, password) => authenticate("login", username, password),
     register: (username, password) =>
@@ -284,8 +281,8 @@ export function createAppStore(
     get adminPending() {
       return adminPending();
     },
-    loadAdminPending,
-    approveAccount,
+    loadAdminPending: () => adminAccounts.loadPending(),
+    approveAccount: (username) => adminAccounts.approve(username),
 
     async logout(): Promise<void> {
       try {
@@ -395,5 +392,7 @@ export function createAppStore(
         return false;
       }
     },
+
+    updateTags: (placementId, tags) => tagsEditor.update(placementId, tags),
   };
 }

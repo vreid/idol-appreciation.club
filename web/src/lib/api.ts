@@ -17,6 +17,7 @@ import type {
   Placement,
   PlacedPlacement,
   RegisterResult,
+  TagList,
 } from "@contract";
 import {
   centerInfoSchema,
@@ -26,6 +27,7 @@ import {
   placementsNearSchema,
   placedPlacementSchema,
   registerResultSchema,
+  tagsSchema,
 } from "@contract";
 
 export type {
@@ -38,6 +40,7 @@ export type {
   Placement,
   PlacedPlacement,
   RegisterResult,
+  TagList,
 } from "@contract";
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -84,6 +87,9 @@ export interface ApiClient {
   dig: (x: number, y: number) => Promise<DigStack>;
   center: () => Promise<CenterInfo>;
   report: (placementId: string) => Promise<void>;
+  /** Replaces a placement's tag set (owner or admin); returns the
+   * authoritative normalized list. */
+  updateTags: (placementId: string, tags: string[]) => Promise<TagList>;
   removePlacement: (placementId: string) => Promise<void>;
   pendingAccounts: () => Promise<PendingAccount[]>;
   approveAccount: (username: string) => Promise<void>;
@@ -149,6 +155,38 @@ interface RequestOptions {
   json?: boolean;
 }
 
+/** Anything that issues a request through the client's fetch/base. */
+type RequestFn = (url: string, options?: RequestOptions) => Promise<unknown>;
+
+/** GET /api/auth/me; 401/403 (no or stale session) read as logged out. */
+async function fetchMe(request: RequestFn): Promise<Me | null> {
+  try {
+    return parseOk(meSchema, await request("/api/auth/me"), "me");
+  } catch (cause) {
+    if (cause instanceof ApiError && [401, 403].includes(cause.status)) {
+      return null;
+    }
+    throw cause;
+  }
+}
+
+/** PUT /api/placements/{id}/tags → the authoritative normalized list. */
+async function putTags(
+  request: RequestFn,
+  placementId: string,
+  tags: string[],
+): Promise<TagList> {
+  return parseOk(
+    tagsSchema,
+    await request(`/api/placements/${encodeURIComponent(placementId)}/tags`, {
+      method: "PUT",
+      json: true,
+      body: JSON.stringify({ tags }),
+    }),
+    "placement tags",
+  );
+}
+
 export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
   const doFetch = deps.fetch ?? fetch;
   const base = deps.base ?? "";
@@ -206,16 +244,7 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
     login: (username, password) =>
       postJson("/api/auth/login", { username, password }),
     logout: () => postJson("/api/auth/logout", {}),
-    me: async () => {
-      try {
-        return parseOk(meSchema, await request("/api/auth/me"), "me");
-      } catch (cause) {
-        if (cause instanceof ApiError && [401, 403].includes(cause.status)) {
-          return null;
-        }
-        throw cause;
-      }
-    },
+    me: () => fetchMe(request),
     place: async (req) => {
       const form = new FormData();
       form.append("image", req.image, req.fileName);
@@ -265,5 +294,6 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         method: "DELETE",
       });
     },
+    updateTags: (placementId, tags) => putTags(request, placementId, tags),
   };
 }

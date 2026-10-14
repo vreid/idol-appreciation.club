@@ -44,6 +44,9 @@ function makeClient(
     center: vi.fn(() => Promise.resolve({ current: null, all_time: [] })),
     report: vi.fn(() => Promise.resolve()),
     removePlacement: vi.fn(() => Promise.resolve()),
+    updateTags: vi.fn(() =>
+      Promise.resolve({ id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001", tags: [] }),
+    ),
     ...overrides,
     placeCalls,
   };
@@ -333,5 +336,57 @@ describe("reports and admin removal", () => {
     expect(ok.removePlacement).toHaveBeenCalledWith(
       "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001",
     );
+  });
+});
+
+describe("tags (store wiring)", () => {
+  const SELECTED = {
+    id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001",
+    username: "wren",
+    x: 10,
+    y: 10,
+    w: 64,
+    h: 48,
+    rot: 0,
+    created_at: "2026-10-13T00:00:00Z",
+    tags: ["stage"] as string[] | undefined,
+  };
+
+  it("requires login before editing tags", async () => {
+    const client = makeClient();
+    const { store } = makeStore(client);
+    const result = await store.updateTags(SELECTED.id, ["stage", "new"]);
+    expect(client.updateTags).not.toHaveBeenCalled();
+    expect(result).toBeNull();
+    expect(store.authPrompt).toBe(true);
+  });
+
+  it("updates the selection with the authoritative list", async () => {
+    const client = makeClient({
+      me: () =>
+        Promise.resolve({
+          id: "u1",
+          username: "wren",
+          is_admin: false,
+          cooldown_until: null,
+        }),
+      updateTags: vi.fn(() =>
+        Promise.resolve({
+          id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001",
+          tags: ["encore"],
+        }),
+      ),
+    });
+    const { store } = makeStore(client);
+    await store.refreshMe();
+    store.selectPlace(SELECTED, { x: 10, y: 10 });
+    await Promise.resolve();
+    const result = await store.updateTags(SELECTED.id, ["stage", "encore"]);
+    expect(client.updateTags).toHaveBeenCalledWith(SELECTED.id, [
+      "stage",
+      "encore",
+    ]);
+    expect(result?.tags).toEqual(["encore"]);
+    expect(store.selectedPlace?.tags).toEqual(["encore"]);
   });
 });

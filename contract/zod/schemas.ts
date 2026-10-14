@@ -85,6 +85,25 @@ export const placementSchema = z.object({
   h: z.number(),
   rot: z.number(),
   created_at: z.string(),
+  /** Normalized label set (sorted; zod/mini surface — optional here so
+   * older cached payloads and fixtures parse; consumers fall back to []
+   * and the backend always sends the field since the tags migration). */
+  tags: z.optional(z.array(z.string())),
+});
+
+/** PUT /api/placements/{id}/tags body (owner or admin). The refine
+ * mirrors the backend's normalize_tags: at most 8 tags of 1..=32 chars
+ * (the backend is the authority; this fails fast client-side). */
+export const tagsUpdateSchema = z.object({
+  tags: z
+    .array(z.string())
+    .check(z.refine((tags) => tags.length <= 8 && tags.every((t) => t.length <= 32))),
+});
+
+/** 200 response of the tags PUT. */
+export const tagsSchema = z.object({
+  id: z.string(),
+  tags: z.array(z.string()),
 });
 
 export const placementsNearSchema = z.array(placementSchema);
@@ -101,6 +120,7 @@ export const digEntrySchema = z.object({
   rot: z.number(),
   created_at: z.string(),
   depth: z.number(),
+  tags: z.optional(z.array(z.string())),
 });
 
 /** GET /api/dig response. `stack` is newest-first, capped at 64 entries;
@@ -189,3 +209,5 @@ export type RegisterResult = z.infer<typeof registerResultSchema>;
 export type PendingAccount = z.infer<typeof pendingAccountSchema>;
 export type DigEntry = z.infer<typeof digEntrySchema>;
 export type DigStack = z.infer<typeof digStackSchema>;
+export type TagsUpdate = z.infer<typeof tagsUpdateSchema>;
+export type TagList = z.infer<typeof tagsSchema>;

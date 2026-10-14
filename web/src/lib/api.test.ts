@@ -262,6 +262,38 @@ describe("report / admin remove", () => {
     expect(mock.calls[0]?.init.method).toBe("DELETE");
   });
 
+  it("puts tags and parses the authoritative list", async () => {
+    const mock = fetchMock(() =>
+      jsonResponse(200, {
+        id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10b",
+        tags: ["stage", "encore"],
+      }),
+    );
+    const api = createApiClient({ fetch: mock.fetch });
+    await expect(
+      api.updateTags("0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10b", [
+        "stage",
+        "encore",
+      ]),
+    ).resolves.toEqual({
+      id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10b",
+      tags: ["stage", "encore"],
+    });
+    expect(mock.calls[0]?.url).toBe(
+      "/api/placements/0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10b/tags",
+    );
+    expect(mock.calls[0]?.init.method).toBe("PUT");
+    expect(jsonBody(mock.calls[0])).toEqual({ tags: ["stage", "encore"] });
+  });
+
+  it("rejects a malformed tags response as ApiError 0", async () => {
+    const mock = fetchMock(() => jsonResponse(200, { tags: "stage" }));
+    const api = createApiClient({ fetch: mock.fetch });
+    await expect(
+      api.updateTags("0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10b", ["stage"]),
+    ).rejects.toMatchObject({ name: "ApiError", status: 0 });
+  });
+
   it("lists pending accounts for admins", async () => {
     const mock = fetchMock(() =>
       jsonResponse(200, [

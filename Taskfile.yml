@@ -553,13 +553,21 @@ tasks:
         cnpg_ready="$(kubectl -n idol get postgresql.cnpg.io/idol-db \
           -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
         if [ "${DATABASE_SOURCE:-auto}" = "cnpg" ] || { [ "${DATABASE_SOURCE:-auto}" = "auto" ] && [ "$cnpg_ready" = "True" ]; }; then
-          oldurl="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' 2>/dev/null | base64 -d || true)"
-          test -n "$oldurl" || { echo "CNPG source selected but app-env has no DATABASE_URL to carry credentials from" >&2; exit 1; }
-          appuser="$(printf '%s' "$oldurl" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
-          apppass="$(printf '%s' "$oldurl" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
-          test -n "$appuser" && test -n "$apppass" || { echo "could not parse app credentials from the existing DATABASE_URL" >&2; exit 1; }
-          db="postgresql://${appuser}:${apppass}@idol-db-rw.idol.svc:5432/$(printf '%s' "$oldurl" | sed -E 's#.*/([^/?]+)(\?.*)?$#\1#')"
-          echo "database source: cnpg (idol-db-rw), credentials carried over"
+          # CNPG-native recreate: initdb (owner: app) generated the app
+          # password into cnpg-app-creds — that secret is the source of
+          # truth. Pre-recreate cutovers (legacy path) carried creds from
+          # the old app-env URL instead.
+          appuser="$(kubectl -n idol get secret cnpg-app-creds -o jsonpath='{.data.username}' 2>/dev/null | base64 -d || true)"
+          apppass="$(kubectl -n idol get secret cnpg-app-creds -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+          if [ -z "$appuser" ] || [ -z "$apppass" ]; then
+            oldurl="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' 2>/dev/null | base64 -d || true)"
+            test -n "$oldurl" || { echo "CNPG source selected but neither cnpg-app-creds nor an app-env DATABASE_URL exists" >&2; exit 1; }
+            appuser="$(printf '%s' "$oldurl" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
+            apppass="$(printf '%s' "$oldurl" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
+          fi
+          test -n "$appuser" && test -n "$apppass" || { echo "could not resolve app credentials for the CNPG path" >&2; exit 1; }
+          db="postgresql://${appuser}:${apppass}@idol-db-rw.idol.svc:5432/idol-canvas"
+          echo "database source: cnpg (idol-db-rw)"
         else
           echo "database source: managed (tofu outputs)"
         fi

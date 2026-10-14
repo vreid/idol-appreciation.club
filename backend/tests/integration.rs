@@ -1497,13 +1497,21 @@ use idol_appreciation_club_backend::world;
 /// composite is lost, across 30 interleaved rounds.
 #[tokio::test]
 async fn two_instance_composite_no_lost_update() {
-    let container = postgres::Postgres::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start postgres container");
-    let port = container.get_host_port_ipv4(5432).await.unwrap();
-    let db_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    // Same wiring as the common harness: a preset DATABASE_URL serves
+    // both instances (a shared database is the point of the probe).
+    let (db_url, _container) = match std::env::var("DATABASE_URL") {
+        Ok(url) => (common::provision_isolated_db(&url).await, None),
+        Err(_) => {
+            let container = postgres::Postgres::default()
+                .with_tag("16-alpine")
+                .start()
+                .await
+                .expect("start postgres container");
+            let port = container.get_host_port_ipv4(5432).await.unwrap();
+            let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+            (url, Some(container))
+        }
+    };
     let store_dir =
         std::env::temp_dir().join(format!("idol-advisory-{}", uuid::Uuid::now_v7().simple()));
     let mk_cfg = || Config {
@@ -1532,6 +1540,13 @@ async fn two_instance_composite_no_lost_update() {
         import_block_entries: 500,
         import_group_concurrency: 2,
         import_derivative_long_edge: 1024,
+        // Pipeline fields: these two-instance tests drive chunks directly.
+        render_pipeline_enabled: false,
+        render_pipeline_poll_ms: 1_000,
+        render_pipeline_lease_secs: 120,
+        render_pipeline_parent_quiet_ms: 3_000,
+        render_pipeline_parent_low_ms: 10_000,
+        render_pipeline_parent_spread_ms: 20_000,
     };
     let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");
     let (app2, _) = build_app(mk_cfg()).await.expect("instance 2");
@@ -1591,13 +1606,22 @@ fn pixel_at(img: &img::VipsImage, x: i32, y: i32) -> [u8; 3] {
 /// acquisition deadlocks and trips the timeout.
 #[tokio::test]
 async fn advisory_lock_opposite_orders_no_deadlock() {
-    let container = postgres::Postgres::default()
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("start postgres container");
-    let port = container.get_host_port_ipv4(5432).await.unwrap();
-    let db_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    // Same wiring as the common harness: the pinned gate image has no
+    // docker socket, so a preset DATABASE_URL serves both instances (a
+    // shared database is the point of the two-instance probe).
+    let (db_url, _container) = match std::env::var("DATABASE_URL") {
+        Ok(url) => (url, None),
+        Err(_) => {
+            let container = postgres::Postgres::default()
+                .with_tag("16-alpine")
+                .start()
+                .await
+                .expect("start postgres container");
+            let port = container.get_host_port_ipv4(5432).await.unwrap();
+            let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+            (url, Some(container))
+        }
+    };
     let store_dir = std::env::temp_dir().join(format!(
         "idol-advisory-deadlock-{}",
         uuid::Uuid::now_v7().simple()
@@ -1628,6 +1652,13 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
         import_block_entries: 500,
         import_group_concurrency: 2,
         import_derivative_long_edge: 1024,
+        // Pipeline fields: these two-instance tests drive chunks directly.
+        render_pipeline_enabled: false,
+        render_pipeline_poll_ms: 1_000,
+        render_pipeline_lease_secs: 120,
+        render_pipeline_parent_quiet_ms: 3_000,
+        render_pipeline_parent_low_ms: 10_000,
+        render_pipeline_parent_spread_ms: 20_000,
     };
     let (app1, _) = build_app(mk_cfg()).await.expect("instance 1");
     let (app2, _) = build_app(mk_cfg()).await.expect("instance 2");

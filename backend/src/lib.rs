@@ -16,6 +16,7 @@ pub mod import;
 pub mod metrics;
 pub mod place;
 pub mod rate;
+pub mod render_jobs;
 pub mod router;
 
 pub mod state;
@@ -64,6 +65,12 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         events_tx.clone(),
     ));
     tiles::spawn_render_worker(&state);
+    // Phase 3 pipeline (docs/scaling-architecture.md): DARK by default —
+    // the worker (and the queue-only place/remove paths) only run when
+    // RENDER_PIPELINE_ENABLED=true.
+    if state.cfg.render_pipeline_enabled {
+        render_jobs::spawn_worker(&state);
+    }
 
     Ok((state.clone(), router::router(state)))
 }

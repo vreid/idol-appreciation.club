@@ -560,6 +560,84 @@ Public flood surfaces, for the record: SSE connections and tile GETs are the
 unauthenticated surfaces a flood hits; placement writes stay bounded by the
 per-account cooldowns (and admin exemption is an explicit, auditable flag).
 
+### The render pipeline (`render_jobs`, migration 0008 — Phase 3, ships dark)
+
+`docs/scaling-architecture.md` § "Chunk and tile pipeline" as code: a
+version-driven job queue that brings chunks up to date and cuts their 21 zoom
+18–20 tiles in the same pass, then bubbles versions up the pyramid through
+parent jobs, so tile requests never render anything. It ships **dark**:
+`RENDER_PIPELINE_ENABLED=false` (the default) keeps every code path above
+exactly as-is — synchronous placement composites, synchronous removal replays,
+the `tile_render_jobs` queue — and no worker runs (test-enforced by
+`render_jobs::pipeline_disabled_keeps_request_path_unchanged`). Migration 0008
+applies at boot either way; the new columns back-fill untouched (`painted_seq`
+0 = "nothing painted by the pipeline yet"). Cutover is the value flip plus a
+worker deployment (see the rollout plan below).
+
+- **Schema.** `chunk_seqs` gains `painted_seq` (the version the stored raster
+  and tiles actually show — what is _painted_ next to what is _wanted_) and
+  `needs_rebuild` (set by removals). `render_jobs` is one table keyed
+  `(z, x, y)`: z = 18 is a **chunk job** (a chunk IS a zoom 18 tile), z < 18 are
+  **parent jobs** rebuilt from their four children's current bytes.
+  `state ∈ pending | running | failed`, `rerun` (changed while running),
+  `not_before` (per-zoom delay), `claimed_at` (crash lease), `attempts`.
+- **Claiming.** `FOR UPDATE SKIP LOCKED` — exactly one worker owns a tile, which
+  replaces the request path's session advisory locks once enabled. Deeper zooms
+  claim first (`ORDER BY z DESC`) so children finish before their parents;
+  `running` rows past the lease (`RENDER_PIPELINE_LEASE_SECS`, 120 s) are
+  reclaimable — the claim is the retry and bumps `attempts`.
+- **Chunk job.** If `needs_rebuild` is set (or the raster object is missing
+  under a nonzero `painted_seq`), repaint from BLANK: every live placement in
+  sequence order (issue #159's fix, moved off the request path). Otherwise paint
+  only placements with `seq > painted_seq` onto the current raster, reusing the
+  import engine's `composite_group` (one vips section, decoded-overlay cache).
+  Then cut the z 18–20 tiles from the raster already in memory and write chunk,
+  tiles, the `tiles` staleness rows (monotone, `GREATEST`), then the version
+  bookkeeping (below), then mark the zoom 17 parent dirty. The stale-serve read
+  path above needs no changes: it heals from a freshly written chunk exactly as
+  it heals from a placement composite today.
+- **Parent job.** Fetch the four children's current bytes (children claim first
+  and a missing child is a retryable error), stitch with `render_parent_tile`,
+  write the object, and set the `tiles` row to the highest child version — which
+  only grows (`GREATEST`). Then mark its own parent dirty, up to z 0.
+- **Merging rules.** Marking dirty is an upsert: a burst folds into ONE job. A
+  `running` job is never aborted — a change arriving meanwhile sets `rerun`, and
+  the job re-queues itself when it finishes (aborting would starve busy chunks).
+  Parent jobs wait out zoom-dependent `not_before` delays: z ≤ 10 at most every
+  10–30 s (`RENDER_PIPELINE_PARENT_LOW_MS` + a coordinate spread across
+  `RENDER_PIPELINE_PARENT_SPREAD_MS`), z 11–17 after a short quiet window
+  (`RENDER_PIPELINE_PARENT_QUIET_MS`, 3 s). Finished rows are DELETED (today's
+  `tile_render_jobs` keeps `done` rows forever — every row change is
+  replica-replayed WAL). After 5 attempts (`MAX_JOB_ATTEMPTS`, spec constant) a
+  job is parked `failed` instead of retrying forever; a fresh change revives it.
+- **Version guard.** The finish transaction advances `painted_seq` with
+  `GREATEST(painted_seq, $v)` — a slower job can never move a version backwards
+  (the doc's `WHERE painted_seq < $v`, hardened: the equal case must still
+  consume a matching `needs_rebuild` flag or a rebuild would hot-loop) — and
+  clears `needs_rebuild` only when it still holds the value seen at claim time,
+  so a removal landing mid-job survives. All finish statements run in one
+  transaction with a consistent lock order (chunk_seqs → own job row → parent
+  job row), the same order the place/remove transactions use.
+- **Ordering.** Paint order must equal sequence order, but sequence numbers are
+  drawn inside transactions that can commit out of order. Pipeline-on place
+  transactions hold a single sequencer advisory lock (`pg_advisory_xact_lock`)
+  from the `nextval` draw to commit, so commit order equals sequence order.
+  Safety net: the pipeline chunk bump flags `needs_rebuild` when a placement
+  arrives BELOW the chunk's recorded `max_seq` (out-of-order commit — possible
+  from paths that don't take the lock, e.g. batch imports), and the flagged
+  chunk job repaints from blank where order is the manifest order.
+- **Removal.** Sets `removed_at`, advances the chunk's version (fresh sequence
+  value), sets `needs_rebuild`, queues the chunk job, and returns. The rebuild
+  costs ~80 ms per remaining image (~40 s in the production pile), which is why
+  it belongs in the worker, not the request.
+- **Worker.** One task per process (`render_jobs::spawn_worker`, spawned only
+  when enabled), poll `RENDER_PIPELINE_POLL_MS` when idle; horizontal scale =
+  more worker processes (the claim query is the only coordination). Logs use the
+  queue grammar: `render job claimed`, `render job done` with
+  `dur_ms`/`outcome`. Import batches keep painting synchronously in Phase 3 — a
+  chunk they touched repaints once on next activity (idempotent pixels, bounded
+  by one pass), because `painted_seq` starts at 0 for pipeline-unaware writes.
+
 ## Moderation
 
 `DELETE /api/admin/placements/{id}` (403 for non-admins): soft delete
@@ -567,7 +645,10 @@ per-account cooldowns (and admin exemption is an explicit, auditable flag).
 removed, seq order, derivatives as sources) inside the same transaction, then a
 `remove` NOTIFY fires. Center "current" follows the manifest: removing the top
 holder rewinds to the previous covering placement (documented consequence of
-manifest-derived history).
+manifest-derived history). With the render pipeline enabled (Phase 3, ships dark
+— see the pipeline section above) the transaction instead advances the chunk
+versions, sets `needs_rebuild` and queues chunk jobs; the same manifest-order
+rebuild happens in the worker and the pixels converge to the identical raster.
 
 ## Dig stack
 

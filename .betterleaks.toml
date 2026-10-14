@@ -28,7 +28,7 @@ matchesAny(attributes["path"] ?? "", [
 # smoke bot-account passwords and a localhost example URI in docs) are
 # allowlisted in .betterleaksignore by finding fingerprint — the values never
 # appear in any config file. Regenerate after intentional fixture changes:
-#   betterleaks git . -c .betterleaks.toml --report-format json \
+#   betterleaks git . -c .betterleaks.toml --log-opts=HEAD --report-format json \
 #     --report-path - | jq -r '.[].Fingerprint' >> .betterleaksignore
 #   betterleaks dir . -c .betterleaks.toml --report-format json \
 #     --report-path - | jq -r '.[].Fingerprint' >> .betterleaksignore

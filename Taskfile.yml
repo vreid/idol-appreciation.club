@@ -246,7 +246,11 @@ tasks:
   leaks:
     desc: betterleaks scan over git history + working tree (hard gate)
     cmds:
-      - betterleaks git . --config .betterleaks.toml --redact
+      # --log-opts=HEAD: scan the history reachable from the checked-out
+      # ref only (in CI, the PR merge commit or the pushed main commit).
+      # The default log opts include --all, which also scans every fetched
+      # remote branch, so one branch's finding failed every open PR.
+      - betterleaks git . --config .betterleaks.toml --redact --log-opts=HEAD
       - betterleaks dir . --config .betterleaks.toml --redact
 
   # ---------------- deploy.yml gates + aggregates ----------------

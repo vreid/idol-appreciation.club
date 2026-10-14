@@ -540,6 +540,26 @@ tasks:
         # Fresh clusters have no namespaces yet (helm --create-namespace only
         # helps the helm cmd; every kubectl apply before it needs this first).
         kubectl create namespace idol --dry-run=client -o yaml | kubectl apply -f -
+        # DATABASE_URL source gate: once the CloudNativePG Cluster is Ready,
+        # deploys must stop re-pointing the app at the managed service
+        # (tofu outputs) or every deploy would undo the cutover. Runtime
+        # truth — a Ready Cluster CR — is the flag; DATABASE_SOURCE env
+        # (managed|cnpg) overrides for drills. App credentials carry over
+        # from the live secret (cutover:restore recreates the same role in
+        # CNPG), so the swap changes the host only.
+        cnpg_ready="$(kubectl -n idol get postgresql.cnpg.io/idol-db \
+          -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+        if [ "${DATABASE_SOURCE:-auto}" = "cnpg" ] || { [ "${DATABASE_SOURCE:-auto}" = "auto" ] && [ "$cnpg_ready" = "True" ]; }; then
+          oldurl="$(kubectl -n idol get secret app-env -o jsonpath='{.data.DATABASE_URL}' 2>/dev/null | base64 -d || true)"
+          test -n "$oldurl" || { echo "CNPG source selected but app-env has no DATABASE_URL to carry credentials from" >&2; exit 1; }
+          appuser="$(printf '%s' "$oldurl" | sed -E 's#^[a-z]+://([^:@/]+):[^@]*@.*#\1#')"
+          apppass="$(printf '%s' "$oldurl" | sed -E 's#^[a-z]+://[^:@/]+:([^@]+)@.*#\1#')"
+          test -n "$appuser" && test -n "$apppass" || { echo "could not parse app credentials from the existing DATABASE_URL" >&2; exit 1; }
+          db="postgresql://${appuser}:${apppass}@idol-db-rw.idol.svc:5432/$(printf '%s' "$oldurl" | sed -E 's#.*/([^/?]+)(\?.*)?$#\1#')"
+          echo "database source: cnpg (idol-db-rw), credentials carried over"
+        else
+          echo "database source: managed (tofu outputs)"
+        fi
         # prod registration closed until an admin approves the account
         kubectl -n idol create secret generic app-env \
           --from-literal="DATABASE_URL=$db" \
@@ -554,7 +574,10 @@ tasks:
         # logical database is owned by the admin user, so on a fresh
         # instance backend migrations die with "permission denied for
         # schema public" (run 38466837880). Hand the app role the database
-        # and the schema. Idempotent; runs on every deploy.
+        # and the schema. Idempotent; runs on every deploy. Skipped once
+        # the CNPG Cluster is the database source — the grant targets the
+        # MANAGED service's admin account, which the cutover retires.
+        if [ "${DATABASE_SOURCE:-auto}" = "managed" ] || { [ "${DATABASE_SOURCE:-auto}" = "auto" ] && [ "$cnpg_ready" != "True" ]; }; then
         adminuser="$(jq -r '(.users? // .)[] | select(.type == "primary") | .username' /tmp/uc2.json)"
         adminpw="$(jq -r '(.users? // .)[] | select(.type == "primary") | .password' /tmp/uc2.json)"
         test -n "$adminuser" && test -n "$adminpw" || { echo "primary db user not found via API" >&2; exit 1; }
@@ -568,6 +591,9 @@ tasks:
           || { kubectl -n idol logs schema-grant >&2 || true; kubectl -n idol delete pod schema-grant --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true; exit 1; }
         kubectl -n idol logs schema-grant
         kubectl -n idol delete pod schema-grant --force --grace-period=0 --ignore-not-found >/dev/null 2>&1 || true
+        else
+          echo "schema-grant skipped (database source: cnpg)"
+        fi
       - |
         set -euo pipefail
         cp web/Caddyfile chart/caddy/Caddyfile

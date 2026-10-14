@@ -496,10 +496,26 @@ async fn admin_removal_updates_everything() {
         .json();
     assert_eq!(center["current"]["username"], "root");
 
-    // Tile freshness: the removed placement's chunk-region tile drops back
-    // (first GET serves stored stale bytes and queues the re-render).
+    // Tile freshness: the removed placement's chunk-region tile
+    // re-renders at a FRESH version (the removal's bump draws a new
+    // sequence value — versions never move backward, even when the
+    // removed row was the max). First GET serves stored stale bytes and
+    // queues the re-render; poll until fresh at any changed etag.
     let tile20 = format!("/api/tiles/20/{}/{}.webp", CENTER / 256, CENTER / 256);
-    let tile = tile_fresh(&server, &tile20, "\"1\"", Duration::from_secs(5)).await; // only the admin's placement remains
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let tile = loop {
+        let r = request(&server, "GET", &tile20, &[], vec![]).await;
+        let changed = r.header("etag").map(|e| e != "\"2\"").unwrap_or(false);
+        if changed && r.header("x-tile-stale").is_none() {
+            break r;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "tile never re-rendered after removal (etag {:?})",
+            r.header("etag")
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    };
     assert_eq!(tile.status, 200);
 
     // SSE delivered the remove event.
@@ -1008,6 +1024,110 @@ async fn rotated_tiles_render_deterministically() {
     assert!(!a.is_empty());
     assert_eq!(a, b, "same image+rot must render byte-identical tiles");
     assert_ne!(a, c, "rot must change the rendered pixels");
+}
+
+#[tokio::test]
+async fn rotated_aabb_invalidates_across_chunk_edge() {
+    // Issue #152 repro: a thin rect placed with rot=90 whose UNROTATED
+    // rect sits entirely in chunk (0,1) while its rotated AABB also
+    // covers chunk (0,0). The tile seq snapshot must expand from the
+    // AABB (what compositing painted), or chunk (0,0) renders as blank
+    // paper at seq 0 and never invalidates.
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "spinner").await;
+    let img = img::asymmetric_test_png(1000, 24);
+
+    // (12, 1500) unrotated = px 12..1012 x 1500..1524 -> chunk (0,1)
+    // only. Rotated 90: AABB 500..524 x 1012..2012 -> chunks (0,0)+(0,1).
+    let resp = place_rot(&server, &cookie, &img, 12, 1500, 1000, Some(90.0)).await;
+    assert_eq!(resp.status, 201, "{}", String::from_utf8_lossy(&resp.body));
+
+    let resp = request(&server, "GET", "/api/tiles/18/0/0.webp", &[], vec![]).await;
+    assert_eq!(resp.status, 200);
+    assert_ne!(
+        resp.headers.get("etag").map(|v| v.as_str()),
+        Some("\"0\""),
+        "chunk (0,0) holds rotated art but the tile resolved at seq 0"
+    );
+    // A tile far outside the world must be the constant blank paper.
+    let blank = request(&server, "GET", "/api/tiles/18/4095/4095.webp", &[], vec![]).await;
+    assert_eq!(blank.headers.get("etag").map(|v| v.as_str()), Some("\"0\""));
+    assert_ne!(resp.body, blank.body, "tile must not be blank paper");
+}
+
+#[tokio::test]
+async fn removing_non_topmost_placement_invalidates_tiles() {
+    // Issue #153: deleting a placement that is NOT the highest seq under
+    // a tile must still advance the chunk version, or the pre-removal
+    // bytes stay "fresh" (200 with the old ETag, 304 on If-None-Match)
+    // until an unrelated placement lands there.
+    let server = start_server(1, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "root2").await;
+    let user = register(&server, "pleb2").await;
+    let cx = CENTER - 8;
+
+    let a = place(&server, &admin, &png(64, 64), cx, cx, 64).await;
+    assert_eq!(a.status, 201);
+    let pid = a.json()["id"].as_str().unwrap().to_owned();
+    let b = place(&server, &user, &png(16, 16), cx + 4, cx + 4, 16).await;
+    assert_eq!(b.status, 201);
+
+    let tile = format!("/api/tiles/20/{}/{}.webp", CENTER / 256, CENTER / 256);
+    let tile = tile.as_str();
+    let before = request(&server, "GET", tile, &[], vec![]).await;
+    assert_eq!(before.status, 200);
+    let before_etag = before.headers.get("etag").unwrap().clone();
+
+    let del = request(
+        &server,
+        "DELETE",
+        &format!("/api/admin/placements/{pid}"),
+        &[("Cookie", &admin)],
+        vec![],
+    )
+    .await;
+    assert_eq!(del.status, 204);
+
+    // First GET after the removal: the stored tile is stale-serve (the
+    // chunk version moved past it) — old bytes, X-Tile-Stale, and a
+    // background re-render enqueued. Poll until that render lands.
+    let stale = request(&server, "GET", tile, &[], vec![]).await;
+    assert_eq!(stale.status, 200);
+    assert_eq!(
+        stale.headers.get("x-tile-stale").map(|v| v.as_str()),
+        Some("true"),
+        "removal must mark the tile stale (version moved past the stored row)"
+    );
+
+    // Each stale GET re-enqueues (resetting the quiet window), so the
+    // re-render fires at the MAX-DELAY anchor (12s default cfg), not the
+    // quiet window — poll slowly and past it.
+    let mut after: Option<Resp> = None;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let r = request(&server, "GET", tile, &[], vec![]).await;
+        if r.headers.get("etag").map(|v| v.as_str()) != Some(before_etag.as_str()) {
+            after = Some(r);
+            break;
+        }
+    }
+    let after = after.expect("tile never re-rendered after removal");
+    let after_etag = after.headers.get("etag").unwrap().clone();
+    assert_ne!(
+        after_etag, before_etag,
+        "removal of a covered placement left the tile ETag unchanged"
+    );
+    assert_ne!(after.body, before.body, "tile bytes must change");
+
+    let reval = request(
+        &server,
+        "GET",
+        tile,
+        &[("If-None-Match", after_etag.as_str())],
+        vec![],
+    )
+    .await;
+    assert_eq!(reval.status, 304);
 }
 
 #[tokio::test]

@@ -385,8 +385,9 @@ placement bursts, `stale-while-revalidate` serves tiles instantly while
 refreshing them in the background, the SSE-driven client refetch bounds visible
 staleness to ~1s past a place/remove commit, and (this change) the SERVER now
 stale-serves from stored bytes instead of rendering on the request path; the
-ETag keeps every revalidation a cheap 304 while the seq is unchanged. Removed
-art lowers maxSeq ⇒ the ETag drops back and content re-renders from chunks.
+ETag keeps every revalidation a cheap 304 while the seq is unchanged. A removal
+advances the chunk version past the old max (fresh sequence draw), so the ETag
+changes and the affected tiles re-render exactly once.
 
 ### Server-side stale-while-revalidate (the pile-wedge fix)
 
@@ -406,6 +407,40 @@ inline — a cold tile must produce something — see _shedding_ below for the f
 exception. Conditional GETs keep working in the stale window: the stored ETag
 still 304s (bytes match), so a poller that already has the stale bytes costs
 nothing.
+
+### The chunk-seq rollup (`chunk_seqs`, migration 0007)
+
+Tile staleness asks one question per GET: _what is the newest version of the
+content under this tile's rectangle?_ Answering it from `placements` (a GiST
+recheck per request) re-derives on every read what changes only on write, and
+the row count is pile-depth-dependent — the incident's other half: at 51k
+placements a single low-zoom GET fetched its whole covering row set (hundreds of
+MB across concurrent GETs) and OOM-killed pods. The doctrine now:
+
+- **Writes maintain the rollup.** Every chunk a placement touches gets a row in
+  `chunk_seqs (cx, cy, max_seq)`, bumped by `chunks::bump_chunk_seqs` in the
+  SAME transaction as the write (place insert, import batch) — from the
+  placement's rotated AABB, the same span compositing painted, so a corner chunk
+  reached only by rotation invalidates too. **Removals re-bump**: a removal
+  replays the chunk rasters and then draws a FRESH `nextval('placement_seq')` as
+  the chunk's new version (no row is inserted). Versions therefore only move
+  forward — a removed placement that was painted over still advances its chunks
+  past the old max, tiles re-render exactly once, and (as a side effect) the
+  `/api/dig` etag advances with the sequence.
+- **Reads touch only the rollup.** `TileCtx::prefetch` fetches the PK range
+  `cx/cy BETWEEN` the tile's chunk span — view cost independent of pile depth,
+  no planner traps, placement rows never consulted at render time.
+- **Seed at deploy.** Migration 0007 seeds the table from live placements'
+  generated `bbox` corners; the seed runs once at deploy (2s at the current
+  pile) and subsequent writes keep it fresh.
+- **Bounded node pyramid.** The per-node max is precomputed bottom-up from the
+  chunk map — one max-level per zoom between the entry tile and `BASE_Z` (~4/3 ×
+  the chunk rows total). Materializing per-node memos on demand is a footgun
+  this replaces: a z5 entry GET would recurse (4^13−1)/3 ≈ 22M nodes (~1.5 GB)
+  before serving a byte (#150). The z≤4 memory cache similarly keeps ONLY the
+  newest seq per coordinate (#155) — the ancestors of the whole pyramid
+  re-render every quiet window while anyone is zoomed out, and keying by seq as
+  well would leak one entry per render for the life of the pod.
 
 ### The render queue (`tile_render_jobs`)
 

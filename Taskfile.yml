@@ -719,8 +719,7 @@ tasks:
             *)
               a="$(getent ahosts "$entry" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
               [ -n "$a" ] || a="$(dig +short A "$entry" 2>/dev/null | grep -E '^[0-9.]+$' | tr '\n' ' ')"
-              [ -n "$a" ] || a="$(python3 -c 'import socket,sys
-print(" ".join(x[4][0] for x in socket.getaddrinfo(sys.argv[1], None)))' "$entry" 2>/dev/null)"
+              [ -n "$a" ] || a="$(python3 -c 'import socket,sys; print(" ".join(x[4][0] for x in socket.getaddrinfo(sys.argv[1], None)))' "$entry" 2>/dev/null)"
               addrs="$addrs $a"
               ;;
           esac

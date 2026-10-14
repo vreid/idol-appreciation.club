@@ -497,6 +497,20 @@ max-delay anchor) and `last_bump_at` (the quiet anchor):
   admission either; it can only re-use pixels that a placement decode already
   admitted, and a cached raster of a historical over-budget chunk serves reads
   exactly like a fresh one.
+- **Per-render logs.** One log unit == one render entry (background queue job,
+  inline GET render, prewarm tile), never a recursion node. Queue transitions
+  log at info: `tile render queued` (fresh (re-)enqueues only — quiet-window
+  bumps stay silent, so volume tracks renders, not stale GETs) with the
+  post-enqueue `depth`; `tile render claimed` (the worker takes a row, lease
+  reclaims included); `tile render done` with `dur_ms`, `outcome` (`rendered` =
+  pixel work happened; `fresh_recheck` = the recheck found bytes already fresh —
+  mem/S3 hit at the current seq — or nothing left to draw) and `bytes`. Any
+  single render over 2 s additionally WARNs: `slow tile render` with `dur_ms`
+  and the covering snapshot's bbox-probe `rows` count as the one-field context
+  (the 2026-10-14 pile-wedge incident appeared as row explosions). Inline GET
+  renders log the same `done` grammar at debug (default `RUST_LOG=info` keeps
+  them out of pod logs) and promote to the slow WARN; prewarm tiles only WARN
+  when slow.
 
 The table IS the queue so a future dedicated render node group (out-of-process
 worker Deployment, same image, render role, cheap 2c/2G nodes scaling 0..9) can

@@ -6,6 +6,13 @@
 //! (no stored tile at all) stay inline so a cold tile always produces
 //! bytes, except under render-storm floods, where the queue depth doubles
 //! as a congestion signal and cold requests are shed with `202`.
+//!
+//! Per-render logging: one log unit == one render entry — a background
+//! queue job, an inline GET render, or a prewarm tile — never a recursion
+//! node. Queue transitions log at info (`tile render queued|claimed`,
+//! `tile render done` with `dur_ms`/`outcome`/`bytes`); any single render
+//! over [`SLOW_RENDER`] additionally WARNs (`slow tile render`) with the
+//! tile coords, duration, and the covering snapshot's row count.
 
 use crate::error::{internal, AppError, AppResult};
 use crate::img;
@@ -150,7 +157,17 @@ impl RenderQueue {
         )
         .await;
         match recorded {
-            Ok((bumped, inserted)) if bumped || inserted => {}
+            Ok((bumped, inserted)) if bumped || inserted => {
+                if inserted {
+                    // Queue-transition log: only a fresh (or done→refired)
+                    // enqueue is a transition. Quiet-window bumps of an
+                    // already-pending row fire per stale GET and stay
+                    // unlogged — this line is bounded by the coalescing,
+                    // at most one per coord per render cycle.
+                    let depth = self.depth().await;
+                    tracing::info!(z, x, y, depth, "tile render queued");
+                }
+            }
             // Dropped by the cap, raced with an in-flight render, or the
             // query failed — in every case the next stale GET retries.
             _ => {
@@ -295,8 +312,35 @@ impl RenderExecutor for InProcessExecutor {
                 tokio::time::sleep(Duration::from_millis(pause)).await;
             }
             let ctx = TileCtx::prefetch(&self.app, z, x, y).await?;
-            tile_bytes_inner(&self.app, &ctx, z, x, y, Stale::Never, Admission::Ungated).await?;
-            crate::metrics::background_render_done(t0.elapsed());
+            let resolved =
+                tile_bytes_inner(&self.app, &ctx, z, x, y, Stale::Never, Admission::Ungated)
+                    .await?;
+            let (bytes, rendered) = match resolved {
+                TileResolved::Bytes {
+                    bytes, rendered, ..
+                } => (bytes, rendered),
+                TileResolved::Shed => unreachable!("Stale::Never never sheds"),
+            };
+            let dur = t0.elapsed();
+            crate::metrics::background_render_done(dur);
+            // `fresh_recheck`: the recheck found the work already done at
+            // the current seq (concurrent inline render, mem/S3 hit) or
+            // nothing left to draw (empty) — no pixel work happened.
+            let outcome = if rendered {
+                "rendered"
+            } else {
+                "fresh_recheck"
+            };
+            tracing::info!(
+                z,
+                x,
+                y,
+                dur_ms = dur.as_millis() as u64,
+                outcome,
+                bytes = bytes.len(),
+                "tile render done"
+            );
+            log_slow_render(z, x, y, dur, ctx.rows);
             Ok(())
         })
     }
@@ -337,6 +381,7 @@ async fn render_worker(app: App, executor: impl RenderExecutor) {
     loop {
         let claimed = match app.render_queue.claim_due(quiet, max_delay).await {
             Ok(Some((z, x, y))) => {
+                tracing::info!(z, x, y, "tile render claimed");
                 if let Err(err) = executor.render(z, x, y).await {
                     tracing::warn!(z, x, y, %err, "background tile render failed; lease reclaim will retry");
                 } else {
@@ -388,12 +433,20 @@ pub async fn get_tile(
     if !is_valid_tile(z, x, y) {
         return Err(AppError::NotFound);
     }
+    // First-ever renders run inline on this path; time the whole
+    // resolution (snapshot + walk) as the render's duration.
+    let t0 = Instant::now();
     // One-shot snapshot for this render (issue #120): two short pool
     // holds, then the walk runs connection-free.
     let ctx = TileCtx::prefetch(&app, z, x, y).await?;
     let resolved = tile_bytes(&app, &ctx, z, x, y, Stale::Allow, Admission::Gated).await?;
-    let (bytes, seq, stale) = match resolved {
-        TileResolved::Bytes { bytes, seq, stale } => (bytes, seq, stale),
+    let (bytes, seq, stale, rendered) = match resolved {
+        TileResolved::Bytes {
+            bytes,
+            seq,
+            stale,
+            rendered,
+        } => (bytes, seq, stale, rendered),
         // Render-storm flood: queue at capacity, no stored bytes to serve.
         // Shed instead of rendering inline (bounded CPU); the client's
         // next revalidation renders normally once the backlog drains.
@@ -408,6 +461,24 @@ pub async fn get_tile(
                 .into_response())
         }
     };
+    // Inline (cold first-ever) render on the GET path: debug normally —
+    // the queue transitions carry routine visibility at info — promoted
+    // to the shared slow-render WARN past SLOW_RENDER. Cache/stale serves
+    // never log here (volume safety); the enqueue on the stale-serve path
+    // already emitted the queue's `queued` line.
+    if rendered {
+        let dur = t0.elapsed();
+        tracing::debug!(
+            z,
+            x,
+            y,
+            dur_ms = dur.as_millis() as u64,
+            outcome = "rendered",
+            bytes = bytes.len(),
+            "tile render done"
+        );
+        log_slow_render(z, x, y, dur, ctx.rows);
+    }
     let inm = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok());
@@ -586,6 +657,9 @@ struct TileCtx {
     /// The root tile's own staleness row (the lazy level fetches only
     /// cover strictly deeper levels).
     root_stored: Option<i64>,
+    /// Live placements the root bbox probe returned — the one-field
+    /// context on slow-render WARNs.
+    rows: usize,
 }
 
 impl TileCtx {
@@ -617,6 +691,7 @@ impl TileCtx {
             .fetch_all(&app.pool),
         )
         .await?;
+        let probe_rows = rows.len();
         let mut chunk_seqs: HashMap<(i64, i64), i64> = HashMap::new();
         for (seq, x, y, w, h) in rows {
             let (w, h) = (i64::from(w), i64::from(h));
@@ -638,6 +713,7 @@ impl TileCtx {
             stored_levels: StdMutex::new(HashMap::new()),
             node_seqs: StdMutex::new(HashMap::new()),
             root_z: z,
+            rows: probe_rows,
             root_stored: crate::dbq::timed(
                 "tiles_meta",
                 sqlx::query_as("SELECT seq FROM tiles WHERE z = $1 AND x = $2 AND y = $3")
@@ -735,11 +811,45 @@ impl TileCtx {
 }
 
 /// Outcome of a resolution: bytes with the seq they correspond to (the
-/// STORED seq when stale-served — the ETag always matches the bytes) and
-/// whether they are stale, or a shed signal for flood control.
+/// STORED seq when stale-served — the ETag always matches the bytes),
+/// whether they are stale, and whether THIS node performed pixel work
+/// (`rendered`) or was served without it (mem/S3 hit at the current seq,
+/// or the constant empty tile) — the background executor and the inline
+/// GET path log that distinction as `outcome=rendered|fresh_recheck`.
+/// `Shed` is the flood-control signal.
 enum TileResolved {
-    Bytes { bytes: Bytes, seq: i64, stale: bool },
+    Bytes {
+        bytes: Bytes,
+        seq: i64,
+        stale: bool,
+        rendered: bool,
+    },
     Shed,
+}
+
+/// A single render (background job, inline GET render, prewarm tile)
+/// taking longer than this WARNs. Warm renders are tens of ms, so >2s is
+/// exactly the per-render slow signal pod logs need.
+const SLOW_RENDER: Duration = Duration::from_secs(2);
+
+/// Slow-render WARN for one completed render, with the tile coords, the
+/// duration, and the covering snapshot's row count as the one-field
+/// context (the 2026-10-14 pile-wedge showed up as bbox-probe row
+/// explosions). Called at per-request / per-queue-entry boundaries ONLY —
+/// never per recursion node — so a pyramid render warns once, not 4^z
+/// times.
+fn log_slow_render(z: i64, x: i64, y: i64, dur: Duration, ctx_rows: usize) {
+    if dur <= SLOW_RENDER {
+        return;
+    }
+    tracing::warn!(
+        z,
+        x,
+        y,
+        dur_ms = dur.as_millis() as u64,
+        rows = ctx_rows as u64,
+        "slow tile render"
+    );
 }
 
 // Records its resolution path (hit_mem / hit_s3 / render / empty /
@@ -769,6 +879,7 @@ async fn tile_bytes_inner(
             bytes: Bytes::from(bytes),
             seq: 0,
             stale: false,
+            rendered: false,
         });
     }
     let key: CacheKey = (z, x, y, seq);
@@ -778,6 +889,7 @@ async fn tile_bytes_inner(
             bytes,
             seq,
             stale: false,
+            rendered: false,
         });
     }
     // Serialize renders per tile so concurrent misses don't duplicate work.
@@ -796,6 +908,7 @@ async fn tile_bytes_inner(
             bytes,
             seq,
             stale: false,
+            rendered: false,
         });
     }
     let object_key = tile_key(z, x, y);
@@ -811,6 +924,7 @@ async fn tile_bytes_inner(
                 bytes,
                 seq,
                 stale: false,
+                rendered: false,
             });
         }
     }
@@ -831,6 +945,7 @@ async fn tile_bytes_inner(
                     bytes: Bytes::from(bytes),
                     seq: stored_seq,
                     stale: true,
+                    rendered: false,
                 });
             }
         } else if app.render_queue.congested().await {
@@ -882,6 +997,7 @@ async fn tile_bytes_inner(
         bytes: encoded,
         seq,
         stale: false,
+        rendered: true,
     })
 }
 
@@ -970,6 +1086,7 @@ pub async fn prewarm_chunks(app: &App, chunks: &[(i64, i64)]) -> AppResult<u64> 
                     // Stale::Never: prewarm is a render, not a serve — it
                     // always resolves fresh (and never sheds), matching the
                     // parent-render path's guarantees.
+                    let t0 = Instant::now();
                     let tile_ctx =
                         TileCtx::prefetch(app, z, cx * span + dx, cy * span + dy).await?;
                     match tile_bytes(
@@ -983,7 +1100,19 @@ pub async fn prewarm_chunks(app: &App, chunks: &[(i64, i64)]) -> AppResult<u64> 
                     )
                     .await?
                     {
-                        TileResolved::Bytes { .. } => rendered += 1,
+                        TileResolved::Bytes { .. } => {
+                            // Prewarm tiles are renders too: slow ones get
+                            // the shared WARN; no routine line (volume
+                            // safety — an import prewarms 7 tiles/chunk).
+                            log_slow_render(
+                                z,
+                                cx * span + dx,
+                                cy * span + dy,
+                                t0.elapsed(),
+                                tile_ctx.rows,
+                            );
+                            rendered += 1;
+                        }
                         TileResolved::Shed => unreachable!("Stale::Never never sheds"),
                     }
                 }

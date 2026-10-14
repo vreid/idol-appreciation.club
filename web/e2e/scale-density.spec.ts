@@ -159,6 +159,13 @@ const wait = (ms: number): Promise<void> =>
   });
 
 test.describe("scale density", () => {
+  // These tests measure tile state on a SHARED live backend: parallel
+  // workers storm it (4× goto + screenshot loops) and the views thrash
+  // each other's caches. Serialize; the sweep is the point.
+  test.describe.configure({ mode: "serial" });
+  // Far-zoom cold loads fetch the whole world; the load event alone can
+  // outlive the default 30s test timeout on a live backend.
+  test.setTimeout(120_000);
   // The centre pile.
   const VIEW = { x: 0, y: 0 };
 
@@ -166,7 +173,9 @@ test.describe("scale density", () => {
     test(`viewport completeness at z${zoom}`, async ({ page }) => {
       await stubDensePile(page);
       const t0 = Date.now();
-      await page.goto(`/#${zoom}/0/0`);
+      // domcontentloaded: the load event waits for every tile, which is
+      // exactly what the convergence poll below is measuring.
+      await page.goto(`/#${zoom}/0/0`, { waitUntil: "domcontentloaded" });
       await page.waitForSelector(".map-root");
 
       const vp = page.viewportSize() ?? { width: 1280, height: 720 };
@@ -192,7 +201,7 @@ test.describe("scale density", () => {
     page,
   }) => {
     await stubDensePile(page);
-    await page.goto("/#16/0/0");
+    await page.goto("/#16/0/0", { waitUntil: "domcontentloaded" });
     await page.waitForSelector(".map-root");
     await wait(1_000);
 

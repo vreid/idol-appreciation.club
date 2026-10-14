@@ -162,40 +162,37 @@ test.describe("scale density", () => {
     await page.waitForLoadState("networkidle");
     await page.waitForTimeout(SETTLE_MS);
 
-    const heartbeats: number[] = await page.evaluate(async () => {
-      const gaps: number[] = [];
-      let last = performance.now();
-      const deadline = last + 2_500;
-      let stop = false;
-      const tick = (now: number) => {
-        gaps.push(now - last);
-        last = now;
-        if (now < deadline && !stop) requestAnimationFrame(tick);
-        else stop = true;
-      };
-      requestAnimationFrame(tick);
+    // Headless throttles requestAnimationFrame, so main-thread stalls are
+    // measured with the longtask observer instead: any single task over
+    // the budget while zooming fails the view.
+    const worstTaskMs = await page.evaluate(async () => {
+      const tasks: number[] = [];
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) tasks.push(entry.duration);
+      });
+      observer.observe({ entryTypes: ["longtask"] });
       // Wheel steps are pre-scheduled on timers so the harness adds no
-      // awaited work while the heartbeat samples the main thread.
+      // awaited work while the observer samples the main thread.
       for (let i = 0; i < 4; i++) {
-        setTimeout(
-          () => window.dispatchEvent(new WheelEvent("wheel", { deltaY: 240 })),
-          i * 150,
-        );
+        setTimeout(() => {
+          window.dispatchEvent(new WheelEvent("wheel", { deltaY: 240 }));
+        }, i * 150);
       }
       for (let i = 0; i < 4; i++) {
         setTimeout(
-          () => window.dispatchEvent(new WheelEvent("wheel", { deltaY: -240 })),
+          () => {
+            window.dispatchEvent(new WheelEvent("wheel", { deltaY: -240 }));
+          },
           700 + i * 150,
         );
       }
       await wait(2_300);
-      gaps.shift();
-      return gaps;
+      observer.disconnect();
+      return tasks.length === 0 ? 0 : Math.max(...tasks);
     });
-    const maxGap = Math.max(...heartbeats);
     expect(
-      maxGap,
-      `main thread stalled ${maxGap.toFixed(0)}ms during zoom (budget ${FRAME_GAP_BUDGET_MS}ms)`,
+      worstTaskMs,
+      `main thread ran a ${worstTaskMs.toFixed(0)}ms task during zoom (budget ${FRAME_GAP_BUDGET_MS}ms)`,
     ).toBeLessThanOrEqual(FRAME_GAP_BUDGET_MS);
   });
 });

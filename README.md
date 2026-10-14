@@ -16,4 +16,7 @@ front of a Kubernetes LoadBalancer.
 - `.github/workflows/` — CI, infra apply/destroy/recreate, deploy
 - `docs/infra.md` — infrastructure runbook, costs, destroy/recreate guide
 - `docs/dev.md` — development toolchain (mise + task), local CI gates
+- `docs/scaling-architecture.md` — scaling and render architecture design
+  (rollout tracked in
+  [#163](https://github.com/vreid/idol-appreciation.club/issues/163))
 - `CONTRIBUTING.md` — conventional-commit PR titles, releases, image tags

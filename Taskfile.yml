@@ -761,11 +761,12 @@ tasks:
         kubeconform -strict -summary -ignore-missing-schemas \
           -kubernetes-version 1.32.0 chart/cnpg/cnpg-operator-1.29.3.yaml
         # Provenance guard: the committed manifest must equal upstream
-        # v1.29.3 with ONLY the image-digest rewrite applied.
+        # v1.29.3 with ONLY the image-digest rewrite applied, below the
+        # fixed 16-line provenance header.
         got="$(curl -sL https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v1.29.3/cnpg-1.29.3.yaml \
           | sed 's#ghcr.io/cloudnative-pg/cloudnative-pg:1\.29\.3#ghcr.io/cloudnative-pg/cloudnative-pg@sha256:cc0594bd9fd8cdd654dfbd91e4cf2c8fc1bfc4e3a09c4a90a2ab4ffc524f1db5#g' \
           | sha256sum | cut -d' ' -f1)"
-        want="$(grep -v '^#' chart/cnpg/cnpg-operator-1.29.3.yaml | sha256sum | cut -d' ' -f1)"
+        want="$(tail -n +17 chart/cnpg/cnpg-operator-1.29.3.yaml | sha256sum | cut -d' ' -f1)"
         test "$got" = "$want" \
           || { echo "pinned operator manifest drifted from upstream v1.29.3 + digest rewrite" >&2; exit 1; }
         kubectl apply -f chart/cnpg/cnpg-operator-1.29.3.yaml

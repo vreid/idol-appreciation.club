@@ -23,6 +23,15 @@ idol-appreciation.club {
 		@index path / /index.html
 		header @index Cache-Control "no-cache"
 
+		# Defence in depth (#82): the SPA is self-originated (bundled module
+		# script, no inline JS); blob:/data: only for image previews.
+		header {
+			Strict-Transport-Security "max-age=31536000; includeSubDomains"
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "strict-origin-when-cross-origin"
+		}
+
 		try_files {path} /index.html
 		file_server
 	}

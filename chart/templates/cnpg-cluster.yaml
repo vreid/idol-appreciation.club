@@ -28,9 +28,16 @@ spec:
   bootstrap:
     initdb:
       database: {{ .Values.cnpg.appDatabase }}
-      # No import: the data lands via `cnpg:cutover:dump|restore`
-      # (pg_dump from the managed service while prod still serves from
-      # it; the switch is the only blip).
+      # CNPG-native recreate (user ruling 2026-10-14: the pile is
+      # disposable, no dump/restore stage): initdb creates the app role
+      # itself and generates its password into the secret below — the
+      # deploy task reads the same secret, so the DATABASE_URL swap at
+      # first deploy is deterministic. As DB owner, the app role keeps
+      # CREATE on schema public (the PG15 revocation hits PUBLIC only),
+      # so backend migrations run clean on a fresh cluster.
+      owner: app
+      secret:
+        name: cnpg-app-creds
   storage:
     size: {{ .Values.cnpg.storage.size }}
     storageClass: {{ .Values.cnpg.storage.storageClass }}

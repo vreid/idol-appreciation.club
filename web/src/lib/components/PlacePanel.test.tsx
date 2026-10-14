@@ -36,9 +36,6 @@ function makeClient(): ApiClient {
     updateTags: vi.fn(() => Promise.resolve({ id: "p1", tags: [] })),
     pendingAccounts: vi.fn(() => Promise.resolve([])),
     approveAccount: vi.fn(() => Promise.resolve()),
-    dig: vi.fn(() =>
-      Promise.resolve({ stack: [], total: 0, truncated: false }),
-    ),
     feed: vi.fn(() => Promise.resolve({ items: [], next_before: null })),
     hot: vi.fn(() =>
       Promise.resolve({ window_hours: 24, total: 0, cells: [] }),

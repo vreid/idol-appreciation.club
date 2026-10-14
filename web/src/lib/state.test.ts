@@ -24,9 +24,6 @@ function makeClient(
     logout: vi.fn(() => Promise.resolve()),
     pendingAccounts: vi.fn(() => Promise.resolve([])),
     approveAccount: vi.fn(() => Promise.resolve()),
-    dig: vi.fn(() =>
-      Promise.resolve({ stack: [], total: 0, truncated: false }),
-    ),
     feed: vi.fn(() => Promise.resolve({ items: [], next_before: null })),
     me: vi.fn(() => Promise.resolve(null)),
     place: vi.fn((req: PlaceRequest) => {
@@ -383,7 +380,7 @@ describe("tags (store wiring)", () => {
     });
     const { store } = makeStore(client);
     await store.refreshMe();
-    store.selectPlace(SELECTED, { x: 10, y: 10 });
+    store.selectPlace(SELECTED);
     await Promise.resolve();
     const result = await store.updateTags(SELECTED.id, ["stage", "encore"]);
     expect(client.updateTags).toHaveBeenCalledWith(SELECTED.id, [

@@ -97,11 +97,6 @@ export default function PlaceDetail(props: {
       >
         <div class="pd-head">
           <strong class="pd-user">@{store.selectedPlace?.username}</strong>
-          <Show when={store.digTotal > 1 && store.digIndex >= 0}>
-            <span class="pd-depth" title="Wheel flips through the pile">
-              {store.digIndex + 1} of {store.digTotal}
-            </span>
-          </Show>
           <button
             class="pd-close"
             type="button"

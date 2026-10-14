@@ -1131,6 +1131,93 @@ async fn removing_non_topmost_placement_invalidates_tiles() {
 }
 
 #[tokio::test]
+async fn removal_erases_pixels_not_just_etags() {
+    // Issue #159: removal must REBUILD affected chunks from the live
+    // set (blank canvas + remaining placements). Compositing over the
+    // current raster leaves the removed image as a ghost that reappears
+    // the next time the tile renders from chunks.
+    let server = start_server(1, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "root9").await;
+    let user = register(&server, "pleb9").await;
+
+    // Tile-local grid: the z20 tile at CENTER holds px [0, 256).
+    let bx = CENTER / 256;
+    let red = img::solid_png(64, 64, [220, 40, 40]);
+    let green = img::solid_png(48, 48, [30, 180, 60]);
+    let a = place(&server, &admin, &red, CENTER + 100, CENTER + 100, 64).await;
+    assert_eq!(a.status, 201);
+    let aid = a.json()["id"].as_str().unwrap().to_owned();
+    let b = place(&server, &user, &green, CENTER + 140, CENTER + 140, 48).await;
+    assert_eq!(b.status, 201);
+
+    let tile = format!("/api/tiles/20/{}/{}.webp", bx, bx);
+    let tile = tile.as_str();
+
+    let del = request(
+        &server,
+        "DELETE",
+        &format!("/api/admin/placements/{aid}"),
+        &[("Cookie", &admin)],
+        vec![],
+    )
+    .await;
+    assert_eq!(del.status, 204);
+
+    // Poll past the stale window for the re-render from the rebuilt
+    // chunk, then assert PIXELS: A's red must be gone everywhere —
+    // B's area shows B, A-only area shows paper, never red.
+    let mut fresh: Option<Resp> = None;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let r = request(&server, "GET", tile, &[], vec![]).await;
+        if r.header("x-tile-stale").is_none() && r.header("etag") != Some("\"2\"") {
+            fresh = Some(r);
+            break;
+        }
+    }
+    let fresh = fresh.expect("tile never re-rendered after removal");
+    assert_eq!(fresh.status, 200);
+
+    // VipsImage is !Send: decode + all pixel reads inside one blocking
+    // task (same pattern as the render path).
+    let body = fresh.body;
+    let (a_only, b_area, paper) = tokio::task::spawn_blocking(move || {
+        let (decoded, _) = img::decode(&body, 16_000_000).expect("decode tile");
+        (
+            img::get_pixel(&decoded, 110, 110), // A-only corner
+            img::get_pixel(&decoded, 160, 160), // B covers A here
+            img::get_pixel(&decoded, 250, 250), // never painted
+        )
+    })
+    .await
+    .unwrap();
+    let red = [220, 40, 40];
+    assert_ne!(
+        a_only, red,
+        "removed image's pixels survived the rebuild (A-only area)"
+    );
+    assert_ne!(
+        b_area, red,
+        "removed image's pixels survived the rebuild (under B)"
+    );
+    // WebP is lossy: allow a small per-channel delta.
+    assert!(
+        b_area
+            .iter()
+            .zip([30, 180, 60])
+            .all(|(g, e)| g.abs_diff(e) <= 3),
+        "B's art must survive the rebuild (got {b_area:?})"
+    );
+    assert!(
+        paper
+            .iter()
+            .zip([243, 240, 232])
+            .all(|(p, e)| p.abs_diff(e) <= 3),
+        "untouched area must stay paper (got {paper:?})"
+    );
+}
+
+#[tokio::test]
 async fn max_long_edge_is_4096() {
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let cookie = register(&server, "big").await;

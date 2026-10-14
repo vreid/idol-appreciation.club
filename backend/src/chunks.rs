@@ -184,7 +184,14 @@ async fn replay_chunks_locked(
             .fetch_all(&mut **tx),
         )
         .await?;
-        let canvas = crate::store::get_bytes(&app.store, &key).await?;
+        // Rebuild from BLANK (issue #159): compositing the live
+        // placements over the CURRENT raster never erases the removed
+        // art — it only gets hidden where something else painted over
+        // it, and a chunk with zero live placements re-encoded
+        // unchanged. The doc-comment contract is "blank canvas, then
+        // every non-removed placement in seq order"; the live set was
+        // fetched above, so start from transparent and repaint it all.
+        let canvas_owned: Option<Vec<u8>> = None;
         let mut overlays: Vec<(Vec<u8>, i64, i64, f32)> = Vec::with_capacity(rows.len());
         for row in rows {
             let image_key: String = row.get("image_key");
@@ -203,7 +210,6 @@ async fn replay_chunks_locked(
             let aabb = crate::world::rotated_aabb(px, py, i64::from(w), i64::from(h), rot);
             overlays.push((bytes, aabb.x - qx0, aabb.y - qy0, rot));
         }
-        let canvas_owned = canvas.clone();
         let encoded =
             tokio::task::spawn_blocking(move || img::replay_canvas(canvas_owned, &overlays))
                 .await

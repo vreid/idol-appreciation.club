@@ -122,4 +122,5 @@ backend/tests/common/mod.rs:generic-password:296
 backend/tests/integration.rs:generic-password:593
 backend/tests/integration.rs:generic-password:604
 # rate-limit test fixture (PR #137): the victim login's wrong-credential literal
-backend/tests/integration.rs:generic-password:1334
+# (line number drifts with every test insertion above it — regenerate, not chase)
+backend/tests/integration.rs:generic-password:1421

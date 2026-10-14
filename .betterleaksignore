@@ -124,3 +124,11 @@ backend/tests/integration.rs:generic-password:604
 # rate-limit test fixture (PR #137): the victim login's wrong-credential literal
 # (line number drifts with every test insertion above it — regenerate, not chase)
 backend/tests/integration.rs:generic-password:1421
+# cnpg backup wave (#173 content): the pinned barman-cloud plugin release
+# manifest ships an EXAMPLE Secret whose data is the public sidecar image
+# ref base64-encoded; upstream doc content, no credential involved.
+5562dbaa1d341f4f4b1b7ef7edc914c8fe858156:chart/cnpg/barman-cloud-plugin-0.15.1.yaml:kubernetes-secret-yaml:976
+# local tofu plan/state trees are gitignored build artifacts; flagged only in
+# filesystem scans of dev machines, never present on CI checkouts
+tofu/.terraform/terraform.tfstate:generic-api-key:6
+tofu/.terraform/terraform.tfstate:generic-api-key:41

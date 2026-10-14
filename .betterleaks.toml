@@ -18,6 +18,7 @@ matchesAny(attributes["path"] ?? "", [
     `(^|/)\.git/`,
     `(^|/)node_modules/`,
     `(^|/)target/`,
+    `(^|/)\.terraform/`,
     `(^|/)dist/`,
     `^test-assets/idols/`,
     `^test-assets/idols-food/`,

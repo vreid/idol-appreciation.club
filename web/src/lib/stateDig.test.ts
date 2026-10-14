@@ -36,6 +36,7 @@ function digClient(): ApiClient {
     pendingAccounts: vi.fn(() => Promise.resolve([])),
     approveAccount: vi.fn(() => Promise.resolve()),
     dig: vi.fn(() => Promise.resolve({ stack, total: 3, truncated: false })),
+    feed: vi.fn(() => Promise.resolve({ items: [], next_before: null })),
   };
 }
 

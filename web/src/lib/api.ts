@@ -12,6 +12,7 @@
 import type {
   CenterInfo,
   DigStack,
+  Feed,
   Me,
   PendingAccount,
   Placement,
@@ -22,6 +23,7 @@ import type {
 import {
   centerInfoSchema,
   digStackSchema,
+  feedSchema,
   meSchema,
   pendingAccountsSchema,
   placementsNearSchema,
@@ -35,6 +37,8 @@ export type {
   CenterInfo,
   DigEntry,
   DigStack,
+  Feed,
+  FeedEntry,
   Me,
   PendingAccount,
   Placement,
@@ -90,6 +94,13 @@ export interface ApiClient {
   /** Replaces a placement's tag set (owner or admin); returns the
    * authoritative normalized list. */
   updateTags: (placementId: string, tags: string[]) => Promise<TagList>;
+  /** Newest placements (newest-first), optional normalized-tag filter,
+   * keyset-paginated via `before`. */
+  feed: (opts: {
+    tag?: string;
+    before?: number;
+    limit?: number;
+  }) => Promise<Feed>;
   removePlacement: (placementId: string) => Promise<void>;
   pendingAccounts: () => Promise<PendingAccount[]>;
   approveAccount: (username: string) => Promise<void>;
@@ -184,6 +195,38 @@ async function putTags(
       body: JSON.stringify({ tags }),
     }),
     "placement tags",
+  );
+}
+
+/** Query string for GET /api/feed; unset/empty params are omitted. */
+function feedQuery(opts: {
+  tag?: string;
+  before?: number;
+  limit?: number;
+}): string {
+  const query = new URLSearchParams();
+  if (opts.tag !== undefined && opts.tag !== "") {
+    query.set("tag", opts.tag);
+  }
+  if (opts.before !== undefined) {
+    query.set("before", String(opts.before));
+  }
+  if (opts.limit !== undefined) {
+    query.set("limit", String(opts.limit));
+  }
+  const qs = query.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/** GET /api/feed — the newest placements, newest-first. */
+async function fetchFeed(
+  request: RequestFn,
+  opts: { tag?: string; before?: number; limit?: number },
+): Promise<Feed> {
+  return parseOk(
+    feedSchema,
+    await request(`/api/feed${feedQuery(opts)}`),
+    "feed",
   );
 }
 
@@ -295,5 +338,6 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       });
     },
     updateTags: (placementId, tags) => putTags(request, placementId, tags),
+    feed: (opts) => fetchFeed(request, opts),
   };
 }

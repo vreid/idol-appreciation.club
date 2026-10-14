@@ -17,6 +17,7 @@ import PlaceDetail, {
   type SelectionGeometry,
 } from "./lib/components/PlaceDetail";
 import TopBar from "./lib/components/TopBar";
+import FeedPanel from "./lib/components/FeedPanel";
 import PlacePanel from "./lib/components/PlacePanel";
 import Toasts from "./lib/components/Toasts";
 import AboutModal from "./lib/components/AboutModal";
@@ -187,6 +188,45 @@ function selectionGeometry(
 
 /** Panel actions live in App so Report/Remove reuse the same store paths
    as the rest of the UI. */
+/** SSE handler for world events: deselect a vanished selection,
+ * coalesced tile refresh + pulse, early center poll when hit. */
+function sseConfig(
+  map: MapHandle,
+  store: AppStore,
+): ConstructorParameters<typeof SseClient>[0] {
+  return {
+    onEvent: (event) => {
+      const [x, y, w, h] = event.bbox;
+      const bbox: BBox = { x, y, w, h };
+      // The selected stratum vanished under someone else.
+      if (event.type === "remove" && store.selectedPlace?.id === event.id) {
+        releaseSelection(map, store);
+      }
+      // Coalesced: place AND remove events refresh affected tiles.
+      map.current?.queueTileRefresh(bbox);
+      map.current?.pulse(bbox);
+      if (eventTouchesCenter(event.bbox)) void store.refreshCenter();
+    },
+    onMalformed: () => {
+      // The raw payload is already console.warn'ed by the client.
+      store.notifyError("Live update ignored — bad payload");
+    },
+  };
+}
+
+/** Jumps the map to a placement and selects it at its centre (the dig
+ * query fills the depth cue). */
+function jumpToPlacement(
+  map: MapHandle,
+  store: AppStore,
+  place: Placement,
+): void {
+  const cx = place.x + place.w / 2;
+  const cy = place.y + place.h / 2;
+  map.current?.centerOn(cx, cy);
+  store.selectPlace(place, { x: cx, y: cy });
+}
+
 function placeDetailActions(
   map: MapHandle,
   store: AppStore,
@@ -209,30 +249,15 @@ function placeDetailActions(
 }
 
 export default function App() {
-  const store = createAppStore(createApiClient());
+  const client = createApiClient();
+  const store = createAppStore(client);
 
   const map: MapHandle = { current: null, el: undefined };
   let fileInput: HTMLInputElement | undefined;
   const [showAbout, setShowAbout] = createSignal(false);
+  const [showFeed, setShowFeed] = createSignal(false);
 
-  const sse = new SseClient({
-    onEvent: (event) => {
-      const [x, y, w, h] = event.bbox;
-      const bbox: BBox = { x, y, w, h };
-      // The selected stratum vanished under someone else.
-      if (event.type === "remove" && store.selectedPlace?.id === event.id) {
-        releaseSelection(map, store);
-      }
-      // Coalesced: place AND remove events refresh affected tiles.
-      map.current?.queueTileRefresh(bbox);
-      map.current?.pulse(bbox);
-      if (eventTouchesCenter(event.bbox)) void store.refreshCenter();
-    },
-    onMalformed: () => {
-      // The raw payload is already console.warn'ed by the client.
-      store.notifyError("Live update ignored — bad payload");
-    },
-  });
+  const sse = new SseClient(sseConfig(map, store));
 
   // Keep the ghost image in sync with the placing flow.
   wireGhostSync(map, store);
@@ -292,7 +317,22 @@ export default function App() {
           }
           fileInput?.click();
         }}
+        onToggleFeed={() => {
+          setShowFeed(!showFeed());
+        }}
       />
+
+      <Show when={showFeed()}>
+        <FeedPanel
+          client={client}
+          onClose={() => {
+            setShowFeed(false);
+          }}
+          onJump={(place) => {
+            jumpToPlacement(map, store, place);
+          }}
+        />
+      </Show>
 
       <div class="footer-chip">
         <button

@@ -47,6 +47,7 @@ function makeClient(dig?: ApiClient["dig"]): ApiClient {
     dig:
       dig ??
       vi.fn(() => Promise.resolve({ stack: [], total: 0, truncated: false })),
+    feed: vi.fn(() => Promise.resolve({ items: [], next_before: null })),
   };
 }
 

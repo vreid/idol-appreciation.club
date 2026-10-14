@@ -2023,3 +2023,130 @@ async fn placement_tags_owner_admin_and_validation() {
         .expect("placement row");
     assert_eq!(mine["tags"], serde_json::json!([]));
 }
+
+// -------------------------------------------------------------------------
+// Feed: newest placements, tag filter, keyset pagination (auth-free)
+
+#[tokio::test]
+async fn feed_pagination_and_tag_filter() {
+    let server = start_server(0, 0, 10 * 1024 * 1024).await;
+    // First account is the admin (used for the removal at the end).
+    let admin = register(&server, "feedadmin").await;
+    let cookie = register(&server, "feeder").await;
+
+    // Three placements, oldest first: p1 < p2 < p3 by seq.
+    let p1 = place(&server, &cookie, &png(32, 32), 500, 500, 32).await;
+    assert_eq!(p1.status, 201);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let p2 = place(&server, &cookie, &png(32, 32), 600, 600, 32).await;
+    assert_eq!(p2.status, 201);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let p3 = place(&server, &cookie, &png(32, 32), 700, 700, 32).await;
+    assert_eq!(p3.status, 201);
+    let id1 = p1.json()["id"].as_str().unwrap().to_string();
+    let id3 = p3.json()["id"].as_str().unwrap().to_string();
+    let seq1 = p1.json()["seq"].as_i64().unwrap();
+    let seq2 = p2.json()["seq"].as_i64().unwrap();
+    let seq3 = p3.json()["seq"].as_i64().unwrap();
+
+    // Tag the middle and newest placements.
+    for (id, body) in [
+        (id3.clone(), br#"{"tags":["stage","encore"]}"#.to_vec()),
+        (
+            p2.json()["id"].as_str().unwrap().to_string(),
+            br#"{"tags":["duo"]}"#.to_vec(),
+        ),
+    ] {
+        let resp = request(
+            &server,
+            "PUT",
+            &format!("/api/placements/{id}/tags"),
+            &[("Cookie", &cookie), ("Content-Type", "application/json")],
+            body,
+        )
+        .await;
+        assert_eq!(resp.status, 200);
+    }
+
+    // Unauthenticated by design: a bare feed lists everything newest-first.
+    let resp = request(&server, "GET", "/api/feed", &[], vec![]).await;
+    assert_eq!(resp.status, 200);
+    let body = resp.json();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["id"], id3.as_str());
+    assert_eq!(items[0]["seq"], seq3);
+    assert_eq!(items[2]["seq"], seq1);
+    // Tags ride the rows.
+    let mut tags = items[0]["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect::<Vec<_>>();
+    tags.sort();
+    assert_eq!(tags, vec!["encore", "stage"]);
+    // A page shorter than the limit is exhausted: no cursor.
+    assert_eq!(body["next_before"], serde_json::Value::Null);
+
+    // Tag filter (case-insensitive; the input is normalized).
+    let resp = request(&server, "GET", "/api/feed?tag=STAGE", &[], vec![]).await;
+    let body = resp.json();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], id3.as_str());
+    assert_eq!(body["next_before"], serde_json::Value::Null);
+
+    // Keyset pagination: a page of 2 stops at p2's seq...
+    let resp = request(&server, "GET", "/api/feed?limit=2", &[], vec![]).await;
+    let body = resp.json();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["seq"], seq3);
+    assert_eq!(items[1]["seq"], seq2);
+    assert_eq!(body["next_before"], serde_json::json!(seq2));
+    // ...and `before` resumes strictly older.
+    let resp = request(
+        &server,
+        "GET",
+        &format!("/api/feed?before={seq2}"),
+        &[],
+        vec![],
+    )
+    .await;
+    let body = resp.json();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["seq"], seq1);
+    // A short page means exhausted: no cursor.
+    assert_eq!(body["next_before"], serde_json::Value::Null);
+
+    // Validation.
+    for query in [
+        "?tag=bad%20tag!",
+        "?limit=0",
+        "?limit=51",
+        "?limit=bogus",
+        "?before=bogus",
+    ] {
+        let resp = request(&server, "GET", &format!("/api/feed{query}"), &[], vec![]).await;
+        assert_eq!(resp.status, 400, "{query}");
+    }
+
+    // Admin removal drops the placement from the feed (metadata follows
+    // the moderation state like every other read).
+    let del = request(
+        &server,
+        "DELETE",
+        &format!("/api/admin/placements/{id1}"),
+        &[("Cookie", &admin)],
+        vec![],
+    )
+    .await;
+    assert_eq!(del.status, 204);
+    let resp = request(&server, "GET", "/api/feed", &[], vec![]).await;
+    let body = resp.json();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(|row| row["id"] != id1.as_str()));
+}

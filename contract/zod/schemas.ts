@@ -132,6 +132,28 @@ export const digStackSchema = z.object({
 });
 
 
+/** One GET /api/feed row: a placement plus its global `seq`, which is
+ * also the keyset-pagination cursor (`?before=`). */
+export const feedEntrySchema = z.object({
+  id: z.string(),
+  username: z.string(),
+  seq: z.number(),
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+  rot: z.number(),
+  created_at: z.string(),
+  tags: z.array(z.string()),
+});
+
+/** GET /api/feed response. `items` is newest-first; `next_before` is the
+ * cursor for the next-older page (null when exhausted). */
+export const feedSchema = z.object({
+  items: z.array(feedEntrySchema),
+  next_before: z.nullable(z.number()),
+});
+
 /** 201 response of POST /api/place. */
 export const placedPlacementSchema = z.object({
   id: z.string(),
@@ -211,3 +233,5 @@ export type DigEntry = z.infer<typeof digEntrySchema>;
 export type DigStack = z.infer<typeof digStackSchema>;
 export type TagsUpdate = z.infer<typeof tagsUpdateSchema>;
 export type TagList = z.infer<typeof tagsSchema>;
+export type FeedEntry = z.infer<typeof feedEntrySchema>;
+export type Feed = z.infer<typeof feedSchema>;

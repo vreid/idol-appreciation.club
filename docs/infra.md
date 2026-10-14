@@ -325,14 +325,12 @@ the backend chunk path) so multi-writer safety does not depend on a single
 process; the in-process lock tier is retained in front of them. Render locks
 stay in-process only — cross-instance duplicate renders are benign.
 
-N>1 is gated on the advisory-lock path being in place: replicas MUST stay 1
-until then (the paint-order == seq guarantee depends on it). The constraint is
-annotated on the deployment (`idol.app/scaling: single-writer-required`, see
-`chart/templates/backend-deployment.yaml`) so it is greppable from the live
-cluster. RollingUpdate `maxSurge=1, maxUnavailable=0` provides zero-downtime
-rollouts regardless of replica count — the surge pod is not in Service until
-`/api/health` passes, and the old pod drains gracefully (SSE clients reconnect
-with backoff).
+The advisory-lock path is in place, so N>1 is an availability knob, not a
+correctness gate: the fleet runs `backend.replicaCount: 2` (zero-blip rolls —
+the surge pod is not in Service until `/api/health` passes — and half the blast
+radius per pod). HPA is deliberately off: the CPU signal does not match the
+actual bottleneck (pool/latency; issue #120), revisit after it lands. The old
+pod drains gracefully (SSE clients reconnect with backoff).
 
 Decision record — the committed scale path, in order, when traffic justifies
 (trigger evidence comes from `/api/metrics` (#51), not forecasts):

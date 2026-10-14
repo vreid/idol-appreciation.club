@@ -73,8 +73,10 @@ function makeStore(client: ApiClient) {
 
 describe("pile cycling", () => {
   it("selectPlace with a point loads the pile and locates the selection", async () => {
+    const stratum = PILE[1];
+    if (stratum === undefined) throw new Error("fixture missing");
     const store = makeStore(makeClient());
-    store.selectPlace(PILE[1]!, { x: 2176, y: 2176 });
+    store.selectPlace(stratum, { x: 2176, y: 2176 });
     await flush();
     expect(store.digTotal).toBe(3);
     expect(store.digIndex).toBe(1);
@@ -82,8 +84,10 @@ describe("pile cycling", () => {
   });
 
   it("queryPile detects the selection's pile and stepDig cycles with wrap", async () => {
+    const stratum = PILE[0];
+    if (stratum === undefined) throw new Error("fixture missing");
     const store = makeStore(makeClient());
-    store.selectPlace(PILE[0]!, { x: 2176, y: 2176 });
+    store.selectPlace(stratum, { x: 2176, y: 2176 });
     await flush();
     expect(await store.queryPile(2176, 2176)).toBe(true);
     expect(store.stepDig(1)).toBe(true);
@@ -100,16 +104,20 @@ describe("pile cycling", () => {
   });
 
   it("queryPile is false for a different pile and adoptPile picks the top", async () => {
+    const stratum = PILE[0];
+    if (stratum === undefined) throw new Error("fixture missing");
     const store = makeStore(makeClient());
-    store.selectPlace(PILE[0]!, { x: 2176, y: 2176 });
+    store.selectPlace(stratum, { x: 2176, y: 2176 });
     await flush();
     const other = { stack: [entry("other", "quill", 1)], total: 1 };
     const client = makeClient(other);
     const store2 = makeStore(client);
-    store2.selectPlace(PILE[0]!, { x: 10, y: 10 });
+    store2.selectPlace(stratum, { x: 10, y: 10 });
     await flush();
     expect(await store2.queryPile(11, 11)).toBe(false);
-    store2.adoptPile(other.stack[0]!);
+    const top = other.stack[0];
+    if (top === undefined) throw new Error("fixture missing");
+    store2.adoptPile(top);
     expect(store2.selectedPlace?.id).toBe("other");
     expect(store2.digIndex).toBe(0);
     expect(store2.digTotal).toBe(1);

@@ -94,6 +94,11 @@ pub struct Metrics {
     /// Object storage calls: [op=get, put][ok=false, true].
     s3_ops: [[AtomicU64; 2]; 2],
     s3_duration: [Histogram<12>; 2],
+    /// Per-query-family SQL executions and latency (indices = DB_FAMILIES,
+    /// the `query` label values; observed via `dbq::timed` at every sqlx
+    /// execution site).
+    db_query_totals: [AtomicU64; DB_FAMILIES.len()],
+    db_query_durations: [Histogram<12>; DB_FAMILIES.len()],
     /// Alpha-composited chunk writes during placements.
     chunk_composites: AtomicU64,
     /// Login attempts rejected by the per-IP / per-(username, IP) limiter.
@@ -135,6 +140,8 @@ pub static METRICS: LazyLock<Metrics> = LazyLock::new(|| Metrics {
     background_render_duration: Histogram::new(WIDE_BUCKETS),
     s3_ops: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
     s3_duration: std::array::from_fn(|_| Histogram::new(WIDE_BUCKETS)),
+    db_query_totals: std::array::from_fn(|_| AtomicU64::new(0)),
+    db_query_durations: std::array::from_fn(|_| Histogram::new(WIDE_BUCKETS)),
     chunk_composites: AtomicU64::new(0),
     auth_rate_limited: AtomicU64::new(0),
     import_batches: AtomicU64::new(0),
@@ -177,7 +184,46 @@ pub fn s3_done(op: usize, ok: bool, elapsed: Duration) {
     m.s3_duration[op].observe(elapsed);
 }
 
+/// One SQL execution observed for family `family` (a DB_FAMILIES index).
+/// Failed executions count too — a failing query still takes the time.
+pub fn db_done(family: usize, elapsed: Duration) {
+    let m = &*METRICS;
+    m.db_query_totals[family].fetch_add(1, Ordering::Relaxed);
+    m.db_query_durations[family].observe(elapsed);
+}
+
+/// Resolve a static family label to its index; an unknown label is a
+/// programming error at a call site (same contract as `tile_outcome`).
+pub fn db_family(family: &str) -> usize {
+    DB_FAMILIES
+        .iter()
+        .position(|&f| f == family)
+        .expect("known db query family")
+}
+
 pub const S3_OPS: [&str; 2] = ["get", "put"];
+
+/// Query families for the per-family DB latency series; these are the
+/// `query` label values, in exposition order. `tile_rows` is the
+/// chunk-rebuild row fetch (removal replay + import), `tiles_meta` the
+/// tiles-table seq read/write on the render path, `tile_queue` the
+/// background render queue's bookkeeping. Session-level advisory locks
+/// and migrations stay unlabeled (lock waits are not query time).
+pub const DB_FAMILIES: [&str; 13] = [
+    "near",
+    "dig",
+    "tile_seq",
+    "tile_rows",
+    "place",
+    "feed",
+    "hot",
+    "tags",
+    "auth",
+    "import",
+    "tiles_meta",
+    "reports",
+    "tile_queue",
+];
 
 pub fn chunk_composited() {
     METRICS.chunk_composites.fetch_add(1, Ordering::Relaxed);
@@ -367,6 +413,26 @@ pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> Stri
         m.pyramid_sheds.load(Ordering::Relaxed)
     ));
     out.push_str(
+        "# HELP db_query_total SQL executions by query family.\n# TYPE db_query_total counter\n",
+    );
+    for (i, name) in DB_FAMILIES.iter().enumerate() {
+        out.push_str(&format!(
+            "db_query_total{{query=\"{name}\"}} {}\n",
+            m.db_query_totals[i].load(Ordering::Relaxed)
+        ));
+    }
+
+    out.push_str(
+        "# HELP db_query_duration_seconds Postgres query latency by query family.\n# TYPE db_query_duration_seconds histogram\n",
+    );
+    for (i, name) in DB_FAMILIES.iter().enumerate() {
+        out.push_str(
+            &m.db_query_durations[i]
+                .render("db_query_duration_seconds", &format!("query=\"{name}\",")),
+        );
+    }
+
+    out.push_str(
         "# HELP db_pool_connections sqlx connection pool state.\n# TYPE db_pool_connections gauge\n",
     );
     let idle = pool.num_idle();
@@ -520,6 +586,48 @@ mod tests {
         assert!(
             (amp - 300.0 / writes).abs() < 1e-9,
             "amplification {amp} != 300/202"
+        );
+    }
+
+    /// One `dbq::timed` observation must move exactly its family's
+    /// counter and histogram and leave sibling families untouched.
+    #[tokio::test]
+    async fn db_timed_moves_family_series() {
+        let series_value = |text: &str, series: &str| {
+            text.lines()
+                .rfind(|l| l.starts_with(series) && !l.starts_with('#'))
+                .unwrap_or_else(|| panic!("series {series} missing from exposition"))
+                .rsplit_once(' ')
+                .expect("series line has a value")
+                .1
+                .parse::<f64>()
+                .expect("series value is f64")
+        };
+
+        let out = crate::dbq::timed("dig", async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            7
+        })
+        .await;
+        assert_eq!(out, 7, "timed passes the future's output through");
+
+        let text = render(&render_pool_stub(), 0, 0);
+        assert_eq!(
+            series_value(&text, "db_query_total{query=\"dig\"} "),
+            1.0,
+            "dig counter did not move"
+        );
+        assert_eq!(
+            series_value(&text, "db_query_duration_seconds_count{query=\"dig\",} "),
+            1.0,
+            "dig histogram did not observe the query"
+        );
+        let sum = series_value(&text, "db_query_duration_seconds_sum{query=\"dig\",} ");
+        assert!(sum >= 0.005, "dig sum {sum} below the 5ms sleep");
+        assert_eq!(
+            series_value(&text, "db_query_total{query=\"tile_seq\"} "),
+            0.0,
+            "a sibling family must stay at zero"
         );
     }
 }

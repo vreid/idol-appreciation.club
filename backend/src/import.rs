@@ -317,14 +317,17 @@ async fn resolve_derivatives(app: &App, plans: &mut [PrePlan]) -> AppResult<()> 
         return Ok(());
     }
     let list: Vec<String> = unresolved.into_iter().collect();
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT DISTINCT ON (original_sha) original_sha, derivative_sha
+    let rows: Vec<(String, String)> = crate::dbq::timed(
+        "import",
+        sqlx::query_as(
+            "SELECT DISTINCT ON (original_sha) original_sha, derivative_sha
          FROM placements
          WHERE removed_at IS NULL AND original_sha = ANY($1::char(64)[])
          ORDER BY original_sha, seq DESC",
+        )
+        .bind(&list)
+        .fetch_all(&app.pool),
     )
-    .bind(&list)
-    .fetch_all(&app.pool)
     .await?;
     let found: HashMap<String, String> = rows.into_iter().collect();
     for p in plans.iter_mut() {
@@ -575,11 +578,13 @@ async fn run_group(
     // per batch"): contiguous, ascending in entry order, allocated under
     // the group's chunk locks — the HTTP-path ordering invariant.
     let n = i64::try_from(group.len()).map_err(|_| internal("group overflow"))?;
-    let seqs: Vec<i64> =
+    let seqs: Vec<i64> = crate::dbq::timed(
+        "import",
         sqlx::query_scalar("SELECT nextval('placement_seq') FROM generate_series(1, $1)")
             .bind(n)
-            .fetch_all(&mut *tx)
-            .await?;
+            .fetch_all(&mut *tx),
+    )
+    .await?;
 
     // Per-chunk paint, super-blocked (2×2 chunks) so a decoded overlay
     // stays warm across the neighboring chunks its AABB spans: one
@@ -685,37 +690,43 @@ async fn run_group(
         oshas.push(p.source_sha.clone());
         dshas.push(p.derivative_sha.clone());
     }
-    let inserted = sqlx::query(INSERT_SQL)
-        .bind(&ids)
-        .bind(&accounts)
-        .bind(&keys)
-        .bind(&xs)
-        .bind(&ys)
-        .bind(&ws)
-        .bind(&hs)
-        .bind(&row_seqs)
-        .bind(&rots)
-        .bind(&bx0)
-        .bind(&by0)
-        .bind(&bx1)
-        .bind(&by1)
-        .bind(&oshas)
-        .bind(&dshas)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    let inserted = crate::dbq::timed(
+        "import",
+        sqlx::query(INSERT_SQL)
+            .bind(&ids)
+            .bind(&accounts)
+            .bind(&keys)
+            .bind(&xs)
+            .bind(&ys)
+            .bind(&ws)
+            .bind(&hs)
+            .bind(&row_seqs)
+            .bind(&rots)
+            .bind(&bx0)
+            .bind(&by0)
+            .bind(&bx1)
+            .bind(&by1)
+            .bind(&oshas)
+            .bind(&dshas)
+            .execute(&mut *tx),
+    )
+    .await?
+    .rows_affected();
     // Tags ride the same transaction: a resumed chunk re-inserts its
     // placements with ON CONFLICT DO NOTHING, so re-applying tags is a
     // no-op there and an insert for freshly committed rows.
     for (k, &i) in group.iter().enumerate() {
         for tag in &plans[i].tags {
-            sqlx::query(
-                "INSERT INTO placement_tags (placement_id, tag)
+            crate::dbq::timed(
+                "import",
+                sqlx::query(
+                    "INSERT INTO placement_tags (placement_id, tag)
                  VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                )
+                .bind(ids[k])
+                .bind(tag)
+                .execute(&mut *tx),
             )
-            .bind(ids[k])
-            .bind(tag)
-            .execute(&mut *tx)
             .await?;
         }
     }
@@ -757,14 +768,16 @@ async fn process_block(
         return Ok(stats);
     }
     let ids: Vec<Uuid> = fresh.iter().map(|p| p.id).collect();
-    let existing: HashSet<Uuid> =
+    let existing: HashSet<Uuid> = crate::dbq::timed(
+        "import",
         sqlx::query_as::<_, (Uuid,)>("SELECT id FROM placements WHERE id = ANY($1)")
             .bind(&ids)
-            .fetch_all(&app.pool)
-            .await?
-            .into_iter()
-            .map(|(id,)| id)
-            .collect();
+            .fetch_all(&app.pool),
+    )
+    .await?
+    .into_iter()
+    .map(|(id,)| id)
+    .collect();
     let fresh: Vec<Plan> = fresh
         .into_iter()
         .filter(|p| !existing.contains(&p.id))
@@ -813,10 +826,13 @@ async fn process_block(
             "bbox": [bbox.x, bbox.y, bbox.w, bbox.h],
         })
         .to_string();
-        let _: ((),) = sqlx::query_as("SELECT pg_notify('events', $1)")
-            .bind(&event)
-            .fetch_one(&app.pool)
-            .await?;
+        let _: ((),) = crate::dbq::timed(
+            "import",
+            sqlx::query_as("SELECT pg_notify('events', $1)")
+                .bind(&event)
+                .fetch_one(&app.pool),
+        )
+        .await?;
     }
     Ok(stats)
 }

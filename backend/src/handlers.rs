@@ -120,16 +120,19 @@ async fn try_insert(
     as_admin: bool,
     approved: bool,
 ) -> Result<Response, sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO accounts (id, username, password_hash, is_admin, approved)
+    crate::dbq::timed(
+        "auth",
+        sqlx::query(
+            "INSERT INTO accounts (id, username, password_hash, is_admin, approved)
          VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(id)
+        .bind(username)
+        .bind(hash)
+        .bind(as_admin)
+        .bind(approved)
+        .execute(&app.pool),
     )
-    .bind(id)
-    .bind(username)
-    .bind(hash)
-    .bind(as_admin)
-    .bind(approved)
-    .execute(&app.pool)
     .await?;
     let resp = (
         axum::http::StatusCode::CREATED,
@@ -167,11 +170,14 @@ pub async fn login(
         crate::metrics::auth_rate_limited();
         return Err(AppError::Cooldown(retry));
     }
-    let row: Option<(Uuid, String, bool, bool)> = sqlx::query_as(
-        "SELECT id, password_hash, approved, is_admin FROM accounts WHERE username = $1",
+    let row: Option<(Uuid, String, bool, bool)> = crate::dbq::timed(
+        "auth",
+        sqlx::query_as(
+            "SELECT id, password_hash, approved, is_admin FROM accounts WHERE username = $1",
+        )
+        .bind(&req.username)
+        .fetch_optional(&app.pool),
     )
-    .bind(&req.username)
-    .fetch_optional(&app.pool)
     .await?;
     let Some((id, hash, approved, is_admin)) = row else {
         // Burn the same argon2 cost a real account would, so response
@@ -209,11 +215,13 @@ pub async fn logout(State(app): State<App>, headers: HeaderMap) -> AppResult<Res
 
 /// GET /api/auth/me → current account + active cooldown end.
 pub async fn me(State(app): State<App>, Authed(id): Authed) -> AppResult<Json<serde_json::Value>> {
-    let row: Option<(String, bool, Option<DateTime<Utc>>)> =
+    let row: Option<(String, bool, Option<DateTime<Utc>>)> = crate::dbq::timed(
+        "auth",
         sqlx::query_as("SELECT username, is_admin, last_placement_at FROM accounts WHERE id = $1")
             .bind(id)
-            .fetch_optional(&app.pool)
-            .await?;
+            .fetch_optional(&app.pool),
+    )
+    .await?;
     let Some((username, is_admin, last)) = row else {
         return Err(AppError::Unauthorized);
     };

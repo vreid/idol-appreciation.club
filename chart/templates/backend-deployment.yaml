@@ -63,7 +63,12 @@ spec:
             - name: REGISTRATION_APPROVAL_REQUIRED
               value: {{ .Values.backend.registrationApprovalRequired | quote }}
             - name: DATABASE_POOL_MAX
-              value: "30"
+              # 15/pod x 2 replicas = 30 total, back under the managed
+              # instance's connection ceiling. The 30 stopgap was sized
+              # for ONE pod pre-#134; the pair (2x30) exhausted PG's
+              # server slots and blocked deploys. Many-replica scale is
+              # the pgbouncer/CNPG-pooler moment — park until then.
+              value: "15"
           envFrom:
             - secretRef:
                 name: app-env

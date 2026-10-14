@@ -115,10 +115,13 @@ where
 
 /// Admin guard: 401 unauthenticated, 403 authenticated non-admin.
 pub async fn require_admin(app: &App, id: Uuid) -> AppResult<()> {
-    let row: Option<(bool,)> = sqlx::query_as("SELECT is_admin FROM accounts WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&app.pool)
-        .await?;
+    let row: Option<(bool,)> = crate::dbq::timed(
+        "auth",
+        sqlx::query_as("SELECT is_admin FROM accounts WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&app.pool),
+    )
+    .await?;
     match row {
         Some((true,)) => Ok(()),
         Some((false,)) => Err(AppError::Forbidden),

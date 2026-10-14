@@ -119,8 +119,10 @@ pub async fn near(
         return Err(AppError::BadRequest("r must be positive"));
     }
     let r = r.min(65536);
-    let rows = sqlx::query_as::<_, NearPlacement>(
-        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
+    let rows = crate::dbq::timed(
+        "near",
+        sqlx::query_as::<_, NearPlacement>(
+            "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
                 COALESCE(t.tags, '{}') AS tags
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
@@ -132,12 +134,13 @@ pub async fn near(
                              point($3::float8, $4::float8))
          ORDER BY p.seq DESC
          LIMIT 50",
+        )
+        .bind(x - r)
+        .bind(y - r)
+        .bind(x + r - 1)
+        .bind(y + r - 1)
+        .fetch_all(&app.pool),
     )
-    .bind(x - r)
-    .bind(y - r)
-    .bind(x + r - 1)
-    .bind(y + r - 1)
-    .fetch_all(&app.pool)
     .await?;
     Ok(Json(rows))
 }
@@ -186,8 +189,10 @@ pub async fn feed(
                 .map_err(|_| AppError::BadRequest("missing or invalid query parameter"))?,
         ),
     };
-    let items = sqlx::query_as::<_, NearPlacement>(
-        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
+    let items = crate::dbq::timed(
+        "feed",
+        sqlx::query_as::<_, NearPlacement>(
+            "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
                 COALESCE(t.tags, '{}') AS tags
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
@@ -201,11 +206,12 @@ pub async fn feed(
                                               AND ft.tag = $2))
          ORDER BY p.seq DESC
          LIMIT $3",
+        )
+        .bind(before)
+        .bind(tag)
+        .bind(limit)
+        .fetch_all(&app.pool),
     )
-    .bind(before)
-    .bind(tag)
-    .bind(limit)
-    .fetch_all(&app.pool)
     .await?;
     let next_before = if items.len() as i64 == limit {
         items.last().map(|item| item.seq)
@@ -273,8 +279,10 @@ pub async fn hot(
     // Placement x/y are native px, so the z6 cell is a plain division
     // by WORLD_PX / 64; the grid matches the tile pyramid's z6 indices.
     let cell = world::WORLD_PX / (1 << HOT_Z);
-    let rows = sqlx::query_as::<_, HotCell>(
-        "SELECT (p.x / $3)::bigint AS x,
+    let rows = crate::dbq::timed(
+        "hot",
+        sqlx::query_as::<_, HotCell>(
+            "SELECT (p.x / $3)::bigint AS x,
                 (p.y / $3)::bigint AS y,
                 count(*)::bigint AS count,
                 round(sum(1.0 / (1.0 +
@@ -286,19 +294,23 @@ pub async fn hot(
          GROUP BY 1, 2
          ORDER BY score DESC, count DESC
          LIMIT $2",
+        )
+        .bind(window_hours as i32)
+        .bind(limit)
+        .bind(cell)
+        .fetch_all(&app.pool),
     )
-    .bind(window_hours as i32)
-    .bind(limit)
-    .bind(cell)
-    .fetch_all(&app.pool)
     .await?;
-    let total: (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM placements
+    let total: (i64,) = crate::dbq::timed(
+        "hot",
+        sqlx::query_as(
+            "SELECT count(*) FROM placements
          WHERE removed_at IS NULL
            AND created_at >= now() - make_interval(hours => $1::int)",
+        )
+        .bind(window_hours as i32)
+        .fetch_one(&app.pool),
     )
-    .bind(window_hours as i32)
-    .fetch_one(&app.pool)
     .await?;
     Ok(Json(HotRes {
         window_hours,
@@ -357,8 +369,10 @@ pub async fn dig(
     if x < 0 || y < 0 || x >= crate::world::WORLD_PX || y >= crate::world::WORLD_PX {
         return Err(AppError::BadRequest("x and y must be within world bounds"));
     }
-    let rows = sqlx::query_as::<_, NearPlacement>(
-        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
+    let rows = crate::dbq::timed(
+        "dig",
+        sqlx::query_as::<_, NearPlacement>(
+            "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
                 COALESCE(t.tags, '{}') AS tags
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
@@ -368,10 +382,11 @@ pub async fn dig(
          WHERE p.removed_at IS NULL
            AND p.bbox @> point($1::float8, $2::float8)
          ORDER BY p.seq DESC",
+        )
+        .bind(x as f64)
+        .bind(y as f64)
+        .fetch_all(&app.pool),
     )
-    .bind(x as f64)
-    .bind(y as f64)
-    .fetch_all(&app.pool)
     .await?;
     let covering: Vec<NearPlacement> = rows
         .into_iter()
@@ -390,9 +405,11 @@ pub async fn dig(
             placement,
         })
         .collect();
-    let (seq,): (i64,) = sqlx::query_as("SELECT last_value FROM placement_seq")
-        .fetch_one(&app.pool)
-        .await?;
+    let (seq,): (i64,) = crate::dbq::timed(
+        "dig",
+        sqlx::query_as("SELECT last_value FROM placement_seq").fetch_one(&app.pool),
+    )
+    .await?;
     let etag = format!("\"{seq}\"");
     if headers
         .get(header::IF_NONE_MATCH)
@@ -415,17 +432,20 @@ pub async fn dig(
 /// covering placements define segments; the newest covering placement
 /// holds until now.
 pub async fn center(State(app): State<App>) -> AppResult<Json<serde_json::Value>> {
-    let candidates: Vec<CenterCandidate> = sqlx::query_as(
-        "SELECT a.username, p.created_at, p.id, p.x, p.y, p.w, p.h, p.rot, p.seq
+    let candidates: Vec<CenterCandidate> = crate::dbq::timed(
+        "dig",
+        sqlx::query_as(
+            "SELECT a.username, p.created_at, p.id, p.x, p.y, p.w, p.h, p.rot, p.seq
          FROM placements p
          JOIN accounts a ON a.id = p.account_id
          WHERE p.removed_at IS NULL
            AND p.bbox @> point($1::float8, $2::float8)
          ORDER BY p.seq",
+        )
+        .bind(crate::world::CENTER_X as f64)
+        .bind(crate::world::CENTER_Y as f64)
+        .fetch_all(&app.pool),
     )
-    .bind(crate::world::CENTER_X as f64)
-    .bind(crate::world::CENTER_Y as f64)
-    .fetch_all(&app.pool)
     .await?;
     let covering: Vec<&CenterCandidate> = candidates.iter().filter(|c| c.covers_center()).collect();
 
@@ -496,7 +516,8 @@ pub async fn admin_list_accounts(
     } else {
         "SELECT username, created_at, cooldown_exempt FROM accounts ORDER BY created_at ASC, id ASC"
     };
-    let rows: Vec<(String, DateTime<Utc>, bool)> = sqlx::query_as(sql).fetch_all(&app.pool).await?;
+    let rows: Vec<(String, DateTime<Utc>, bool)> =
+        crate::dbq::timed("auth", sqlx::query_as(sql).fetch_all(&app.pool)).await?;
     Ok(Json(json!(rows
         .into_iter()
         .map(|(username, created_at, cooldown_exempt)| json!({
@@ -521,10 +542,13 @@ pub async fn admin_approve(
     axum::extract::Path(username): axum::extract::Path<String>,
 ) -> AppResult<Response> {
     crate::auth::require_admin(&app, admin_id).await?;
-    let result = sqlx::query("UPDATE accounts SET approved = true WHERE username = $1")
-        .bind(&username)
-        .execute(&app.pool)
-        .await?;
+    let result = crate::dbq::timed(
+        "auth",
+        sqlx::query("UPDATE accounts SET approved = true WHERE username = $1")
+            .bind(&username)
+            .execute(&app.pool),
+    )
+    .await?;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
@@ -541,11 +565,14 @@ pub async fn admin_cooldown_exempt(
     Json(req): Json<ExemptReq>,
 ) -> AppResult<Response> {
     crate::auth::require_admin(&app, admin_id).await?;
-    let result = sqlx::query("UPDATE accounts SET cooldown_exempt = $1 WHERE username = $2")
-        .bind(req.exempt)
-        .bind(&username)
-        .execute(&app.pool)
-        .await?;
+    let result = crate::dbq::timed(
+        "auth",
+        sqlx::query("UPDATE accounts SET cooldown_exempt = $1 WHERE username = $2")
+            .bind(req.exempt)
+            .bind(&username)
+            .execute(&app.pool),
+    )
+    .await?;
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
@@ -563,20 +590,25 @@ pub async fn report(
     Authed(account_id): Authed,
     Json(req): Json<ReportReq>,
 ) -> AppResult<Response> {
-    let exists: Option<(i64,)> =
+    let exists: Option<(i64,)> = crate::dbq::timed(
+        "reports",
         sqlx::query_as("SELECT 1::bigint FROM placements WHERE id = $1 AND removed_at IS NULL")
             .bind(req.placement_id)
-            .fetch_optional(&app.pool)
-            .await?;
+            .fetch_optional(&app.pool),
+    )
+    .await?;
     if exists.is_none() {
         return Err(AppError::NotFound);
     }
-    sqlx::query("INSERT INTO reports (id, placement_id, account_id) VALUES ($1, $2, $3)")
-        .bind(Uuid::now_v7())
-        .bind(req.placement_id)
-        .bind(account_id)
-        .execute(&app.pool)
-        .await?;
+    crate::dbq::timed(
+        "reports",
+        sqlx::query("INSERT INTO reports (id, placement_id, account_id) VALUES ($1, $2, $3)")
+            .bind(Uuid::now_v7())
+            .bind(req.placement_id)
+            .bind(account_id)
+            .execute(&app.pool),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -600,11 +632,13 @@ pub async fn tags_put(
     Json(req): Json<TagsReq>,
 ) -> AppResult<Json<TagsRes>> {
     let tags = normalize_tags(req.tags).map_err(AppError::BadRequest)?;
-    let owner: Option<(Uuid,)> =
+    let owner: Option<(Uuid,)> = crate::dbq::timed(
+        "tags",
         sqlx::query_as("SELECT account_id FROM placements WHERE id = $1 AND removed_at IS NULL")
             .bind(id)
-            .fetch_optional(&app.pool)
-            .await?;
+            .fetch_optional(&app.pool),
+    )
+    .await?;
     let Some((owner,)) = owner else {
         return Err(AppError::NotFound);
     };
@@ -612,17 +646,23 @@ pub async fn tags_put(
         crate::auth::require_admin(&app, account_id).await?;
     }
     let mut tx = app.pool.begin().await?;
-    sqlx::query("DELETE FROM placement_tags WHERE placement_id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    crate::dbq::timed(
+        "tags",
+        sqlx::query("DELETE FROM placement_tags WHERE placement_id = $1")
+            .bind(id)
+            .execute(&mut *tx),
+    )
+    .await?;
     for tag in &tags {
-        sqlx::query(
+        crate::dbq::timed(
+            "tags",
+            sqlx::query(
             "INSERT INTO placement_tags (placement_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
         .bind(id)
         .bind(tag)
-        .execute(&mut *tx)
+        .execute(&mut *tx),
+        )
         .await?;
     }
     tx.commit().await?;
@@ -644,12 +684,15 @@ pub async fn image_count(
     if !valid_sha(&sha) {
         return Err(AppError::BadRequest("not a sha256 hex digest"));
     }
-    let row: (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM placements
+    let row: (i64,) = crate::dbq::timed(
+        "place",
+        sqlx::query_as(
+            "SELECT count(*) FROM placements
          WHERE original_sha = $1 AND removed_at IS NULL",
+        )
+        .bind(sha)
+        .fetch_one(&app.pool),
     )
-    .bind(sha)
-    .fetch_one(&app.pool)
     .await?;
     Ok(Json(json!({ "count": row.0 })))
 }

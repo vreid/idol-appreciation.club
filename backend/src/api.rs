@@ -3,6 +3,7 @@
 use crate::auth::Authed;
 use crate::error::{AppError, AppResult};
 use crate::state::App;
+use crate::world;
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
@@ -212,6 +213,98 @@ pub async fn feed(
         None
     };
     Ok(Json(FeedRes { items, next_before }))
+}
+
+// -------------------------------------------------------------------------
+// Hot regions: placement density per z6 cell over a recent window
+
+/// Grid granularity for /api/hot: the z6 tile grid (64x64 cells, each
+/// 4 Mi native px) — coarse enough to summarize, aligned with the tile
+/// pyramid so clients can address a cell as a map region.
+const HOT_Z: i64 = 6;
+
+#[derive(serde::Serialize, sqlx::FromRow)]
+pub struct HotCell {
+    /// z6 grid index, 0..64, native (tile) coordinates.
+    pub x: i64,
+    pub y: i64,
+    /// Placements in the cell inside the window.
+    pub count: i64,
+    /// Recency-weighted score: each placement contributes
+    /// 1 / (1 + age_days), so a fresh placement is worth ~1 and a
+    /// week-old one ~0.13. Sorted descending.
+    pub score: f64,
+}
+
+#[derive(serde::Serialize)]
+pub struct HotRes {
+    /// The window actually applied (hours).
+    pub window_hours: i64,
+    /// Placements inside the window across the whole world.
+    pub total: i64,
+    /// Hottest cells first, at most `limit` entries.
+    pub cells: Vec<HotCell>,
+}
+
+/// GET /api/hot — the busiest regions over a recent window. Auth-free
+/// read; bounded response (at most `limit` cells, 1..=24, default 8).
+pub async fn hot(
+    State(app): State<App>,
+    Query(params): Query<HashMap<String, String>>,
+) -> AppResult<Json<HotRes>> {
+    let window_hours: i64 = match params.get("window") {
+        None => 24,
+        Some(raw) => raw
+            .parse()
+            .map_err(|_| AppError::BadRequest("missing or invalid query parameter"))?,
+    };
+    if !(1..=168).contains(&window_hours) {
+        return Err(AppError::BadRequest("window must be 1..=168 hours"));
+    }
+    let limit: i64 = match params.get("limit") {
+        None => 8,
+        Some(raw) => raw
+            .parse()
+            .map_err(|_| AppError::BadRequest("missing or invalid query parameter"))?,
+    };
+    if !(1..=24).contains(&limit) {
+        return Err(AppError::BadRequest("limit must be 1..=24"));
+    }
+    // Placement x/y are native px, so the z6 cell is a plain division
+    // by WORLD_PX / 64; the grid matches the tile pyramid's z6 indices.
+    let cell = world::WORLD_PX / (1 << HOT_Z);
+    let rows = sqlx::query_as::<_, HotCell>(
+        "SELECT (p.x / $3)::bigint AS x,
+                (p.y / $3)::bigint AS y,
+                count(*)::bigint AS count,
+                round(sum(1.0 / (1.0 +
+                    EXTRACT(EPOCH FROM (now() - p.created_at)) / 86400.0))
+                    ::numeric, 2)::float8 AS score
+         FROM placements p
+         WHERE p.removed_at IS NULL
+           AND p.created_at >= now() - make_interval(hours => $1::int)
+         GROUP BY 1, 2
+         ORDER BY score DESC, count DESC
+         LIMIT $2",
+    )
+    .bind(window_hours as i32)
+    .bind(limit)
+    .bind(cell)
+    .fetch_all(&app.pool)
+    .await?;
+    let total: (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM placements
+         WHERE removed_at IS NULL
+           AND created_at >= now() - make_interval(hours => $1::int)",
+    )
+    .bind(window_hours as i32)
+    .fetch_one(&app.pool)
+    .await?;
+    Ok(Json(HotRes {
+        window_hours,
+        total: total.0,
+        cells: rows,
+    }))
 }
 
 /// A placement that covers the world center (AABB candidate — membership

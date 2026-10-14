@@ -57,8 +57,9 @@ export interface WorldMapController {
   setPlacing(placing: boolean): void;
   currentZoom(): number;
   worldToScreenPoint(x: number, y: number): { x: number; y: number };
-  /** Pans the view so world (x, y) sits at the viewport centre. */
-  centerOn(x: number, y: number): void;
+  /** Pans the view so world (x, y) sits at the viewport centre; an
+   * explicit zoom also replaces the current one. */
+  centerOn(x: number, y: number, zoom?: number): void;
   /** Highlight the selection's AABB; the panel itself is Solid-rendered. */
   showSelection(p: Placement): void;
   clearSelection(): void;
@@ -327,7 +328,8 @@ export function createWorldMap(
 
     worldToScreenPoint: (x, y) =>
       map.latLngToContainerPoint(worldToLatLng(x, y)),
-    centerOn: (x, y) => void map.setView(worldToLatLng(x, y), map.getZoom()),
+    centerOn: (x, y, zoom) =>
+      void map.setView(worldToLatLng(x, y), zoom ?? map.getZoom()),
 
     showSelection(p: Placement): void {
       highlight.placement = p;

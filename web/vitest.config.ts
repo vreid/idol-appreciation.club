@@ -32,6 +32,7 @@ export default defineConfig({
         "src/lib/**/*.test.ts",
         // DOM-only helpers, same rationale as worldMap/confetti/images:
         // Leaflet/DOM/window glue covered by e2e, not unitable logic.
+        "src/lib/appActions.ts",
         "src/lib/worldMap.ts",
         "src/lib/ghost.ts",
         "src/lib/tileDom.ts",

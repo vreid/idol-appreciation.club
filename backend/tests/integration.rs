@@ -2150,3 +2150,96 @@ async fn feed_pagination_and_tag_filter() {
     assert_eq!(items.len(), 2);
     assert!(items.iter().all(|row| row["id"] != id1.as_str()));
 }
+
+// -------------------------------------------------------------------------
+// Hot regions: z6-cell density over a recency window (auth-free)
+
+#[tokio::test]
+async fn hot_regions_window_and_bounded_response() {
+    let server = start_server(0, 0, 10 * 1024 * 1024).await;
+    let cookie = register(&server, "hotter").await;
+
+    // Cluster A: two placements in the same z6 cell around the centre
+    // (native 134217728 -> cell 33 on each axis: 134217728 / 2097152 = 64? no:
+    // cell px = WORLD_PX/64 = 4194304, so cell = 134217728 / 4194304 = 32).
+    let a1 = place(&server, &cookie, &png(32, 32), 134217728, 134217728, 32).await;
+    assert_eq!(a1.status, 201);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let a2 = place(&server, &cookie, &png(32, 32), 134217760, 134217760, 32).await;
+    assert_eq!(a2.status, 201);
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    // Cluster B: far away in a different cell.
+    let b1 = place(
+        &server,
+        &cookie,
+        &png(32, 32),
+        134217728 + 4 * 4194304,
+        134217728 + 4 * 4194304,
+        32,
+    )
+    .await;
+    assert_eq!(b1.status, 201);
+
+    // Unauthenticated by design.
+    let resp = request(&server, "GET", "/api/hot", &[], vec![]).await;
+    assert_eq!(resp.status, 200);
+    let body = resp.json();
+    assert_eq!(body["window_hours"], 24);
+    assert_eq!(body["total"], 3);
+    let cells = body["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 2, "two distinct cells, hottest first");
+    // The 2-placement cell leads.
+    assert_eq!(cells[0]["count"], 2);
+    assert_eq!(cells[0]["x"], 32);
+    assert_eq!(cells[0]["y"], 32);
+    assert_eq!(cells[1]["count"], 1);
+    assert_eq!(cells[1]["x"], 36);
+    assert_eq!(cells[1]["y"], 36);
+    // Score is recency-weighted and bounded above by the raw count, and
+    // sorted descending.
+    let score0 = cells[0]["score"].as_f64().unwrap();
+    let score1 = cells[1]["score"].as_f64().unwrap();
+    assert!(score0 > score1, "{score0} must beat {score1}");
+    // Two same-day placements weigh at most their raw count (the
+    // weighting decays with age), and rounded to 2 decimals can hit it.
+    assert!(
+        score0 <= 2.0 && score0 > 1.0,
+        "score out of range: {score0}"
+    );
+
+    // Bounded response: limit=1 keeps only the hottest cell.
+    let resp = request(&server, "GET", "/api/hot?limit=1", &[], vec![]).await;
+    let body = resp.json();
+    assert_eq!(body["cells"].as_array().unwrap().len(), 1);
+    assert_eq!(body["total"], 3, "total is window-wide, not per page");
+
+    // Validation.
+    for query in [
+        "?window=0",
+        "?window=169",
+        "?window=bogus",
+        "?limit=0",
+        "?limit=25",
+        "?limit=bogus",
+    ] {
+        let resp = request(&server, "GET", &format!("/api/hot{query}"), &[], vec![]).await;
+        assert_eq!(resp.status, 400, "{query}");
+    }
+
+    // Admin removal shrinks both the cell count and the total.
+    let id = a1.json()["id"].as_str().unwrap().to_string();
+    let del = request(
+        &server,
+        "DELETE",
+        &format!("/api/admin/placements/{id}"),
+        &[("Cookie", &cookie)],
+        vec![],
+    )
+    .await;
+    assert_eq!(del.status, 204);
+    let resp = request(&server, "GET", "/api/hot", &[], vec![]).await;
+    let body = resp.json();
+    assert_eq!(body["total"], 2);
+    let cells = body["cells"].as_array().unwrap();
+    assert_eq!(cells[0]["count"], 1);
+}

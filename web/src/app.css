@@ -1010,3 +1010,31 @@ input[type="range"] {
 .feed-older {
   align-self: center;
 }
+
+/* ---------- hot regions panel ---------- */
+
+/* Top-regions list (/api/hot). Mirrors the feed panel but docks right. */
+.hot-panel {
+  left: auto;
+  right: 12px;
+}
+
+.hot-sub {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.hot-rank-score {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hot-score {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}

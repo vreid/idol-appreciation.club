@@ -48,6 +48,9 @@ function makeClient(
     updateTags: vi.fn(() =>
       Promise.resolve({ id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001", tags: [] }),
     ),
+    hot: vi.fn(() =>
+      Promise.resolve({ window_hours: 24, total: 0, cells: [] }),
+    ),
     ...overrides,
     placeCalls,
   };

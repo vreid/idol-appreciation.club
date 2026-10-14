@@ -19,6 +19,7 @@ import {
   digEntrySchema,
   digStackSchema,
   feedSchema,
+  hotSchema,
   registerResultSchema,
   removeEventSchema,
   tagsSchema,
@@ -341,6 +342,23 @@ describe("feed", () => {
     if (parsed.success) {
       expect(Object.keys(parsed.data.items[0] ?? {})).not.toContain("bbox");
     }
+  });
+});
+
+describe("hot", () => {
+  it("accepts hot pages and rejects malformed ones", () => {
+    ok(hotSchema, { window_hours: 24, total: 0, cells: [] });
+    ok(hotSchema, {
+      window_hours: 24,
+      total: 12,
+      cells: [{ x: 33, y: 32, count: 9, score: 7.31 }],
+    });
+    rejected(hotSchema, { window_hours: 24, total: 1 });
+    rejected(hotSchema, {
+      window_hours: 24,
+      total: 12,
+      cells: [{ x: 33, y: 32, count: "9", score: 7.31 }],
+    });
   });
 });
 });

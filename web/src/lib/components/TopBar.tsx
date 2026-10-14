@@ -15,6 +15,8 @@ export default function TopBar(props: {
   onPickImage: () => void;
   /** Toggles the feed panel (a plain boolean flip in App). */
   onToggleFeed: () => void;
+  /** Toggles the hot-regions panel. */
+  onToggleHot: () => void;
 }) {
   const store = props.store;
 
@@ -71,6 +73,14 @@ export default function TopBar(props: {
           onClick={props.onToggleFeed}
         >
           Feed
+        </button>
+        <button
+          class="btn ghost small"
+          type="button"
+          aria-label="Toggle hot regions"
+          onClick={props.onToggleHot}
+        >
+          Hot
         </button>
         <Show when={store.authChecked && store.me !== null}>
           <span class="me-box">

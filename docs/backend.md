@@ -515,6 +515,24 @@ rather than offsets: seq is monotonic, so paging is stable under concurrent
 placements and cheap (`seq` index, no `OFFSET` scans). Moderation follows the
 other reads: removed placements drop out.
 
+## Hot regions
+
+`GET /api/hot` (auth-free read) summarizes where placements cluster over a
+recent window, for the web's "Hot" panel. The grid is the z6 tile grid (64x64
+cells of 4 Mi native px), addressed in tile coordinates 0..64 — aligned with the
+tile pyramid so a cell IS a map region.
+
+- `window` (optional, hours, default 24, 1..=168) bounds the query by
+  `created_at >= now() - window`.
+- `limit` (optional, default 8, 1..=24) bounds the response size.
+- Score is the recency weighting: each placement contributes
+  `1 / (1 + age_days)` — a fresh placement weighs ~1, a week-old one ~0.13.
+  Cells sort by score (ties by raw count).
+
+Response `{ window_hours, total, cells }`: `total` counts window placements
+world-wide (not just the returned cells); `cells` is bounded to `limit` entries
+`{x, y, count, score}`. Removed placements never count.
+
 ## Events
 
 One `PgListener` task `LISTEN`s on channel `events` and fans payloads into a

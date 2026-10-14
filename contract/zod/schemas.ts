@@ -154,6 +154,24 @@ export const feedSchema = z.object({
   next_before: z.nullable(z.number()),
 });
 
+/** One /api/hot cell: a z6 grid region (tile coordinates, 0..64), its
+ * raw placement count inside the window, and the recency-weighted score
+ * (each placement contributes 1 / (1 + age_days)). */
+export const hotCellSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  count: z.number(),
+  score: z.number(),
+});
+
+/** GET /api/hot response. `cells` is hottest-first, at most `limit`
+ * entries; `total` counts window placements world-wide. */
+export const hotSchema = z.object({
+  window_hours: z.number(),
+  total: z.number(),
+  cells: z.array(hotCellSchema),
+});
+
 /** 201 response of POST /api/place. */
 export const placedPlacementSchema = z.object({
   id: z.string(),
@@ -235,3 +253,5 @@ export type TagsUpdate = z.infer<typeof tagsUpdateSchema>;
 export type TagList = z.infer<typeof tagsSchema>;
 export type FeedEntry = z.infer<typeof feedEntrySchema>;
 export type Feed = z.infer<typeof feedSchema>;
+export type HotCell = z.infer<typeof hotCellSchema>;
+export type Hot = z.infer<typeof hotSchema>;

@@ -209,7 +209,7 @@ pub const S3_OPS: [&str; 2] = ["get", "put"];
 /// tiles-table seq read/write on the render path, `tile_queue` the
 /// background render queue's bookkeeping. Session-level advisory locks
 /// and migrations stay unlabeled (lock waits are not query time).
-pub const DB_FAMILIES: [&str; 15] = [
+pub const DB_FAMILIES: [&str; 16] = [
     "near",
     "tile_versions",
     "dig",
@@ -225,6 +225,9 @@ pub const DB_FAMILIES: [&str; 15] = [
     "chunk_bump",
     "reports",
     "tile_queue",
+    // Phase 3 render pipeline (migration 0008): claim/finish/fail on the
+    // render_jobs table plus its chunk_seqs and tiles writes.
+    "render_jobs",
 ];
 
 pub fn chunk_composited() {

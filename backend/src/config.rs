@@ -73,6 +73,29 @@ pub struct Config {
     /// SLO with headroom. Originals stay full-resolution content-addressed
     /// objects; only the canvas derivative is scaled. Default 1024.
     pub import_derivative_long_edge: i64,
+    /// Phase 3 render pipeline (docs/scaling-architecture.md, "Chunk and
+    /// tile pipeline"): DARK by default. When false (the default), the
+    /// request path paints chunks and replays removals synchronously as
+    /// always and no render_jobs worker runs. When true, place/remove only
+    /// record + queue, and the render_jobs worker paints chunks, cuts
+    /// their z 18–20 tiles and bubbles parent versions. Cutover is the
+    /// value flip (plus migration 0008, applied at boot regardless).
+    pub render_pipeline_enabled: bool,
+    /// render_jobs worker: claim-loop poll interval when the queue is
+    /// empty (claims are instant when a job is due).
+    pub render_pipeline_poll_ms: u64,
+    /// render_jobs worker: seconds a `running` row's claim stays valid
+    /// before another worker may retake it (worker died mid-job). Must
+    /// exceed the longest job (a ~40 s production rebuild) comfortably.
+    pub render_pipeline_lease_secs: i64,
+    /// Parent jobs (z < 18) wait out this quiet window before firing
+    /// (z 11–17: "a short quiet window").
+    pub render_pipeline_parent_quiet_ms: u64,
+    /// Parent jobs z ≤ 10 fire at most every `low_ms..low_ms+spread_ms`
+    /// (doc: 10–30 s at most) — this is the base.
+    pub render_pipeline_parent_low_ms: u64,
+    /// Parent jobs z ≤ 10: coordinate-spread added on top of `low_ms`.
+    pub render_pipeline_parent_spread_ms: u64,
 }
 
 /// Lenient boolean env parsing: true/1/yes (any case) are true.
@@ -155,6 +178,22 @@ impl Config {
             import_derivative_long_edge: env_or("IMPORT_DERIVATIVE_LONG_EDGE", "1024")
                 .parse()
                 .expect("invalid IMPORT_DERIVATIVE_LONG_EDGE"),
+            render_pipeline_enabled: parse_bool(&env_or("RENDER_PIPELINE_ENABLED", "false")),
+            render_pipeline_poll_ms: env_or("RENDER_PIPELINE_POLL_MS", "1000")
+                .parse()
+                .expect("invalid RENDER_PIPELINE_POLL_MS"),
+            render_pipeline_lease_secs: env_or("RENDER_PIPELINE_LEASE_SECS", "120")
+                .parse()
+                .expect("invalid RENDER_PIPELINE_LEASE_SECS"),
+            render_pipeline_parent_quiet_ms: env_or("RENDER_PIPELINE_PARENT_QUIET_MS", "3000")
+                .parse()
+                .expect("invalid RENDER_PIPELINE_PARENT_QUIET_MS"),
+            render_pipeline_parent_low_ms: env_or("RENDER_PIPELINE_PARENT_LOW_MS", "10000")
+                .parse()
+                .expect("invalid RENDER_PIPELINE_PARENT_LOW_MS"),
+            render_pipeline_parent_spread_ms: env_or("RENDER_PIPELINE_PARENT_SPREAD_MS", "20000")
+                .parse()
+                .expect("invalid RENDER_PIPELINE_PARENT_SPREAD_MS"),
         }
     }
 
@@ -167,6 +206,24 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::parse_bool;
+
+    /// The pipeline ships DARK (docs Phase 3): merging is a values flip,
+    /// so the default MUST stay off.
+    #[test]
+    fn render_pipeline_defaults_off() {
+        std::env::set_var("DATABASE_URL", "postgres://u:p@localhost/db");
+        std::env::set_var("S3_BUCKET", "test-bucket");
+        std::env::set_var("SESSION_SECRET", "x".repeat(32));
+        std::env::remove_var("RENDER_PIPELINE_ENABLED");
+        let cfg = super::Config::from_env();
+        assert!(!cfg.render_pipeline_enabled);
+        // Doc defaults: z ≤ 10 at most every 10–30 s; z 11–17 quiet.
+        assert_eq!(cfg.render_pipeline_parent_low_ms, 10_000);
+        assert_eq!(cfg.render_pipeline_parent_spread_ms, 20_000);
+        assert_eq!(cfg.render_pipeline_parent_quiet_ms, 3_000);
+        assert_eq!(cfg.render_pipeline_poll_ms, 1_000);
+        assert_eq!(cfg.render_pipeline_lease_secs, 120);
+    }
 
     /// The env var is the deployment's per-replica pool lever (the chart
     /// sets it); if the pool size ever stops reading it, this fails.

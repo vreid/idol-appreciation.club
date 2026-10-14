@@ -41,9 +41,56 @@ impl Default for TileRenderCfg {
     }
 }
 
+/// Phase 3 render pipeline knobs (migration 0008 worker). Defaults
+/// match production: DISABLED (dark ship), doc delay bounds.
+#[derive(Clone, Copy)]
+pub struct PipelineCfg {
+    pub enabled: bool,
+    pub poll_ms: u64,
+    pub lease_secs: i64,
+    /// z 11–17 quiet window.
+    pub parent_quiet_ms: u64,
+    /// z ≤ 10 base + coordinate spread (doc: 10–30 s).
+    pub parent_low_ms: u64,
+    pub parent_spread_ms: u64,
+}
+
+impl Default for PipelineCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_ms: 1000,
+            lease_secs: 120,
+            parent_quiet_ms: 3000,
+            parent_low_ms: 10_000,
+            parent_spread_ms: 20_000,
+        }
+    }
+}
+
+/// Immediate-drain knobs for pipeline tests (worker polls fast, parents
+/// fire at once).
+impl PipelineCfg {
+    pub fn fast() -> Self {
+        Self {
+            enabled: true,
+            poll_ms: 10,
+            lease_secs: 120,
+            parent_quiet_ms: 0,
+            parent_low_ms: 0,
+            parent_spread_ms: 0,
+        }
+    }
+}
+
 pub struct Server {
     pub addr: SocketAddr,
     pub _store_dir: PathBuf,
+    /// Direct SQL access for queue/pipeline assertions.
+    pub db_url: String,
+    /// The app state (worker seams, pool) for tests that drive the
+    /// pipeline directly.
+    pub state: App,
     /// None when CI presets DATABASE_URL (job service container): there
     /// is nothing to stop — the service outlives the test.
     #[allow(dead_code)] // dropped at test end; container stops with it
@@ -88,17 +135,57 @@ pub async fn start_server_gated(
         empty_secs,
         max_upload,
         Default::default(),
+        Default::default(),
     )
     .await
 }
 
-/// Full-knob boot: queue behavior tests override the render-queue config.
+/// With a preset `DATABASE_URL` (the CI job's postgres service — the
+/// pinned image has no docker socket for testcontainers), every server
+/// still needs the ISOLATION a fresh testcontainer used to provide:
+/// unique usernames, fresh `placement_seq`/`chunk_seqs` (tests assert
+/// etag "1"), private chunk areas. So provision a throwaway database per
+/// server boot in the preset service instead of pointing every server at
+/// one shared database. Databases accumulate for the job's lifetime —
+/// the service is disposable.
+pub async fn provision_isolated_db(preset: &str) -> String {
+    // Strip any query string; the admin connection targets /postgres.
+    let (base, query) = match preset.split_once('?') {
+        Some((b, q)) => (b, Some(q)),
+        None => (preset, None),
+    };
+    let origin = base
+        .rsplit_once('/')
+        .map(|(o, _)| o)
+        .expect("DATABASE_URL with a database path");
+    let db = format!("t_{}", uuid::Uuid::now_v7().simple());
+    let admin = format!("{origin}/postgres");
+    let admin_pool = sqlx::PgPool::connect(&admin)
+        .await
+        .expect("connect admin database for per-server provisioning");
+    // The name is uuid-generated: the identifier interpolation is safe.
+    sqlx::query(&format!(r#"CREATE DATABASE "{db}""#))
+        .execute(&admin_pool)
+        .await
+        .expect("create per-server database");
+    admin_pool.close().await;
+    let mut url = format!("{origin}/{db}");
+    if let Some(q) = query {
+        url.push('?');
+        url.push_str(q);
+    }
+    url
+}
+
+/// Full-knob boot: queue behavior tests override the render-queue config;
+/// pipeline tests enable the Phase 3 worker via `pipeline`.
 pub async fn start_server_full(
     approval_required: bool,
     paint_secs: i64,
     empty_secs: i64,
     max_upload: usize,
     tiles_cfg: TileRenderCfg,
+    pipeline: PipelineCfg,
 ) -> Server {
     // Pin a modern postgres: the module default is 11-alpine, too old for
     // generated columns. CI presets DATABASE_URL (job service container —
@@ -146,7 +233,7 @@ pub async fn start_server_full(
         std::env::temp_dir().join(format!("idol-test-store-{}", uuid::Uuid::now_v7().simple()));
     let cfg = Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
-        database_url,
+        database_url: database_url.clone(),
         database_ro_url: None,
         database_pool_max: 30,
         s3_endpoint: Some(format!("file://{}", store_dir.display())),
@@ -171,15 +258,22 @@ pub async fn start_server_full(
         import_block_entries: 500,
         import_group_concurrency: 2,
         import_derivative_long_edge: 1024,
+        render_pipeline_enabled: pipeline.enabled,
+        render_pipeline_poll_ms: pipeline.poll_ms,
+        render_pipeline_lease_secs: pipeline.lease_secs,
+        render_pipeline_parent_quiet_ms: pipeline.parent_quiet_ms,
+        render_pipeline_parent_low_ms: pipeline.parent_low_ms,
+        render_pipeline_parent_spread_ms: pipeline.parent_spread_ms,
     };
     let (state, app): (App, _) = build_app(cfg).await.expect("build app (pool + migrations)");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await });
-    let _ = state; // kept alive by the spawned server
     Server {
         addr,
         _store_dir: store_dir,
+        db_url: database_url,
+        state,
         container,
     }
 }
@@ -437,6 +531,35 @@ static PAUSE_LOCK: std::sync::LazyLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
 pub async fn set_render_pause_ms(ms: u64) -> PauseGuard {
     let perm = std::sync::Arc::clone(&*PAUSE_LOCK).lock_owned().await;
     tiles::set_render_pause_for_tests(ms);
+    PauseGuard { _perm: perm }
+}
+
+/// Hold every Phase 3 pipeline job before its pixel stage — deterministic
+/// running windows for the rerun test. Shares the tiles pause lock: at
+/// most one pause seam (or one worker-driven pipeline test) is active at
+/// a time in this binary, so a global pause never bleeds into a
+/// concurrent test's worker. The drop resets THE PAINT seam (the shared
+/// `PauseGuard` resets the tiles seam).
+pub struct PaintPauseGuard {
+    _perm: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for PaintPauseGuard {
+    fn drop(&mut self) {
+        idol_appreciation_club_backend::render_jobs::set_paint_pause_for_tests(0);
+    }
+}
+
+pub async fn set_paint_pause_ms(ms: u64) -> PaintPauseGuard {
+    let perm = std::sync::Arc::clone(&*PAUSE_LOCK).lock_owned().await;
+    idol_appreciation_club_backend::render_jobs::set_paint_pause_for_tests(ms);
+    PaintPauseGuard { _perm: perm }
+}
+
+/// Serialize worker-driven pipeline tests (they share the process-global
+/// paint-pause seam via the same lock).
+pub async fn pipeline_serial() -> PauseGuard {
+    let perm = std::sync::Arc::clone(&*PAUSE_LOCK).lock_owned().await;
     PauseGuard { _perm: perm }
 }
 

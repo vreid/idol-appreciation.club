@@ -710,11 +710,19 @@ tasks:
           exit 1
         fi
         # CCM may expose an ip or a dns hostname per ingress entry.
+        # getent (NSS) is unreliable on some runners for *.upcloudlb.com;
+        # fall through to dig and then python's getaddrinfo.
         addrs=""
         for entry in $ips; do
           case "$entry" in
             *.*.*|*:*) addrs="$addrs $entry" ;;
-            *) addrs="$addrs $(getent ahosts "$entry" | awk '{print $1}' | sort -u | tr '\n' ' ')" ;;
+            *)
+              a="$(getent ahosts "$entry" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
+              [ -n "$a" ] || a="$(dig +short A "$entry" 2>/dev/null | grep -E '^[0-9.]+$' | tr '\n' ' ')"
+              [ -n "$a" ] || a="$(python3 -c 'import socket,sys
+print(" ".join(x[4][0] for x in socket.getaddrinfo(sys.argv[1], None)))' "$entry" 2>/dev/null)"
+              addrs="$addrs $a"
+              ;;
           esac
         done
         ipv4="$(printf '%s\n' "$addrs" | tr ' ' '\n' | grep '\.' | head -1 || true)"

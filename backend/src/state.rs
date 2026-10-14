@@ -67,6 +67,10 @@ pub struct AppState {
     /// Bounded background re-render queue (single worker; see
     /// `tiles::RenderQueue`).
     pub render_queue: crate::tiles::RenderQueue,
+    /// Cap on concurrent full-pyramid (z < BASE_Z) renders (issue #120).
+    /// Entry GETs beyond the cap are shed (202 + Retry-After) instead of
+    /// stacking another minutes-long walk onto the pool.
+    pub pyramid_gate: crate::tiles::PyramidGate,
     /// Per-IP and per-(username, IP) token buckets for POST /api/auth/login.
     pub login_limiter: crate::rate::LoginLimiter,
 }

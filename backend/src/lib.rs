@@ -40,6 +40,10 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
     let (events_tx, _) = tokio::sync::broadcast::channel(1024);
 
     let render_queue = tiles::RenderQueue::new(pool.clone(), cfg.tile_render_queue_cap);
+    // Two concurrent full-pyramid renders max: each is minutes of work;
+    // with the connection-free walk (#120) they hold no pool connections,
+    // but CPU/S3 bandwidth still argues for a bound.
+    let pyramid_gate = tiles::PyramidGate::new(2);
     let state = Arc::new(AppState {
         tile_cache: tiles::TileCache::new(cfg.tile_cache_entries),
         pool,
@@ -48,6 +52,7 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         events_tx: events_tx.clone(),
         tile_locks: KeyLocks::new(),
         render_queue,
+        pyramid_gate,
         login_limiter: rate::LoginLimiter::new(),
         cfg,
     });

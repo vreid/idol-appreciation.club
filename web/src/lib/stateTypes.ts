@@ -1,5 +1,6 @@
 import type {
   CenterInfo,
+  DigEntry,
   Me,
   PendingAccount,
   Placement,
@@ -88,9 +89,24 @@ export interface AppStore {
   updateTags(placementId: string, tags: string[]): Promise<TagList | null>;
   /** The placement whose anchored detail panel is open, if any. */
   get selectedPlace(): Placement | null;
-  /** Selects a placement and opens its anchored detail panel. */
-  selectPlace(placement: Placement): void;
+  /** Selects a placement and opens its anchored detail panel; a point
+   * (jump paths) also loads the pile under it for the depth steppers. */
+  selectPlace(placement: Placement, point?: { x: number; y: number }): void;
   deselectPlace(): void;
+  /** Digs the pile at a point and caches it; true when the current
+   * selection is one of its strata (the repeat-click cycle case). */
+  queryPile(x: number, y: number): Promise<boolean>;
+  /** Selects `top` against the pile cached by queryPile (no refetch). */
+  adoptPile(top: Placement): void;
+  /** Moves the selection one stratum down/up through the cached pile
+   * (wrapping). False when there is nothing to step through. */
+  stepDig(delta: number): boolean;
+  /** Strata under the selection, newest-first (depth = index + 1). */
+  get digStack(): DigEntry[];
+  /** Full pile size at the selection point. */
+  get digTotal(): number;
+  /** Which stratum the panel shows (0-based; -1 = not in the pile). */
+  get digIndex(): number;
 }
 
 export interface AppStoreDeps {

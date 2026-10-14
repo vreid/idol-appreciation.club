@@ -52,13 +52,22 @@ export async function onMapClick(
   const zoom = controller.currentZoom();
   const near = await store.refreshNear(x, y, queryRadiusForZoom(zoom));
   const top = near[0];
-  // Empty spots silently deselect (and restore wheel-zoom).
+  // Empty spots silently deselect.
   if (top === undefined) {
     releaseSelection(map, store);
     return;
   }
-  store.selectPlace(top);
-  controller.showSelection(top);
+  // Re-clicking a stratum of the SAME pile cycles one stratum down
+  // (wrapping); a different pile selects its top as usual. The dig
+  // query also fills the panel's depth steppers.
+  const samePile = await store.queryPile(x, y);
+  if (samePile && store.digTotal > 1) {
+    store.stepDig(1);
+  } else {
+    store.adoptPile(top);
+  }
+  const selected = store.selectedPlace;
+  if (selected !== null) controller.showSelection(selected);
 }
 
 export async function onRemove(
@@ -108,7 +117,7 @@ export function jumpToPlacement(
   const cx = place.x + place.w / 2;
   const cy = place.y + place.h / 2;
   map.current?.centerOn(cx, cy);
-  store.selectPlace(place);
+  store.selectPlace(place, { x: cx, y: cy });
 }
 
 /** Panel actions share the same store paths as the map click handlers. */
@@ -121,6 +130,12 @@ export function placeDetailActions(
     onReport: (id) => void store.reportPlacement(id),
     isAdmin: () => store.me?.is_admin === true,
     onRemove: (id, bbox) => void onRemove(map, store, id, bbox),
+    onStepDig: (delta) => {
+      if (store.stepDig(delta)) {
+        const sel = store.selectedPlace;
+        if (sel !== null) map.current?.showSelection(sel);
+      }
+    },
     onUpdateTags: async (id, tags) => {
       await store.updateTags(id, tags);
     },

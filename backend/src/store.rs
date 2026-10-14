@@ -3,7 +3,7 @@
 
 use crate::config::Config;
 use object_store::path::Path as ObjPath;
-use object_store::{ObjectStore, PutMode, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutPayload};
 use std::sync::Arc;
 use std::time::Instant;
 

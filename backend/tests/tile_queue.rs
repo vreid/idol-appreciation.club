@@ -702,6 +702,35 @@ async fn import_pile_low_zoom_never_starves_placements() {
         "z15 render over a 4k-entry pile took {elapsed:?} — budget blown"
     );
 
+    // Issue #150 gate: the deepest zoom must be bounded. Three
+    // concurrent z0 GETs: at most two hold pyramid leases (minutes-long
+    // cold renders) — the third must SHED with 202 promptly instead of
+    // materializing a 4^18-node memo (the OOM that killed pods).
+    let z0 = "/api/tiles/0/0/0.webp";
+    let mut z0_futs = Vec::new();
+    for _ in 0..3 {
+        let addr = server.addr;
+        z0_futs.push(tokio::spawn(async move {
+            let t0 = std::time::Instant::now();
+            let r = request_addr(addr, "GET", z0, &[], Vec::new(), Duration::from_secs(30)).await;
+            (r.status, t0.elapsed())
+        }));
+    }
+    let mut bounded = true;
+    for f in z0_futs {
+        let (status, elapsed) = f.await.unwrap();
+        // Every outcome must be bounded: a shed (202) or a completed
+        // render (200) within the deadline. Pre-#150 the memo build
+        // alone allocated gigabytes and the pod died before responding.
+        if ![200, 202].contains(&status) || elapsed > Duration::from_secs(30) {
+            bounded = false;
+        }
+    }
+    assert!(
+        bounded,
+        "a z0 GET was unbounded (error/timeout) — node_seq is materializing again"
+    );
+
     // The rendered tile is stored: the re-GET is served without a
     // re-render, fast.
     let t0 = std::time::Instant::now();

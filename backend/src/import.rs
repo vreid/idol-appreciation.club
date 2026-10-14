@@ -730,6 +730,24 @@ async fn run_group(
             .await?;
         }
     }
+    // Chunk-version rollup advances with the batch (same tx): the tile
+    // read path reads chunk_seqs, never placement rows. Per GROUP, not
+    // per tag — tagless entries must bump too.
+    let bumps: Vec<(i64, i64, i64, i32, i32)> = group
+        .iter()
+        .enumerate()
+        .map(|(k, &i)| {
+            let p = &plans[i];
+            (
+                seqs[k],
+                p.aabb.x,
+                p.aabb.y,
+                p.aabb.w as i32,
+                p.aabb.h as i32,
+            )
+        })
+        .collect();
+    crate::chunks::bump_chunk_seqs(&mut tx, &bumps).await?;
     tx.commit().await?;
 
     out.imported = inserted;

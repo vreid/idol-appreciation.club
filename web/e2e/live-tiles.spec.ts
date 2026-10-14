@@ -98,12 +98,14 @@ function blankedTiles(page: Page): Promise<number> {
   );
 }
 
-/** True once any loaded tile's src carries the cache-busting query. */
+/** True once any loaded tile's src carries a cache-busting query:
+ * `?r=` (buster fallback for backends without tile versions) or `?v=`
+ * (server-issued version param from the staggered-deploy contract). */
 function anyTileRefreshed(page: Page): Promise<boolean> {
   return page.evaluate(() =>
     [
       ...document.querySelectorAll<HTMLImageElement>(".leaflet-tile-loaded"),
-    ].some((img) => img.src.includes("?r=")),
+    ].some((img) => img.src.includes("?r=") || /[?&]v=/u.test(img.src)),
   );
 }
 

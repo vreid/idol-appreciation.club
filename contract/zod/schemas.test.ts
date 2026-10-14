@@ -18,6 +18,9 @@ import {
   placementsNearSchema,
   digEntrySchema,
   digStackSchema,
+  tileVersionEntrySchema,
+  versionsEventSchema,
+  versionsQuerySchema,
   feedSchema,
   hotSchema,
   registerResultSchema,
@@ -73,6 +76,61 @@ describe("world events", () => {
 
   it("accepts a remove event with a non-empty id", () => {
     ok(worldEventSchema, { type: "remove", id: "a", bbox: [1, 2, 3, 4] });
+  });
+
+  it("accepts single tile version entries", () => {
+    ok(tileVersionEntrySchema, { key: "16/2/3", version: 7 });
+    rejected(tileVersionEntrySchema, { key: "16/2/3" });
+    rejected(tileVersionEntrySchema, { key: "16/2/3", version: -1 });
+  });
+
+  it("accepts a batched versions event", () => {
+    ok(worldEventSchema, {
+      type: "versions",
+      tiles: [
+        { key: "16/2/3", version: 1 },
+        { key: "13/0/1", version: 987654 },
+      ],
+    });
+    const parsed = versionsEventSchema.safeParse({
+      type: "versions",
+      tiles: [{ key: "16/2/3", version: 42 }],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success)
+      expect(parsed.data.tiles).toEqual([{ key: "16/2/3", version: 42 }]);
+  });
+
+  it("rejects malformed version entries", () => {
+    rejected(versionsEventSchema, { type: "versions" });
+    rejected(versionsEventSchema, { type: "versions", tiles: {} });
+    rejected(versionsEventSchema, {
+      type: "versions",
+      tiles: [{ key: "16/2", version: 1 }],
+    });
+    rejected(versionsEventSchema, {
+      type: "versions",
+      tiles: [{ key: "16/2/3", version: 0 }],
+    });
+    rejected(versionsEventSchema, {
+      type: "versions",
+      tiles: [{ key: "16/2/3", version: 1.5 }],
+    });
+    rejected(versionsEventSchema, {
+      type: "versions",
+      tiles: [{ key: "16/2/3", version: "42" }],
+    });
+    rejected(versionsEventSchema, {
+      type: "versions",
+      tiles: [{ key: "a/b/c", version: 1 }],
+    });
+  });
+
+  it("versions snapshot query accepts bbox + zoom", () => {
+    ok(versionsQuerySchema, { bbox: [0, 0, 268435456, 268435456], z: 16 });
+    rejected(versionsQuerySchema, { bbox: [0, 0, 1, 1] });
+    rejected(versionsQuerySchema, { bbox: [0, 0, 1, 1], z: 16.5 });
+    rejected(versionsQuerySchema, { bbox: [0, 0, 1, 1], z: -1 });
   });
 
   it("strips additive unknown fields", () => {

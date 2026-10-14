@@ -30,6 +30,9 @@ export interface SseClientOptions {
   onEvent: (event: WorldEvent) => void;
   /** Called with the raw payload of every message the contract rejects. */
   onMalformed?: (raw: string) => void;
+  /** Called each time the stream (re)opens — the viewport snapshot for
+   * versioned tile URLs refetches here (Read path reconnect rule). */
+  onOpen?: () => void;
   sourceFactory?: EventSourceFactory;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
@@ -63,6 +66,7 @@ export function eventTouchesCenter(
 export class SseClient {
   private readonly onEvent: (event: WorldEvent) => void;
   private readonly onMalformed: ((raw: string) => void) | null;
+  private readonly onOpen: (() => void) | null;
   private readonly sourceFactory: EventSourceFactory;
   private readonly initialBackoffMs: number;
   private readonly maxBackoffMs: number;
@@ -72,16 +76,34 @@ export class SseClient {
   private backoffMs: number;
   private scheduledDelayMs = 0;
   private running = false;
+  /** Subscribed area query ("bbox=…&z=…"), or null for subscribe-all. */
+  private areaQuery: string | null = null;
 
   constructor(options: SseClientOptions) {
     this.onEvent = options.onEvent;
     this.onMalformed = options.onMalformed ?? null;
+    this.onOpen = options.onOpen ?? null;
     this.sourceFactory =
       options.sourceFactory ?? ((url) => new EventSource(url));
     this.initialBackoffMs =
       options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
     this.maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.backoffMs = this.initialBackoffMs;
+  }
+
+  /**
+   * Subscribe the stream to a new area (large pan): the query travels on
+   * the events URL, so changing it means closing and reopening the
+   * source immediately — no backoff, this is a deliberate resubscribe.
+   * Null clears the area (subscribe-all). No-op when unchanged.
+   */
+  setArea(query: string | null): void {
+    if (this.areaQuery === query) return;
+    this.areaQuery = query;
+    if (!this.running) return;
+    this.source?.close();
+    this.source = null;
+    this.connect();
   }
 
   start(): void {
@@ -113,10 +135,13 @@ export class SseClient {
   }
 
   private connect(): void {
-    const source = this.sourceFactory(EVENTS_URL);
+    const url =
+      this.areaQuery === null ? EVENTS_URL : `${EVENTS_URL}?${this.areaQuery}`;
+    const source = this.sourceFactory(url);
     this.source = source;
     source.addEventListener("open", () => {
       this.backoffMs = this.initialBackoffMs;
+      this.onOpen?.();
     });
     source.addEventListener("message", (event) => {
       const parsed = parseWorldEvent(event.data);

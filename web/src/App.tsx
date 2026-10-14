@@ -3,15 +3,13 @@ import { createApiClient, type ApiClient } from "./lib/api";
 import {
   jumpToPlacement,
   onFileChosen,
-  onLongPress,
-  onMapClick,
   placeDetailActions,
   releaseSelection,
   type MapHandle,
 } from "./lib/appActions";
 import { createAppStore } from "./lib/state";
 import { SseClient, eventTouchesCenter } from "./lib/sse";
-import { createWorldMap } from "./lib/worldMap";
+import { createVersionedReadPath, mountWorldMap } from "./lib/versionedTiles";
 import { rotAABB, worldScale, type BBox } from "./lib/world";
 import type { Placement } from "./lib/api";
 import PlaceDetail, {
@@ -108,6 +106,8 @@ function sseConfig(
 ): ConstructorParameters<typeof SseClient>[0] {
   return {
     onEvent: (event) => {
+      // The versions branch lives in createVersionedReadPath.
+      if (event.type === "versions") return;
       const [x, y, w, h] = event.bbox;
       const bbox: BBox = { x, y, w, h };
       // The selected stratum vanished under someone else.
@@ -200,7 +200,12 @@ export default function App() {
   const [showFeed, setShowFeed] = createSignal(false);
   const [showHot, setShowHot] = createSignal(false);
 
-  const sse = new SseClient(sseConfig(map, store));
+  // Versioned read path: the store learns tile versions from the
+  // viewport snapshot and batched SSE events; tile URLs carry ?v= hints.
+  const { tileVersions, sse, onOpenHook } = createVersionedReadPath(
+    map,
+    sseConfig(map, store),
+  );
 
   // Keep the ghost image in sync with the placing flow.
   wireGhostSync(map, store);
@@ -212,23 +217,16 @@ export default function App() {
 
   onMount(() => {
     if (map.el === undefined) return;
-    map.current = createWorldMap(map.el, {
-      onMapClick: (x, y) => void onMapClick(map, store, x, y),
-      onLongPress: (x, y) => {
-        onLongPress(map, store, () => fileInput?.click(), x, y);
-      },
+    const dispose = mountWorldMap({
+      map,
+      store,
+      tileVersions,
+      sse,
+      onOpenHook,
+      fileInput: () => fileInput,
+      bumpViewport: () => void bumpViewport(1),
     });
-    map.current.onViewportChange(() => void bumpViewport(1));
-    void store.refreshMe();
-    void store.refreshCenter();
-    const poll = setInterval(() => void store.refreshCenter(), 30_000);
-    sse.start();
-    onCleanup(() => {
-      sse.stop();
-      clearInterval(poll);
-      map.current?.destroy();
-      map.current = null;
-    });
+    onCleanup(dispose);
   });
 
   return (

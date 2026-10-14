@@ -34,6 +34,7 @@ export default defineConfig({
         // Leaflet/DOM/window glue covered by e2e, not unitable logic.
         "src/lib/appActions.ts",
         "src/lib/worldMap.ts",
+        "src/lib/versionedTiles.ts",
         "src/lib/ghost.ts",
         "src/lib/tileDom.ts",
         "src/lib/urlViewState.ts",

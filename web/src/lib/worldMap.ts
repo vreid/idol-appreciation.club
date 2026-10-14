@@ -6,6 +6,7 @@ import {
   MAX_ZOOM,
   MIN_ZOOM,
   TILE_SIZE,
+  tileUrl,
   WORLD_CENTER,
   WORLD_LAT_LNG_BOUNDS,
   rotAABB,
@@ -52,6 +53,8 @@ export interface WorldMapController {
   invalidateBBox(bbox: BBox): void;
   /** Coalesced refresh for SSE event storms (~500ms window, deduped). */
   queueTileRefresh(bbox: BBox): void;
+  /** Coalesced refresh of explicit tiles (version events name them). */
+  refreshTileKeys(keys: string[]): void;
   pulse(bbox: BBox): void;
   setGhost(ghost: GhostImage | null): void;
   setPlacing(placing: boolean): void;
@@ -65,6 +68,8 @@ export interface WorldMapController {
   clearSelection(): void;
   /** Fires on every pan/zoom so anchored overlays can reposition. */
   onViewportChange(cb: () => void): void;
+  /** Viewport as a native-px world bbox; null before the first view. */
+  viewportBBox(): BBox | null;
   /** Selection-held wheel mode: zoom disabled, wheel flips the stack. */
   destroy(): void;
 }
@@ -193,20 +198,42 @@ function wireWorldCentering(map: L.Map): () => void {
   };
 }
 
-function addTileLayer(map: L.Map): L.TileLayer {
-  return L.tileLayer("/api/tiles/{z}/{x}/{y}.webp", {
+function addTileLayer(
+  map: L.Map,
+  versionOf: (z: number, x: number, y: number) => number | undefined,
+): L.TileLayer {
+  const tileLayer = L.tileLayer("/api/tiles/{z}/{x}/{y}.webp", {
     tileSize: TILE_SIZE,
     minZoom: MIN_ZOOM,
     maxZoom: MAX_ZOOM,
     bounds: L.latLngBounds(...WORLD_LAT_LNG_BOUNDS),
   }).addTo(map);
+  // Per-tile version hint (?v=, Read path): Leaflet resolves each tile's
+  // URL through getTileUrl, so replacing it on the instance lets the
+  // learned version decide the query while the template stays as the
+  // construction fallback. ?v is a hint backed by the same counter as
+  // the tile etag; versionless tiles fall through to the server's
+  // max-age=1 legacy row.
+  const versioned = tileLayer as L.TileLayer & {
+    getTileUrl(coords: { x: number; y: number; z: number }): string;
+  };
+  versioned.getTileUrl = (coords) =>
+    tileUrl(
+      coords.z,
+      coords.x,
+      coords.y,
+      versionOf(coords.z, coords.x, coords.y),
+    );
+  return tileLayer;
 }
 
 function createRefreshLoop(
   map: L.Map,
   tileLayer: L.TileLayer,
+  versionOf: (z: number, x: number, y: number) => number | undefined,
 ): {
   queue: (bbox: BBox) => void;
+  queueKeys: (keys: string[]) => void;
   invalidate: (bbox: BBox) => void;
   dispose: () => void;
 } {
@@ -215,11 +242,14 @@ function createRefreshLoop(
     viewport: () => viewWorldBBox(map),
   };
   const refresher = createTileRefresher(source, (keys) => {
-    refetchTiles(tileLayer, keys);
+    refetchTiles(tileLayer, keys, versionOf);
   });
   return {
     queue: (bbox) => {
       refresher.queue(bbox);
+    },
+    queueKeys: (keys) => {
+      refresher.queueKeys(keys);
     },
     invalidate: (bbox) => {
       refetchTiles(tileLayer, affectedRenderedTiles(source, [bbox]));
@@ -230,14 +260,12 @@ function createRefreshLoop(
   };
 }
 
-export function createWorldMap(
-  container: HTMLElement,
-  callbacks: MapCallbacks,
-): WorldMapController {
+/** The Leaflet map factory: world CRS, hard world bounds, no chrome. */
+function createLeafletMap(container: HTMLElement): L.Map {
   // L.map is Leaflet's map factory, not Array.prototype.map — the
   // no-array-callback-reference heuristic false-positives here.
   // eslint-disable-next-line unicorn/no-array-callback-reference
-  const map = L.map(container, {
+  return L.map(container, {
     crs: L.CRS.Simple,
     minZoom: MIN_ZOOM,
     maxZoom: MAX_ZOOM,
@@ -247,6 +275,17 @@ export function createWorldMap(
     attributionControl: false,
     worldCopyJump: false,
   });
+}
+
+export function createWorldMap(
+  container: HTMLElement,
+  callbacks: MapCallbacks,
+  options: {
+    /** Learned tile-version lookup for ?v= URL hints (Read path). */
+    versionOf?: (z: number, x: number, y: number) => number | undefined;
+  } = {},
+): WorldMapController {
+  const map = createLeafletMap(container);
   L.control.zoom({ position: "bottomright" }).addTo(map);
 
   // Single-slot notify for anchored overlays (the place-detail panel):
@@ -257,12 +296,13 @@ export function createWorldMap(
     if (viewportCb !== null) viewportCb();
   });
 
-  const tileLayer = addTileLayer(map);
+  const versionOf = options.versionOf ?? (() => {});
+  const tileLayer = addTileLayer(map, versionOf);
 
   const stopCentering = wireWorldCentering(map);
   const stopUrlView = wireUrlViewState(map);
 
-  const refresh = createRefreshLoop(map, tileLayer);
+  const refresh = createRefreshLoop(map, tileLayer, versionOf);
 
   const internal: MapInternals = {
     map,
@@ -282,6 +322,11 @@ export function createWorldMap(
 
     queueTileRefresh(bbox: BBox): void {
       refresh.queue(bbox);
+    },
+
+    /** Coalesced refresh of explicit tiles (version events name them). */
+    refreshTileKeys(keys: string[]): void {
+      refresh.queueKeys(keys);
     },
 
     pulse(bbox: BBox): void {
@@ -325,6 +370,10 @@ export function createWorldMap(
 
     onViewportChange(cb: () => void): void {
       viewportCb = cb;
+    },
+
+    viewportBBox(): BBox | null {
+      return viewWorldBBox(map);
     },
 
     destroy(): void {

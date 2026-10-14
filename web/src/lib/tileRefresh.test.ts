@@ -81,6 +81,40 @@ function harness(source = gridSource()) {
 }
 
 describe("createTileRefresher", () => {
+  it("queueKeys refreshes explicit rendered keys at flush", () => {
+    vi.useFakeTimers();
+    const source = {
+      renderedTileKeys: () => ["1:2:16", "3:4:16"],
+      viewport: () => null,
+    };
+    const refreshed: string[][] = [];
+    const refresher = createTileRefresher(source, (keys) => {
+      refreshed.push(keys);
+    });
+    refresher.queueKeys(["1:2:16", "9:9:16"]);
+    vi.advanceTimersByTime(TILE_REFRESH_WINDOW_MS + 1);
+    expect(refreshed).toEqual([["1:2:16"]]);
+    vi.useRealTimers();
+  });
+
+  it("queueKeys participates in the same coalescing window", () => {
+    vi.useFakeTimers();
+    const source = {
+      renderedTileKeys: () => ["1:2:16"],
+      viewport: () => null,
+    };
+    const refreshed: string[][] = [];
+    const refresher = createTileRefresher(source, (keys) => {
+      refreshed.push(keys);
+    });
+    refresher.queue({ x: 0, y: 0, w: 1, h: 1 });
+    refresher.queueKeys(["1:2:16"]);
+    expect(refresher.pending()).toBe(2);
+    vi.advanceTimersByTime(TILE_REFRESH_WINDOW_MS + 1);
+    expect(refreshed).toEqual([["1:2:16"]]);
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
   });

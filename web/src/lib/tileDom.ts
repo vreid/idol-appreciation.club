@@ -50,22 +50,29 @@ export function viewWorldBBox(map: L.Map): BBox | null {
 }
 
 /**
- * Refetch the given rendered tiles IN PLACE. The refresh URL is
- * cache-busted: a plain same-URL reassignment would be served from the
- * HTTP cache's stale-while-revalidate grace (stale pixels now, fresh bytes
- * into the cache only), so the visible update would lag one refresh behind.
- * A unique query forces a real GET — 200 with the current tile bytes —
- * while the browser keeps showing the old bitmap until the new bytes
- * decode: no blanking, no flicker.
+ * Refetch the given rendered tiles IN PLACE with their current versions:
+ * the URL changes when the version changed, which forces a real GET (the
+ * server's fallback table serves current bytes for a stale hint with
+ * `max-age=60`), while the browser keeps showing the old bitmap until the
+ * new bytes decode: no blanking, no flicker. A tile whose version is
+ * unknown keeps the legacy cache-busting query — that fallback dies with
+ * the versions backend lane (roadmap #163); until then it preserves
+ * today's refresh semantics against pre-versions backends.
  */
-export function refetchTiles(tileLayer: L.TileLayer, keys: string[]): void {
+export function refetchTiles(
+  tileLayer: L.TileLayer,
+  keys: string[],
+  versionOf: (z: number, x: number, y: number) => number | undefined = () => {},
+): void {
   const tiles = renderedTileMap(tileLayer);
-  const bust = Date.now();
   for (const key of keys) {
     const el = tileImageOf(tiles, key);
     const tile = parseTileKey(key);
-    if (el !== null && tile !== null) {
-      el.src = `${tileUrl(tile.z, tile.x, tile.y)}?r=${bust}`;
-    }
+    if (el === null || tile === null) continue;
+    const version = versionOf(tile.z, tile.x, tile.y);
+    el.src =
+      version === undefined
+        ? `${tileUrl(tile.z, tile.x, tile.y)}?r=${Date.now()}`
+        : tileUrl(tile.z, tile.x, tile.y, version);
   }
 }

@@ -62,14 +62,62 @@ export const removeEventSchema = z.object({
 // event types silently today; once the schema knows the shape, the web can
 // start consuming it without another contract review round.
 
+/**
+ * One tile version: the "z/x/y" tile key (server tile formula, world.ts
+ * tileIndexAt) and the version it shows. Versions come from the same
+ * monotonic per-tile counter the tile etag derives from: `?v=` on a tile
+ * URL is a HINT and the etag is truth, so a stale hint can never cache
+ * bytes the server disagrees with (docs/scaling-architecture.md, Read
+ * path). Entries, not a record: zod's z.record generics degrade to
+ * error types under tsgo.
+ */
+export const tileVersionEntrySchema = z.object({
+  key: z.string().check(z.regex(/^\d+\/\d+\/\d+$/u)),
+  version: z.number().check(z.int(), z.positive()),
+});
+export type TileVersionEntry = z.infer<typeof tileVersionEntrySchema>;
+
+/** Body of GET /api/versions: current versions for the tiles
+ * intersecting the queried bbox at the queried zoom. */
+export const tileVersionsResponseSchema = z.object({
+  tiles: z.array(tileVersionEntrySchema),
+});
+export type TileVersionsResponse = z.infer<typeof tileVersionsResponseSchema>;
+
+/** Batched tile-version updates: the API coalesces worker notifications
+ * into 1s ticks and emits only tiles that changed inside the client's
+ * subscribed area (its viewport query on /api/events). */
+export const versionsEventSchema = z.object({
+  type: z.literal("versions"),
+  tiles: z.array(tileVersionEntrySchema),
+});
+
 export const worldEventSchema = z.discriminatedUnion("type", [
   placeEventSchema,
   removeEventSchema,
+  versionsEventSchema,
 ]);
 
 export type PlaceEvent = z.infer<typeof placeEventSchema>;
 export type RemoveEvent = z.infer<typeof removeEventSchema>;
+export type VersionsEvent = z.infer<typeof versionsEventSchema>;
 export type WorldEvent = z.infer<typeof worldEventSchema>;
+
+/**
+ * Viewport snapshot query for versioned tile URLs:
+ * GET /api/versions?bbox=<x>,<y>,<w>,<h>&z=<zoom> — bbox in native world
+ * px (the same space as /api/placements/near), z the client's tile zoom;
+ * response body is `{tiles: [{key, version}]}` for the tiles
+ * intersecting the bbox at that zoom. The same query string doubles as
+ * the /api/events subscription area; absent params subscribe to all
+ * areas (the behavior of every backend deployed before the versions
+ * lane).
+ */
+export const versionsQuerySchema = z.object({
+  bbox: bboxSchema,
+  z: z.number().check(z.int(), z.minimum(0)),
+});
+export type VersionsQuery = z.infer<typeof versionsQuerySchema>;
 
 // ---------------------------------------------------------------------------
 // Placements

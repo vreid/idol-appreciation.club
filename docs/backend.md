@@ -322,6 +322,29 @@ B/entry; 100k ≈ 14 MiB). Workloads beyond that chunk client-side:
 independently. Knobs: `IMPORT_BLOCK_ENTRIES` (500), `IMPORT_GROUP_CONCURRENCY`
 (2).
 
+Client driver (`import-bulk.sh`):
+
+- **Chunking**: default `--chunk 750`, sized so one POST fits the 3600 s client
+  timeout at the observed live rate (1.7 img/s single client, ~2.5 img/s with 4
+  concurrent clients — real in-region S3, latency-bound; the node sits at ~0.8/4
+  CPUs, so parallel clients scale sublinearly). Chunk size is **fixed per run**:
+  it feeds the entry ids, so changing `--chunk` mid-run re-places the same
+  coordinates — use a new `--tag`.
+- **Retry**: a chunk POST is retried up to 4× with backoff (safe: the server
+  commits per block and entry identity is `uuid5(batch_id, entry)`, so a
+  timed-out-then-retried chunk can never double-place).
+- **Preupload cache**: `(sha256,size) → response map` is kept in
+  `/tmp/import-bulk-preupload-cache-<host>.json` (content-addressed, shared
+  across tags, keyed per server). Re-runs only upload sources the server has
+  never seen — the server dedupes by source sha regardless; the cache saves the
+  100-file multipart and ~3.3 s/source of server-side decode per preupload.
+  After a full wipe/re-seed the cached derivative objects are gone: delete the
+  cache file to force a full re-upload.
+- **Live numbers** (production, 51,487 placements, radius 12000): ~2.49 img/s
+  sustained over 2 h20m with 4 concurrent clients; single client ~1.7 img/s; the
+  wall is per-entry chunk-canvas S3 round-trips + composite serialization, not
+  CPU.
+
 Metrics (see Metrics): `import_batches_total`, `import_images_total`,
 `import_chunk_writes_total`, `import_duration_seconds`, and the derived gauge
 `chunk_write_amplification` (`import_images_total / import_chunk_writes_total`)
@@ -482,18 +505,18 @@ manifest-derived history).
 
 ## Dig stack
 
-`GET /api/dig?x=&y=` (auth-free read) returns the wheel-dig stack: every
-placement whose **rotated** rect contains the point, newest-first —
+`GET /api/dig?x=&y=` (auth-free read) returns the dig stack: every placement
+whose **rotated** rect contains the point, newest-first —
 `{ stack: [{depth, id, username, x, y, w, h, rot, seq, created_at, tags], total, truncated }`,
 depth 1 = topmost. Candidates come from the GiST bbox (`bbox @> point`),
 membership is refined with the exact rotated hit-test
 (`world::rotated_contains`), so an AABB corner hit that misses the rotated
 pixels does not dig up. The stack is capped at 64 entries (`truncated: true`
-reports a cut stack; `total` is the full size — the UI's "3 of 12"). The ETag is
-the global `placement_seq` counter — the generator the tile-read staleness
-marker derives from — so a matching If-None-Match is a cheap 304 and any new
-placement invalidates every outstanding stack; removals surface via the SSE
-`remove` event (a removed middle stratum does not move the seq).
+reports a cut stack; `total` is the full size). The ETag is the global
+`placement_seq` counter — the generator the tile-read staleness marker derives
+from — so a matching If-None-Match is a cheap 304 and any new placement
+invalidates every outstanding stack; removals surface via the SSE `remove` event
+(a removed middle stratum does not move the seq).
 
 ## Feed
 

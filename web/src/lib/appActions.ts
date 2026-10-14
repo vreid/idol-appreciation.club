@@ -12,11 +12,10 @@ export interface MapHandle {
   el: HTMLDivElement | undefined;
 }
 
-/** One deselect path: selection, highlight, wheel all released. */
+/** One deselect path: selection + highlight released. */
 export function releaseSelection(map: MapHandle, store: AppStore): void {
   store.deselectPlace();
   map.current?.clearSelection();
-  map.current?.setDigMode(false);
 }
 
 /** Long-press target: deselect, pin the spot, open the upload flow. */
@@ -58,12 +57,8 @@ export async function onMapClick(
     releaseSelection(map, store);
     return;
   }
-  store.selectPlace(top, { x, y });
+  store.selectPlace(top);
   controller.showSelection(top);
-  // Wheel now peels the stack under the click point instead of zooming.
-  controller.setDigMode(true, (deltaY) => {
-    store.flipDig(deltaY > 0 ? 1 : -1);
-  });
 }
 
 export async function onRemove(
@@ -113,7 +108,7 @@ export function jumpToPlacement(
   const cx = place.x + place.w / 2;
   const cy = place.y + place.h / 2;
   map.current?.centerOn(cx, cy);
-  store.selectPlace(place, { x: cx, y: cy });
+  store.selectPlace(place);
 }
 
 /** Panel actions share the same store paths as the map click handlers. */

@@ -769,7 +769,7 @@ tasks:
         want="$(tail -n +14 chart/cnpg/cnpg-operator-1.29.3.yaml | sha256sum | cut -d' ' -f1)"
         test "$got" = "$want" \
           || { echo "pinned operator manifest drifted from upstream v1.29.3 + digest rewrite" >&2; exit 1; }
-        kubectl apply --server-side --field-manager=cnpg-operator -f chart/cnpg/cnpg-operator-1.29.3.yaml
+        kubectl apply --server-side --force-conflicts --field-manager=cnpg-operator -f chart/cnpg/cnpg-operator-1.29.3.yaml
         kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=180s
 
   cnpg:cluster:secret:

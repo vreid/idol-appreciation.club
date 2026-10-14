@@ -13,6 +13,8 @@ import AuthPopover from "./AuthPopover";
 export default function TopBar(props: {
   store: AppStore;
   onPickImage: () => void;
+  /** Toggles the feed panel (a plain boolean flip in App). */
+  onToggleFeed: () => void;
 }) {
   const store = props.store;
 
@@ -61,6 +63,14 @@ export default function TopBar(props: {
       <div class="top-actions">
         <button class="btn primary" type="button" onClick={props.onPickImage}>
           📸 Place image
+        </button>
+        <button
+          class="btn ghost small"
+          type="button"
+          aria-label="Toggle feed"
+          onClick={props.onToggleFeed}
+        >
+          Feed
         </button>
         <Show when={store.authChecked && store.me !== null}>
           <span class="me-box">

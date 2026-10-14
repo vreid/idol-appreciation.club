@@ -65,6 +65,13 @@ pub struct NearPlacement {
 /// 8 per placement, duplicates dropped. Returns the message of the first
 /// violation so both the PUT handler and the import manifest map it to a
 /// 400.
+/// One normalized label: 1..=32 chars of [a-z0-9_-] (already lowercased).
+fn valid_tag(t: &str) -> bool {
+    t.len() <= 32
+        && t.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 pub(crate) fn normalize_tags(raw: Vec<String>) -> Result<Vec<String>, &'static str> {
     let mut out: Vec<String> = Vec::with_capacity(raw.len().min(8));
     for t in raw {
@@ -72,10 +79,7 @@ pub(crate) fn normalize_tags(raw: Vec<String>) -> Result<Vec<String>, &'static s
         if t.is_empty() {
             continue;
         }
-        let ok = t.len() <= 32
-            && t.chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
-        if !ok {
+        if !valid_tag(&t) {
             return Err("tags must be 1..=32 chars of [a-z0-9_-]");
         }
         if !out.contains(&t) {
@@ -135,6 +139,79 @@ pub async fn near(
     .fetch_all(&app.pool)
     .await?;
     Ok(Json(rows))
+}
+
+#[derive(serde::Serialize)]
+pub struct FeedRes {
+    /// Newest-first placements (most recent first, global `seq` order).
+    pub items: Vec<NearPlacement>,
+    /// `seq` cursor for the next-older page (pass as `?before=`); null
+    /// when the feed is exhausted.
+    pub next_before: Option<i64>,
+}
+
+/// GET /api/feed — the newest placements, newest-first, optionally
+/// filtered to one normalized tag. Auth-free read with keyset
+/// pagination: pass `before=<next_before>` from the previous page.
+pub async fn feed(
+    State(app): State<App>,
+    Query(params): Query<HashMap<String, String>>,
+) -> AppResult<Json<FeedRes>> {
+    let tag = match params.get("tag").map(|t| t.trim()) {
+        None | Some("") => None,
+        Some(raw) => {
+            let tag = raw.to_ascii_lowercase();
+            if !valid_tag(&tag) {
+                return Err(AppError::BadRequest(
+                    "tags must be 1..=32 chars of [a-z0-9_-]",
+                ));
+            }
+            Some(tag)
+        }
+    };
+    let limit: i64 = match params.get("limit") {
+        None => 20,
+        Some(raw) => raw
+            .parse()
+            .map_err(|_| AppError::BadRequest("missing or invalid query parameter"))?,
+    };
+    if !(1..=50).contains(&limit) {
+        return Err(AppError::BadRequest("limit must be 1..=50"));
+    }
+    let before: Option<i64> = match params.get("before") {
+        None => None,
+        Some(raw) => Some(
+            raw.parse()
+                .map_err(|_| AppError::BadRequest("missing or invalid query parameter"))?,
+        ),
+    };
+    let items = sqlx::query_as::<_, NearPlacement>(
+        "SELECT p.id, a.username, p.seq, p.x, p.y, p.w, p.h, p.rot, p.created_at,
+                COALESCE(t.tags, '{}') AS tags
+         FROM placements p
+         JOIN accounts a ON a.id = p.account_id
+         LEFT JOIN LATERAL (SELECT array_agg(pt.tag ORDER BY pt.tag) AS tags
+                            FROM placement_tags pt
+                            WHERE pt.placement_id = p.id) t ON true
+         WHERE p.removed_at IS NULL
+           AND ($1::bigint IS NULL OR p.seq < $1)
+           AND ($2::text IS NULL OR EXISTS (SELECT 1 FROM placement_tags ft
+                                            WHERE ft.placement_id = p.id
+                                              AND ft.tag = $2))
+         ORDER BY p.seq DESC
+         LIMIT $3",
+    )
+    .bind(before)
+    .bind(tag)
+    .bind(limit)
+    .fetch_all(&app.pool)
+    .await?;
+    let next_before = if items.len() as i64 == limit {
+        items.last().map(|item| item.seq)
+    } else {
+        None
+    };
+    Ok(Json(FeedRes { items, next_before }))
 }
 
 /// A placement that covers the world center (AABB candidate — membership

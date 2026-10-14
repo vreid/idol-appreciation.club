@@ -18,6 +18,7 @@ import {
   placementsNearSchema,
   digEntrySchema,
   digStackSchema,
+  feedSchema,
   registerResultSchema,
   removeEventSchema,
   tagsSchema,
@@ -301,4 +302,45 @@ describe("tags", () => {
     ok(digEntrySchema, entry);
     ok(digEntrySchema, { ...entry, tags: ["encore"] });
   });
+
+describe("feed", () => {
+  const entry = {
+    id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a101",
+    username: "wonyoung",
+    seq: 42,
+    x: 134217728,
+    y: 134217728,
+    w: 256,
+    h: 128,
+    rot: 45.5,
+    created_at: "2026-10-12T00:00:00Z",
+    tags: ["stage"],
+  };
+
+  it("accepts a page with and without a cursor", () => {
+    ok(feedSchema, { items: [], next_before: null });
+    ok(feedSchema, { items: [entry], next_before: 41 });
+    ok(feedSchema, { items: [entry, { ...entry, seq: 41 }], next_before: 41 });
+  });
+
+  it("requires items and a well-typed cursor", () => {
+    rejected(feedSchema, {});
+    rejected(feedSchema, { items: [], next_before: "41" });
+    rejected(feedSchema, {
+      items: [{ ...entry, seq: "42" }],
+      next_before: null,
+    });
+  });
+
+  it("strips unknown entry fields", () => {
+    const parsed = feedSchema.safeParse({
+      items: [{ ...entry, bbox: [1, 2, 3, 4] }],
+      next_before: null,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(Object.keys(parsed.data.items[0] ?? {})).not.toContain("bbox");
+    }
+  });
+});
 });

@@ -921,3 +921,92 @@ input[type="range"] {
     width: calc(100% - 24px);
   }
 }
+
+/* ---------- feed panel ---------- */
+
+/* Toggleable list of the newest placements (TopBar "Feed"). Sits under
+   the top bar, above Leaflet's panes but below toasts. */
+.feed-panel {
+  position: absolute;
+  top: 64px;
+  left: 12px;
+  z-index: 850;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 280px;
+  max-height: min(60vh, 480px);
+  padding: 12px 14px;
+}
+
+.feed-title {
+  font-weight: 800;
+}
+
+.feed-filter input {
+  width: 100%;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.feed-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.feed-item:hover {
+  background: var(--bg-3);
+  border-color: var(--line);
+}
+
+.feed-user {
+  font-weight: 700;
+}
+
+.feed-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.feed-tags {
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+.feed-empty,
+.feed-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.feed-error {
+  color: var(--danger);
+}
+
+.feed-older {
+  align-self: center;
+}

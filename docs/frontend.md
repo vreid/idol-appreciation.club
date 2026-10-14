@@ -218,6 +218,16 @@ chip removal (✕) and an add-tag input (Enter or the button commits).
   toast (`describeApiError`); 401/403 open the login popover like every other
   authed call.
 
+### Feed panel
+
+The TopBar "Feed" button toggles a `FeedPanel` card (left edge, under the bar):
+the newest placements via `GET /api/feed` (auth-free), optionally filtered by
+one tag, paged oldest-ward with the `next_before` keyset cursor ("Older" button,
+20 per page). Clicking an entry pans the map there
+(`WorldMapController.centerOn`) and selects it at its centre — the anchored
+panel + dig depth cue take over. Failures surface as an inline error line in the
+panel, not a toast.
+
 ## API usage map
 
 Cookie auth, same-origin. `src/lib/api.ts` is the only fetch site (fetch +
@@ -225,9 +235,10 @@ optional `base` injectable; the contract suite passes the booted backend's
 origin). Endpoints: auth register/login/logout/me, place (multipart
 x/y/size/rot), placements/near, dig (stack under a point, newest-first with
 1-based depths; zod-parsed `digStackSchema`), center, events (SSE), reports,
-placements/{id}/tags PUT (owner/admin label edit), admin placements delete,
-admin accounts list/approve. UX rules live in `state.ts`: 429 → cooldown toast
-with Retry-After; 401/403 → login popover; `/api/center` polls every 30 s and
+placements/{id}/tags PUT (owner/admin label edit), feed (newest-first list,
+optional tag filter, keyset `before` cursor), admin placements delete, admin
+accounts list/approve. UX rules live in `state.ts`: 429 → cooldown toast with
+Retry-After; 401/403 → login popover; `/api/center` polls every 30 s and
 refreshes early when an SSE bbox covers the center.
 
 ## Long-press to place (touch + right-click)

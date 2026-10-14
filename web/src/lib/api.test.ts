@@ -286,6 +286,36 @@ describe("report / admin remove", () => {
     expect(jsonBody(mock.calls[0])).toEqual({ tags: ["stage", "encore"] });
   });
 
+  it("fetches the feed with only the set params", async () => {
+    const mock = fetchMock(() =>
+      jsonResponse(200, {
+        items: [
+          {
+            id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a10b",
+            username: "wren",
+            seq: 41,
+            x: 1,
+            y: 2,
+            w: 3,
+            h: 4,
+            rot: 0,
+            created_at: "2026-10-13T00:00:00Z",
+            tags: ["stage"],
+          },
+        ],
+        next_before: 41,
+      }),
+    );
+    const api = createApiClient({ fetch: mock.fetch });
+    await expect(api.feed({})).resolves.toMatchObject({
+      next_before: 41,
+      items: [{ username: "wren", tags: ["stage"] }],
+    });
+    expect(mock.calls[0]?.url).toBe("/api/feed");
+    await api.feed({ tag: "stage", before: 41, limit: 5 });
+    expect(mock.calls[1]?.url).toBe("/api/feed?tag=stage&before=41&limit=5");
+  });
+
   it("rejects a malformed tags response as ApiError 0", async () => {
     const mock = fetchMock(() => jsonResponse(200, { tags: "stage" }));
     const api = createApiClient({ fetch: mock.fetch });

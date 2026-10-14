@@ -495,6 +495,26 @@ marker derives from — so a matching If-None-Match is a cheap 304 and any new
 placement invalidates every outstanding stack; removals surface via the SSE
 `remove` event (a removed middle stratum does not move the seq).
 
+## Feed
+
+`GET /api/feed` (auth-free read) lists the newest placements, newest-first by
+global `seq`, for the web's feed panel. Query parameters:
+
+- `tag` (optional): filter to one normalized label — the input is trimmed and
+  lowercased, then matched exactly; anything outside `1..=32` chars of
+  `[a-z0-9_-]` is a `400` (same rule set as the tags PUT, via the same
+  validator).
+- `limit` (optional, default 20, capped 1..=50).
+- `before` (optional): keyset cursor — return only placements with
+  `seq < before`.
+
+Response `{ items: NearPlacement[], next_before: number | null }`: `items` is
+newest-first (tags included); `next_before` is the cursor for the next-older
+page and is null once a page comes back short (exhausted). Keyset pagination
+rather than offsets: seq is monotonic, so paging is stable under concurrent
+placements and cheap (`seq` index, no `OFFSET` scans). Moderation follows the
+other reads: removed placements drop out.
+
 ## Events
 
 One `PgListener` task `LISTEN`s on channel `events` and fans payloads into a

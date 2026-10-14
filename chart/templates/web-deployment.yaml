@@ -8,18 +8,17 @@ metadata:
 spec:
   # fixed at 1: /data is an RWO PVC (Caddy TLS state) — replicas cannot share it
   replicas: 1
-  # Explicit zero-downtime roll: maxSurge 1 / maxUnavailable 0 means the
-  # replacement pod must pass readiness before the old one terminates.
-  # The caddy-data PVC is RWO, so the surged pod schedules on the volume's
-  # node (UpCloud CSI pins the PV to one node) where same-node multi-pod
-  # mounts are allowed — the roll either overlaps cleanly or the new pod
-  # stays Pending (old pod keeps serving) until the node has capacity.
-  # ACME certs live on the persistent PVC, so rolls do NOT re-run ACME.
+  # Recreate, not RollingUpdate: the caddy-data PVC is ReadWriteOnce, and
+  # nothing forces the surge pod onto the volume's node. When the scheduler
+  # places it elsewhere, attach is refused (Multi-Attach error, #186/#187
+  # deploys), the pod never passes readiness, and rollback-on-failure
+  # reverts the whole release. Past rolls succeeded only when both pods
+  # happened to co-locate on the PV's node. Recreate frees the volume
+  # before the replacement starts: always rolls, costs a few seconds of
+  # connection-refused at the edge per web deploy. ACME certs live on the
+  # persistent PVC, so rolls do NOT re-run ACME.
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+    type: Recreate
   selector:
     matchLabels:
       app: web

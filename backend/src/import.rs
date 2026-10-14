@@ -883,7 +883,16 @@ pub async fn import(
     while !plans.is_empty() {
         let rest = plans.split_off(block_size.min(plans.len()));
         let block = std::mem::take(&mut plans);
-        let st = process_block(&app, admin_id, req.batch_id, block, &cache).await?;
+        let st = match process_block(&app, admin_id, req.batch_id, block, &cache).await {
+            Ok(st) => st,
+            // Blocks 1..n-1 already committed: fire the metrics on the
+            // partial batch before surfacing the error, or the counters
+            // silently lose every row that did land.
+            Err(e) => {
+                finish_metrics(&mut summary, t0);
+                return Err(e);
+            }
+        };
         summary.imported += st.imported;
         summary.duplicates += st.duplicates;
         summary.chunk_writes += st.chunk_writes;
@@ -892,11 +901,22 @@ pub async fn import(
         plans = rest;
     }
 
+    // Fire BEFORE the optional prewarm: the numbers describe the batch's
+    // commits, and a prewarm failure must not eat them.
+    finish_metrics(&mut summary, t0);
+
     if req.prewarm {
         let chunks: Vec<(i64, i64)> = touched.into_iter().collect();
         summary.prewarmed_tiles = Some(crate::tiles::prewarm_chunks(&app, &chunks).await?);
     }
 
+    Ok(Json(summary))
+}
+
+/// Stamp wall time into the summary and record the batch in the metrics.
+/// Called exactly once per import POST — on success AND on mid-batch
+/// failure — so every committed row is counted exactly once.
+fn finish_metrics(summary: &mut ImportSummary, t0: Instant) {
     let elapsed = t0.elapsed();
     crate::metrics::import_done(summary.imported, summary.chunk_writes, elapsed);
     summary.duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
@@ -911,7 +931,6 @@ pub async fn import(
     } else {
         summary.imported as f64 / summary.chunk_writes as f64
     };
-    Ok(Json(summary))
 }
 
 #[cfg(test)]

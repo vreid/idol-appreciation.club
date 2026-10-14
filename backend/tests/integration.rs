@@ -1618,6 +1618,108 @@ async fn read_sse_until(addr: std::net::SocketAddr, needle: &str) -> Option<Stri
     None
 }
 
+/// Regression (#119): the import_* series must move on the batch path.
+/// The night of the 100k-wave reseed, /api/metrics reported zero for
+/// every import_* series while 38k+ placements committed — the bump
+/// site (`metrics::import_done`) must run per batch POST and the
+/// exposition must surface all five series.
+#[tokio::test(flavor = "multi_thread")]
+async fn import_metrics_move_on_batch() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let admin = register(&server, "metrics-importer").await; // first account = admin
+
+    // Series exist and start at zero on a fresh server.
+    let before = metrics_map(&server).await;
+    assert_eq!(
+        before.get("import_batches_total").map(String::as_str),
+        Some("0"),
+        "import_batches_total missing or nonzero on fresh server"
+    );
+    assert_eq!(
+        before.get("import_images_total").map(String::as_str),
+        Some("0"),
+        "import_images_total missing or nonzero on fresh server"
+    );
+    assert_eq!(
+        before.get("import_chunk_writes_total").map(String::as_str),
+        Some("0"),
+        "import_chunk_writes_total missing or nonzero on fresh server"
+    );
+    assert_eq!(
+        before
+            .get("import_duration_seconds_count")
+            .map(String::as_str),
+        Some("0"),
+        "import_duration_seconds_count missing or nonzero on fresh server"
+    );
+
+    // One real batch: 3 entries across 2 chunks (two piled + one far).
+    let maps = preupload(&server, &admin, &[png(48, 48), png(32, 32)]).await;
+    let entries = vec![
+        entry(&maps, 0, 4200, 4200, 0.0, None),
+        entry(&maps, 0, 4260, 4260, 45.0, None),
+        entry(&maps, 1, 20000, 20000, 0.0, None),
+    ];
+    let manifest = serde_json::json!({
+        "batch_id": uuid::Uuid::now_v7(),
+        "entries": entries,
+    });
+    let resp = import_manifest(&server, &admin, manifest).await;
+    assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+    let summary = resp.json();
+    assert_eq!(summary["imported"], 3);
+
+    let after = metrics_map(&server).await;
+    let n = |k: &str| after.get(k).expect(k).parse::<f64>().expect(k);
+    assert_eq!(n("import_batches_total"), 1.0, "batch counter did not move");
+    assert_eq!(n("import_images_total"), 3.0, "images counter did not move");
+    let writes = n("import_chunk_writes_total");
+    assert!(
+        writes >= 1.0 && writes <= 3.0,
+        "chunk_writes {writes} outside [1,3] — must count chunk raster writes, not images"
+    );
+    assert!(
+        n("import_duration_seconds_count") >= 1.0,
+        "duration histogram did not observe the batch"
+    );
+    let amp = n("chunk_write_amplification");
+    assert!(
+        (amp - 3.0 / writes).abs() < 1e-6,
+        "amplification {amp} != images/writes ({}/{} = {})",
+        3.0,
+        writes,
+        3.0 / writes
+    );
+
+    // The resume-skip path is NOT a batch: counters must hold.
+    let again = import_manifest(
+        &server,
+        &admin,
+        serde_json::json!({
+            "batch_id": summary["batch_id"].clone(),
+            "entries": vec![
+                entry(&maps, 0, 4200, 4200, 0.0, None),
+                entry(&maps, 0, 4260, 4260, 45.0, None),
+                entry(&maps, 1, 20000, 20000, 0.0, None),
+            ],
+        }),
+    )
+    .await;
+    assert_eq!(again.status, 200);
+    assert_eq!(again.json()["imported"], 0);
+    let final_ = metrics_map(&server).await;
+    assert_eq!(
+        final_.get("import_batches_total").map(String::as_str),
+        Some("1"),
+        "a pure resume-skip must not count as a completed batch"
+    );
+    assert_eq!(
+        final_.get("import_images_total").map(String::as_str),
+        Some("3"),
+        "resume-skip must not count images"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn import_batch_chunk_grouping_and_sse() {
     let server = start_server(300, 1, 10 * 1024 * 1024).await;

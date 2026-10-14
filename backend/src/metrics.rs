@@ -453,4 +453,40 @@ mod tests {
             .connect_lazy("postgres://localhost/metrics_render_stub")
             .expect("lazy pool")
     }
+
+    /// #119 regression, hermetic form (runs in CI's lib-test pass): one
+    /// `import_done` observation must move all five import_* series and
+    /// the amplification gauge must equal images/chunk_writes. Each render
+    /// gets a fresh stub pool — repeated stats reads on one closed lazy
+    /// pool are not supported.
+    #[tokio::test]
+    async fn import_done_moves_all_series() {
+        let series_value = |text: &str, series: &str| {
+            text.lines()
+                .rfind(|l| l.starts_with(series) && !l.starts_with('#'))
+                .unwrap_or_else(|| panic!("series {series} missing from exposition"))
+                .rsplit_once(' ')
+                .expect("series line has a value")
+                .1
+                .parse::<f64>()
+                .expect("series value is f64")
+        };
+
+        import_done(300, 202, Duration::from_millis(17_352));
+
+        let text = render(&render_pool_stub(), 0, 0);
+        assert_eq!(series_value(&text, "import_batches_total "), 1.0);
+        assert_eq!(series_value(&text, "import_images_total "), 300.0);
+        let writes = series_value(&text, "import_chunk_writes_total ");
+        assert_eq!(writes, 202.0, "chunk writes counter did not move");
+        assert!(
+            series_value(&text, "import_duration_seconds_count ") >= 1.0,
+            "duration histogram did not observe the batch"
+        );
+        let amp = series_value(&text, "chunk_write_amplification ");
+        assert!(
+            (amp - 300.0 / writes).abs() < 1e-9,
+            "amplification {amp} != 300/202"
+        );
+    }
 }

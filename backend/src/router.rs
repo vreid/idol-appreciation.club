@@ -52,5 +52,45 @@ pub fn router(state: App) -> Router {
         let uri = req.uri().clone();
         statics::fallback(state.clone(), uri, req).await
     })
-    .layer(tower_http::trace::TraceLayer::new_for_http())
+    // Request correlation (docs § Observability): set `x-request-id`
+    // before the trace span so the span carries it, echo it on the
+    // response after — per tower-http's documented layer order.
+    .layer(
+        tower_http::trace::TraceLayer::new_for_http()
+            .make_span_with(|req: &axum::http::Request<axum::body::Body>| {
+                let route = req
+                    .extensions()
+                    .get::<axum::extract::MatchedPath>()
+                    .map(axum::extract::MatchedPath::as_str)
+                    .unwrap_or("unmatched");
+                let request_id = req
+                    .headers()
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-");
+                tracing::info_span!(
+                    "http",
+                    "http.request.method" = %req.method(),
+                    "http.route" = %route,
+                    "url.path" = %req.uri().path(),
+                    request_id,
+                )
+            })
+            .on_response(
+                |res: &axum::http::Response<_>, latency: std::time::Duration, _: &tracing::Span| {
+                    tracing::info!(
+                        "http.response.status_code" = res.status().as_u16(),
+                        latency_ms = latency.as_millis() as u64,
+                        "request complete"
+                    );
+                },
+            ),
+    )
+    .layer(tower_http::request_id::SetRequestIdLayer::new(
+        axum::http::HeaderName::from_static("x-request-id"),
+        tower_http::request_id::MakeRequestUuid,
+    ))
+    .layer(tower_http::request_id::PropagateRequestIdLayer::new(
+        axum::http::HeaderName::from_static("x-request-id"),
+    ))
 }

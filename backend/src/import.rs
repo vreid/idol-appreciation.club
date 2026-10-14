@@ -639,7 +639,7 @@ async fn run_group(
         }
         let overlays_sb = overlays.clone();
         let (chunk_list, encoded_list) = {
-            let (chunk_list, res) = tokio::task::spawn_blocking(move || {
+            let (chunk_list, res) = crate::telemetry::blocking(move || {
                 let res = img::composite_group(&overlays_sb, &chunk_list, COMPOSITE_DECODE_BUDGET);
                 (chunk_list, res)
             })

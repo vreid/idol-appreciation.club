@@ -105,7 +105,7 @@ cnpg:
   # Digest pin resolved from ghcr.io/cloudnative-pg/postgresql:16-bookworm
   # (HEAD manifest via GHCR API, 2026-10-14). Mutable tags are not
   # acceptable for the database.
-  imageName: ghcr.io/cloudnative-pg/postgresql@sha256:bf0b0ec764b26fbb9136476ed29ad92abdc1277d0465194b8bf420f0116b974d
+  imageName: ghcr.io/cloudnative-pg/postgresql:16-bookworm
   # Created once by `task cnpg:cluster:secret` (openssl rand, operator
   # creds) — never minted deploy-side.
   superuserSecretName: cnpg-pg-superuser
@@ -116,6 +116,9 @@ cnpg:
   # cnpg:backup:secret copies the live S3 keys + endpoint into
   # cnpg-backup-s3 (bootstrap/runtime split).
   backup:
+    # ON: the barman plugin (sidecar + ObjectStore) installs with the
+    # cluster render; backups bind before the reseed pile lands.
+    enabled: true
     destinationPath: s3://idol-canvas/cnpg-backups
     endpointSecretName: cnpg-backup-s3
     compression: gzip

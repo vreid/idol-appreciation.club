@@ -1,4 +1,4 @@
-{{- if and .Values.cnpg.enabled .Values.cnpg.backup }}
+{{- if and .Values.cnpg.enabled .Values.cnpg.backup .Values.cnpg.backup.enabled }}
 # Barman Cloud ObjectStore: WAL archiving + base backups for the CNPG
 # Cluster (docs/scaling-architecture.md BINDING). Credentials from the
 # cnpg-backup-s3 secret (cnpg:backup:secret copies the live app-env S3
@@ -10,23 +10,25 @@
 {{- if $sec }}
 {{- $ep = index $sec.data "S3_ENDPOINT" | b64dec }}
 {{- end }}
-apiVersion: barman-cloud.cnpg.io/v1
+apiVersion: barmancloud.cnpg.io/v1
 kind: ObjectStore
 metadata:
   name: idol-db-backup
   namespace: idol
 spec:
-  destinationPath: {{ .Values.cnpg.backup.destinationPath }}
-  endpointURL: {{ .Values.cnpg.backup.endpointURL | default $ep | required "cnpg.backup.endpointURL: set it in values or run task cnpg:backup:secret first" }}
-  s3Credentials:
-    accessKeyId:
-      name: {{ .Values.cnpg.backup.endpointSecretName }}
-      key: ACCESS_KEY_ID
-    secretAccessKey:
-      name: {{ .Values.cnpg.backup.endpointSecretName }}
-      key: SECRET_ACCESS_KEY
-  wal:
-    compression: {{ .Values.cnpg.backup.compression }}
-  data:
-    compression: {{ .Values.cnpg.backup.compression }}
+  configuration:
+    destinationPath: {{ .Values.cnpg.backup.destinationPath }}
+    endpointURL: {{ .Values.cnpg.backup.endpointURL | default $ep | required "cnpg.backup.endpointURL: set it in values or run task cnpg:backup:secret first" }}
+    s3Credentials:
+      accessKeyId:
+        name: {{ .Values.cnpg.backup.endpointSecretName }}
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: {{ .Values.cnpg.backup.endpointSecretName }}
+        key: SECRET_ACCESS_KEY
+    wal:
+      compression: {{ .Values.cnpg.backup.compression }}
+    data:
+      compression: {{ .Values.cnpg.backup.compression }}
+  retentionPolicy: 30d
 {{- end }}

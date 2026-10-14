@@ -102,10 +102,30 @@ pub async fn start_server_full(
 ) -> Server {
     // Pin a modern postgres: the module default is 11-alpine, too old for
     // generated columns. CI presets DATABASE_URL (job service container —
-    // the pinned image has no docker socket for testcontainers) and skips
-    // the local container entirely.
+    // the pinned image has no docker socket for testcontainers). The
+    // service is SHARED by every suite in the job, so each test clones a
+    // throwaway database off it: parallel suites would otherwise collide
+    // on the same users table (the second `register("root")` gets 409)
+    // and re-run migrations over each other. Local runs keep one
+    // container per test instead.
     let (database_url, container) = match std::env::var("DATABASE_URL") {
-        Ok(url) => (url, None),
+        Ok(base) => {
+            // CREATE DATABASE cannot run inside a transaction; a plain
+            // connection autocommits. Dropped before the app pool starts.
+            let mut conn = <sqlx::postgres::PgConnection as sqlx::Connection>::connect(&base)
+                .await
+                .expect("connect CI service postgres");
+            let db = format!("test_{}", uuid::Uuid::now_v7().simple());
+            sqlx::query(&format!("CREATE DATABASE {db}"))
+                .execute(&mut conn)
+                .await
+                .expect("create per-test database");
+            drop(conn);
+            // Boring suffix swap: postgres URLs carry the db as the last
+            // path segment (no query string in the CI preset).
+            let cut = base.rfind('/').expect("DATABASE_URL carries a db segment");
+            (format!("{}/{}", &base[..cut], db), None)
+        }
         Err(_) => {
             let container = postgres::Postgres::default()
                 .with_tag("16-alpine")

@@ -53,14 +53,17 @@ variable "node_plan" {
 
 variable "node_count" {
   description = <<-EOT
-    Worker node count — the autoscaling FLOOR (budget guardrail: 1).
-    UpCloud node groups have no min/max autoscaling fields (provider
-    v5.47.0 / API 1.3: a fixed count only); while the Cluster Autoscaler
-    is disabled this is the exact count, once enabled CA scales between
-    this floor and 2 (chart/ values clusterAutoscaler.maxSize).
+    Worker node count — the autoscaling FLOOR (budget guardrail: 3).
+    Raised 1→3 for the CloudNativePG migration: the CNPG Cluster runs
+    3 replicas with required pod anti-affinity across nodes, so fewer
+    than 3 workers cannot host the database. UpCloud node groups have
+    no min/max autoscaling fields (provider v5.47.0 / API 1.3: a fixed
+    count only); while the Cluster Autoscaler is disabled this is the
+    exact count, once enabled CA scales between this floor and 4
+    (chart/ values clusterAutoscaler.maxSize).
   EOT
   type        = number
-  default     = 1
+  default     = 3
 }
 
 variable "pg_name" {

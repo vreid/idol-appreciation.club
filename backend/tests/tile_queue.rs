@@ -702,6 +702,51 @@ async fn import_pile_low_zoom_never_starves_placements() {
         "z15 render over a 4k-entry pile took {elapsed:?} — budget blown"
     );
 
+    // Cold oversized low-zoom tiles must SHED, not render inline: a z0
+    // GET over a pile spanning > 256 chunks recurses the entire pyramid
+    // on the request path (the prod wedge: minutes-long silent holds).
+    // Import 400 tiny entries spread across a 32k-px grid (400+ chunks),
+    // then the first z0 GET must come back 202 promptly.
+    {
+        let img = png(64, 64);
+        let maps = preupload(&server, &admin, std::slice::from_ref(&img)).await;
+        let mut entries = Vec::new();
+        for k in 0..400i64 {
+            // Distinct strides land most entries in distinct chunks of a
+            // 32k-px grid (32x32 = 1024 chunk cells, ~400 occupied).
+            let x = 262_144 + (k * 977) % 32_768;
+            let y = 262_144 + (k * 1_231) % 32_768;
+            entries.push(entry(&maps, 0, x, y, 0.0, None));
+        }
+        let manifest = serde_json::json!({
+            "batch_id": uuid::Uuid::now_v7(),
+            "entries": entries,
+        });
+        let resp = import_manifest(&server, &admin, manifest).await;
+        assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+    }
+    let t0 = std::time::Instant::now();
+    let shed = request_addr(
+        server.addr,
+        "GET",
+        "/api/tiles/0/0/0.webp",
+        &[],
+        Vec::new(),
+        Duration::from_secs(20),
+    )
+    .await;
+    let shed_time = t0.elapsed();
+    assert_eq!(
+        shed.status,
+        202,
+        "cold oversized z0 must shed (got {:?} after {shed_time:?})",
+        String::from_utf8_lossy(&shed.body)
+    );
+    assert!(
+        shed_time <= Duration::from_secs(10),
+        "shed took {shed_time:?}"
+    );
+
     // Issue #150 gate: the deepest zoom must be bounded. Three
     // concurrent z0 GETs: at most two hold pyramid leases (minutes-long
     // cold renders) — the third must SHED with 202 promptly instead of

@@ -966,6 +966,26 @@ async fn tile_bytes_inner(
             return Ok(TileResolved::Shed);
         }
     }
+    // Cold oversized low-zoom tiles never render inline: a first-ever
+    // z0-z12 GET recurses its WHOLE subtree on the request path (the
+    // prod wedge: a z12 tile = 1323 chunk renders = 10-31 s; z0 = the
+    // pile's entire pyramid, minutes) while same-coord followers queue
+    // silently on the per-tile lock holding gate leases. Above this
+    // many prefetched chunk rows the tile goes to the background queue
+    // and the GET sheds like any other congestion. The worker renders
+    // it (Ungated) and later GETs stale-serve from storage.
+    if admission == Admission::Gated && z < BASE_Z && stored.is_none() && ctx.rows > 256 {
+        eprintln!("DEBUG cold-shed fired z={z} rows={}", ctx.rows);
+        app.render_queue.enqueue(z, x, y).await;
+        crate::metrics::tile_done(crate::metrics::tile_outcome("shed"), t0.elapsed());
+        return Ok(TileResolved::Shed);
+    }
+    eprintln!(
+        "DEBUG shed-check z={z} admission_gated={} rows={} stored={:?}",
+        admission == Admission::Gated,
+        ctx.rows,
+        stored.is_some()
+    );
     // Pyramid gate (issue #120): a cold z < BASE_Z render is a
     // multi-minute sequential recursion. Entry GETs hold one of a couple
     // of leases for the whole recursion — with sequential children that

@@ -19,11 +19,14 @@ domain: idol-appreciation.club
 
 backend:
   registrationApprovalRequired: true
-  replicaCount: 1
-  # HPA support, STAGED OFF behind a hard gate: the backend is a single
-  # writer (PG advisory locks unvalidated at >1 replica) — flip only
-  # after the advisory-lock PR lands and replicas=2 is soak-validated.
-  # Order and caveats: docs/infra.md "Scaling".
+  # Two replicas: zero-blip rolls (surge pod ready before the old one
+  # drains) and half the blast radius per pod. Multi-writer safety rides
+  # the session-level PG advisory chunk locks (chunks.rs), not the replica
+  # count. HPA stays off — the CPU signal does not match the actual
+  # bottleneck (pool/latency, issue #120); revisit after it lands.
+  replicaCount: 2
+  # HPA support, STAGED OFF: the CPU signal does not match the real
+  # bottleneck. Order and caveats: docs/infra.md "Scaling".
   autoscaling:
     enabled: false
     minReplicas: 1

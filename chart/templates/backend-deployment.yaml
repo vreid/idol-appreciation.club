@@ -9,17 +9,17 @@ metadata:
   annotations:
     # Greppable scaling constraint marker — see docs/infra.md
     # "Scaling: the backend is single-writer" before touching replicaCount.
-    idol.app/scaling: single-writer-required
 spec:
   {{- if not .Values.backend.autoscaling.enabled }}
   # HPA owns the replica count when backend.autoscaling.enabled — the
   # field is omitted there so the HPA never fights the deployment.
   replicas: {{ .Values.backend.replicaCount }}
   {{- end }}
-  # ⚠ Scaling gate: replicas MUST stay 1 until the PG advisory-lock chunk
-  # path is in place (paint-order == seq guarantee; see docs/infra.md
-  # "Scaling: the backend chunk writer"). RollingUpdate maxSurge=1
-  # maxUnavailable=0 provides zero-downtime rollouts.
+  # Multi-writer safety rides the session-level PG advisory chunk locks
+  # (chunks.rs; paint-order == seq guarantee — see docs/infra.md
+  # "Scaling: the backend chunk writer"), so replica count is an
+  # availability knob. RollingUpdate maxSurge=1 maxUnavailable=0 provides
+  # zero-downtime rollouts.
   strategy:
     type: RollingUpdate
     rollingUpdate:

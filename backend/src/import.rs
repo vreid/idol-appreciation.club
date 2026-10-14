@@ -952,7 +952,12 @@ pub async fn import(
 /// failure — so every committed row is counted exactly once.
 fn finish_metrics(summary: &mut ImportSummary, t0: Instant) {
     let elapsed = t0.elapsed();
-    crate::metrics::import_done(summary.imported, summary.chunk_writes, elapsed);
+    // A pure resume-skip (every entry already committed) imports nothing
+    // and repaints no chunk: it is not a batch and must not count as
+    // one. Timing is still stamped so the response body stays complete.
+    if summary.imported > 0 || summary.chunk_writes > 0 {
+        crate::metrics::import_done(summary.imported, summary.chunk_writes, elapsed);
+    }
     summary.duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
     let secs = elapsed.as_secs_f64();
     summary.images_per_second = if secs > 0.0 {

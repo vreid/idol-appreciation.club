@@ -413,6 +413,16 @@ pub async fn make_placer(server: &Server, username: &str) -> String {
     cookie
 }
 
+/// Serial lock for tests that read the global metrics atomics
+/// (`/api/metrics` is process-wide; two parallel import tests race the
+/// counters). Take it at the top of the test and hold it for the run.
+pub async fn metrics_serial_lock() -> tokio::sync::OwnedMutexGuard<()> {
+    std::sync::Arc::clone(&*METRICS_LOCK).lock_owned().await
+}
+
+static METRICS_LOCK: std::sync::LazyLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Mutex::new(())));
+
 /// Render-worker pause seam for deterministic queue-behavior tests. The
 /// guard resets to 0 on drop; tests in one binary also take this mutex so
 /// the global seam never overlaps.

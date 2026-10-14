@@ -110,6 +110,20 @@ cnpg:
   # creds) — never minted deploy-side.
   superuserSecretName: cnpg-pg-superuser
   appDatabase: idol-canvas
+  # Backups (docs/scaling-architecture.md, BINDING before destroy-managed):
+  # WAL archiving + base backups to the app's object storage via the
+  # Barman Cloud plugin. Credentials are NOT minted here: the
+  # cnpg:backup:secret task copies the live app-env S3 keys into
+  # cnpg-backup-s3 (bootstrap/runtime split — one-time, operator creds).
+  backup:
+    # Bucket subpath for WALs and base backups. Bucket name mirrors the
+    # tofu s3_bucket output; override if the bucket changes.
+    destinationPath: s3://idol-canvas/cnpg-backups
+    # UpCloud objstore is S3-compatible; endpoint injected from the live
+    # app-env S3_ENDPOINT by cnpg:backup:secret (rendered ObjectStore
+    # reads it from the same secret as the keys).
+    endpointSecretName: cnpg-backup-s3
+    compression: gzip
   storage:
     # Chart-owned class (cnpg-storageclass.yaml): Delete-reclaim like
     # caddy-data, so recreate cycles never orphan disks again.

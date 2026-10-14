@@ -1,0 +1,43 @@
+{{- if and .Values.cnpg.enabled .Values.cnpg.backup }}
+# Barman Cloud ObjectStore: WAL archiving + base backups for the CNPG
+# Cluster (docs/scaling-architecture.md marks this BINDING before
+# cnpg:destroy-managed; the destroy task refuses while no completed
+# backup exists).
+#
+# Reclaim-policy note (considered): the data StorageClass stays
+# Delete-reclaim on purpose — docs/infra.md recreate history shows
+# Retain classes orphaned six billing disks during recreate cycle 3.
+# Durability here rides on these S3 backups, not on retained PVs;
+# flipping the class to Retain is a one-line change if the tradeoff is
+# ever re-weighed.
+#
+# Credentials come from the cnpg-backup-s3 secret (cnpg:backup:secret
+# copies the live app-env S3 keys AND the S3 endpoint — runtime state,
+# never deploy-minted). The endpoint is resolved at render time from
+# that secret when present; on a fresh install without the secret the
+# render fails loudly instead of guessing an object-store host.
+{{- $sec := lookup "v1" "Secret" "idol" .Values.cnpg.backup.endpointSecretName }}
+{{- $ep := "" }}
+{{- if $sec }}
+{{- $ep = index $sec.data "S3_ENDPOINT" | b64dec }}
+{{- end }}
+apiVersion: barman-cloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: idol-db-backup
+  namespace: idol
+spec:
+  destinationPath: {{ .Values.cnpg.backup.destinationPath }}
+  endpointURL: {{ .Values.cnpg.backup.endpointURL | default $ep | required "cnpg.backup.endpointURL: set it in values or run task cnpg:backup:secret first" }}
+  s3Credentials:
+    accessKeyId:
+      name: {{ .Values.cnpg.backup.endpointSecretName }}
+      key: ACCESS_KEY_ID
+    secretAccessKey:
+      name: {{ .Values.cnpg.backup.endpointSecretName }}
+      key: SECRET_ACCESS_KEY
+  wal:
+    compression: {{ .Values.cnpg.backup.compression }}
+  data:
+    compression: {{ .Values.cnpg.backup.compression }}
+{{- end }}

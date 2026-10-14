@@ -688,6 +688,12 @@ tasks:
           || { echo "pinned operator manifest drifted from upstream v1.29.3 + digest rewrite" >&2; exit 1; }
         kubectl apply -f chart/cnpg/cnpg-operator-1.29.3.yaml
         kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=180s
+        # Barman Cloud plugin (backup sidecar/worker + ObjectStore CRDs):
+        # same pinning rules as the operator.
+        kubeconform -strict -summary -ignore-missing-schemas \
+          -kubernetes-version 1.32.0 chart/cnpg/barman-cloud-plugin-0.15.1.yaml
+        kubectl apply -f chart/cnpg/barman-cloud-plugin-0.15.1.yaml
+        kubectl -n cnpg-system rollout status deploy/barman-cloud --timeout=180s 2>/dev/null || true
 
   cnpg:cluster:secret:
     desc: create the CNPG superuser secret (idempotent; operator creds)
@@ -703,6 +709,27 @@ tasks:
             --from-literal=username=postgres --from-literal=password="$pw"
           echo "created cnpg-pg-superuser"
         fi
+
+  cnpg:backup:secret:
+    desc: copy live app-env S3 keys + endpoint into cnpg-backup-s3 (idempotent)
+    cmds:
+      - |
+        set -o pipefail; set -e
+        # Runtime state, not re-minted: the app's proven S3 credentials
+        # gain a second consumer (Barman Cloud WAL/base backups). The
+        # S3_ENDPOINT rides along because the ObjectStore CR needs the
+        # objstore host at render time.
+        ak="$(kubectl -n idol exec deployment/backend -- printenv S3_ACCESS_KEY_ID 2>/dev/null || kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ACCESS_KEY_ID}' | base64 -d)"
+        sk="$(kubectl -n idol exec deployment/backend -- printenv S3_SECRET_ACCESS_KEY 2>/dev/null || kubectl -n idol get secret app-env -o jsonpath='{.data.S3_SECRET_ACCESS_KEY}' | base64 -d)"
+        ep="$(kubectl -n idol exec deployment/backend -- printenv S3_ENDPOINT 2>/dev/null || kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' | base64 -d)"
+        test -n "$ak" && test -n "$sk" && test -n "$ep" \
+          || { echo "could not source S3 credentials from backend pods or app-env" >&2; exit 1; }
+        kubectl -n idol create secret generic cnpg-backup-s3 \
+          --from-literal="ACCESS_KEY_ID=$ak" \
+          --from-literal="SECRET_ACCESS_KEY=$sk" \
+          --from-literal="S3_ENDPOINT=$ep" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        echo "cnpg-backup-s3 ready (endpoint: $ep)"
 
   cnpg:cluster:install:
     desc: render the Cluster CR, server-dry-run it, then apply
@@ -815,6 +842,17 @@ tasks:
       - |
         set -o pipefail; set -e
         echo "GUARD: confirm deploy.yml no longer sources DATABASE_URL from managed-pg outputs before running this" >&2
+        # docs/scaling-architecture.md: backups BINDING before destroy. The
+        # Cluster must carry the Barman plugin AND at least one completed
+        # base backup must exist — otherwise the 51k-pile durability rides
+        # solely on the S3 chunk store and a retired managed DB.
+        kubectl -n idol get cluster idol-db -o json \
+          | jq -e '[.spec.plugins[]? | select(.name == "barman-cloud.cloudnative-pg.io")] | length > 0' \
+          >/dev/null || { echo "refusing: CNPG Cluster has no barman-cloud backup config" >&2; exit 1; }
+        kubectl -n idol get backup -o json 2>/dev/null \
+          | jq -e '[.items[]? | select(.status.phase == "completed")] | length > 0' \
+          >/dev/null || { echo "refusing: no completed CNPG backup yet (wait for the first base backup)" >&2; exit 1; }
+        echo "backup guard satisfied: plugin configured, completed backup present"
         tofu destroy -auto-approve -input=false \
           -target=upcloud_managed_database_logical_database.app \
           -target=upcloud_managed_database_user.app \

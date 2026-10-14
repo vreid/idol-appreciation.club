@@ -43,4 +43,14 @@ spec:
       # Shared 4 vCPU nodes; leave headroom for the app fleet.
       max_connections: "100"
       shared_buffers: "512MB"
+  {{- if .Values.cnpg.backup }}
+  # WAL archiving + base backups via the Barman Cloud plugin (the
+  # plugin and the ObjectStore below are installed by the cnpg:* tasks;
+  # docs/scaling-architecture.md makes this BINDING before
+  # cnpg:destroy-managed).
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      parameters:
+        barmanObjectName: idol-db-backup
+  {{- end }}
 {{- end }}

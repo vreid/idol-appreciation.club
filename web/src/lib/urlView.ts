@@ -1,4 +1,4 @@
-import { MAX_ZOOM, MIN_ZOOM } from "./world";
+import { MAX_ZOOM, MIN_ZOOM, WORLD_CENTER } from "./world";
 
 /**
  * Map view state encoded in the URL hash: `#z/x/y`.
@@ -19,6 +19,16 @@ function clampZoom(z: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 }
 
+/** Signed view offsets are from the world centre; the centre itself must
+ * stay inside the world square. Leaflet's maxBounds does not limit
+ * setView, so a stale/transient hash would otherwise restore a view
+ * outside the world (near requests then fail with the confusing
+ * "could not load" toast). */
+function clampOffset(v: number): number {
+  const limit = WORLD_CENTER - 1;
+  return Math.min(limit, Math.max(-limit, v));
+}
+
 /** Round to int, normalising -0 so hashes never read "#16/0/-0". */
 function roundedInt(v: number): number {
   const rounded = Math.round(v);
@@ -31,8 +41,8 @@ export function parseViewHash(hash: string): UrlView | null {
   if (match === null) return null;
   return {
     z: clampZoom(Number(match[1])),
-    x: Number(match[2]),
-    y: Number(match[3]),
+    x: clampOffset(Number(match[2])),
+    y: clampOffset(Number(match[3])),
   };
 }
 
@@ -40,6 +50,6 @@ export function parseViewHash(hash: string): UrlView | null {
 export function encodeViewHash(view: UrlView): string {
   return (
     `#${clampZoom(Math.round(view.z))}/` +
-    `${roundedInt(view.x)}/${roundedInt(view.y)}`
+    `${roundedInt(clampOffset(view.x))}/${roundedInt(clampOffset(view.y))}`
   );
 }

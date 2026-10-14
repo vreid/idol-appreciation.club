@@ -1,6 +1,6 @@
 import { burstConfetti } from "./confetti";
 import { readNaturalSize } from "./images";
-import { queryRadiusForZoom, type BBox } from "./world";
+import { isInWorld, queryRadiusForZoom, type BBox } from "./world";
 import type { WorldMapController } from "./worldMap";
 import type { PlaceDetailActions } from "./components/PlaceDetail";
 import type { Placement } from "@contract";
@@ -26,6 +26,7 @@ export function onLongPress(
   x: number,
   y: number,
 ): void {
+  if (!isInWorld(x, y)) return;
   releaseSelection(map, store);
   store.pinSpot(x, y);
   openPicker();
@@ -39,6 +40,14 @@ export async function onMapClick(
 ): Promise<void> {
   const controller = map.current;
   if (controller === null) return;
+  // Off-world clicks are silent no-ops: no near request (the API would
+  // 400 and toast), no spot confirmation, no strata dig. They still
+  // deselect and stand the placing flow down so the app reads as idle.
+  if (!isInWorld(x, y)) {
+    store.cancelPlace();
+    releaseSelection(map, store);
+    return;
+  }
   if (store.placeMode === "choose") {
     const attempt = await store.confirmSpot(x, y);
     if (attempt.ok && map.current !== null) {

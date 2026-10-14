@@ -73,6 +73,12 @@ export function latLngToWorld(lat: number, lng: number): WorldPoint {
   return { x: lng * WORLD_UNITS, y: lat === 0 ? 0 : -lat * WORLD_UNITS };
 }
 
+/** True when a native-px point lies inside the world square. Off-world
+ * clicks are a no-op: they must never fire near requests or arm a spot. */
+export function isInWorld(x: number, y: number): boolean {
+  return x >= 0 && x < WORLD_SIZE && y >= 0 && y < WORLD_SIZE;
+}
+
 /** Native-px bbox of a Leaflet viewport (y-flip aware, w/h > 0). */
 export function latLngBoundsToWorldBBox(
   north: number,

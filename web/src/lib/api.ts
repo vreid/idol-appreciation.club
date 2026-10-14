@@ -11,7 +11,6 @@
 
 import type {
   CenterInfo,
-  DigStack,
   Feed,
   Hot,
   Me,
@@ -23,7 +22,6 @@ import type {
 } from "@contract";
 import {
   centerInfoSchema,
-  digStackSchema,
   feedSchema,
   hotSchema,
   meSchema,
@@ -37,8 +35,6 @@ import {
 export type {
   CenterHolder,
   CenterInfo,
-  DigEntry,
-  DigStack,
   Feed,
   FeedEntry,
   Hot,
@@ -92,7 +88,6 @@ export interface ApiClient {
   near: (x: number, y: number, r: number) => Promise<Placement[]>;
   /** All placements whose rotated pixels contain the world point,
    * newest-first with 1-based depths. */
-  dig: (x: number, y: number) => Promise<DigStack>;
   center: () => Promise<CenterInfo>;
   report: (placementId: string) => Promise<void>;
   /** Replaces a placement's tag set (owner or admin); returns the
@@ -338,10 +333,6 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
         await request(`/api/placements/near?${query}`),
         "placements/near",
       );
-    },
-    dig: async (x, y) => {
-      const query = new URLSearchParams({ x: String(x), y: String(y) });
-      return parseOk(digStackSchema, await request(`/api/dig?${query}`), "dig");
     },
     center: async () =>
       parseOk(centerInfoSchema, await request("/api/center"), "center"),

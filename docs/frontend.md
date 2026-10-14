@@ -186,37 +186,28 @@ happy-dom via a `// @vitest-environment happy-dom` docblock.
 - This replaced the old Leaflet popup (`world-popup`), which rendered on top of
   the image it described.
 
-### Dig: wheeling through the pile
+### Wheel-zoom always wins
 
-Selecting a placement also queries `GET /api/dig?x=&y=` at the click point
-(`DigEntry[]`/`DigStack` schemas, parsed at the boundary like every other
-response). While a selection is held:
-
-- Leaflet's scroll-wheel zoom is disabled; wheel events route to `store.flipDig`
-  instead (`WorldMapController.setDigMode`). Wheel down peels deeper (older
-  strata), wheel up returns toward the newest; the flip clamps at both ends.
-- The panel's depth cue (`3 of 12`) tracks the visible stratum (`digIndex + 1`
-  of `digTotal`; hidden for single-stratum selections), and the panel content +
-  AABB highlight follow the flipped placement (`wireSelectionSync`).
-- Deselecting (any path) restores normal wheel-zoom.
-- The stack is a snapshot: a `place` mid-session doesn't refresh it, and an SSE
-  `remove` of the visible entry deselects via the existing selection watcher.
+Scroll-zoom is never disabled: wheel events always zoom the map, including while
+a placement is selected. (The earlier wheel-dig interaction — selection captures
+the wheel to flip through the pile — was removed as broken in practice;
+`GET /api/dig` remains available on the backend and in the contract for a
+reworked depth UI.)
 
 ### Tags on the selection
 
-Each placement carries a normalized label set (`tags` on `Placement`/`DigEntry`;
-optional in the schemas so older cached payloads parse). The panel renders the
-labels as chips under the metadata line; the owner or an admin additionally gets
-chip removal (✕) and an add-tag input (Enter or the button commits).
+Each placement carries a normalized label set (`tags` on `Placement`; optional
+in the schema so older cached payloads parse). The panel renders the labels as
+chips under the metadata line; the owner or an admin additionally gets chip
+removal (✕) and an add-tag input (Enter or the button commits).
 
 - Editing goes through `store.updateTags` → `PUT /api/placements/{id}/tags`
   (`tagsUpdateSchema` body, `tagsSchema` response). The backend is the authority
   on the rules (at most 8 tags of 1..=32 chars of `[a-z0-9_-]`, lowercased,
   trimmed, deduped); the client only fails fast on empty input.
-- On success the authoritative list replaces the selection's `tags` and the
-  matching dig stratum, so wheel-flips stay consistent. Failures surface as a
-  toast (`describeApiError`); 401/403 open the login popover like every other
-  authed call.
+- On success the authoritative list replaces the selection's `tags`. Failures
+  surface as a toast (`describeApiError`); 401/403 open the login popover like
+  every other authed call.
 
 ### Feed panel
 

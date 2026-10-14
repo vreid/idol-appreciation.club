@@ -30,7 +30,7 @@ const PLACEMENT: Placement = {
   created_at: "2026-10-13T00:00:00Z",
 };
 
-function makeClient(dig?: ApiClient["dig"]): ApiClient {
+function makeClient(): ApiClient {
   return {
     register: vi.fn(() => Promise.resolve({ username: "b", pending: false })),
     login: vi.fn(() => Promise.resolve()),
@@ -44,9 +44,6 @@ function makeClient(dig?: ApiClient["dig"]): ApiClient {
     updateTags: vi.fn(() => Promise.resolve({ id: "p1", tags: [] })),
     pendingAccounts: vi.fn(() => Promise.resolve([])),
     approveAccount: vi.fn(() => Promise.resolve()),
-    dig:
-      dig ??
-      vi.fn(() => Promise.resolve({ stack: [], total: 0, truncated: false })),
     feed: vi.fn(() => Promise.resolve({ items: [], next_before: null })),
     hot: vi.fn(() =>
       Promise.resolve({ window_hours: 24, total: 0, cells: [] }),
@@ -106,7 +103,7 @@ describe("PlaceDetail", () => {
 
   it("shows the anchored panel for a selected placement", () => {
     const { store } = mount(makeStore());
-    store.selectPlace(PLACEMENT, { x: 0, y: 0 });
+    store.selectPlace(PLACEMENT);
     expect(document.querySelector(".place-detail")).not.toBeNull();
     expect(screen.getByText("@wren")).toBeTruthy();
     expect(screen.getByText("64×48 px · 15°")).toBeTruthy();
@@ -114,7 +111,7 @@ describe("PlaceDetail", () => {
 
   it("deselects on the close button", () => {
     const { store } = mount(makeStore());
-    store.selectPlace(PLACEMENT, { x: 0, y: 0 });
+    store.selectPlace(PLACEMENT);
     fireEvent.click(screen.getByRole("button", { name: "Close details" }));
     expect(store.selectedPlace).toBeNull();
     expect(document.querySelector(".place-detail")).toBeNull();
@@ -122,7 +119,7 @@ describe("PlaceDetail", () => {
 
   it("prompts for auth on report when logged out and keeps the selection", () => {
     const { store, actions } = mount(makeStore(), { isLoggedIn: () => false });
-    store.selectPlace(PLACEMENT, { x: 0, y: 0 });
+    store.selectPlace(PLACEMENT);
     fireEvent.click(screen.getByText("Report"));
     expect(actions.onAuthPrompt).toHaveBeenCalledTimes(1);
     expect(actions.onReport).not.toHaveBeenCalled();
@@ -132,7 +129,7 @@ describe("PlaceDetail", () => {
 
   it("reports and deselects when logged in", () => {
     const { store, actions } = mount(makeStore(), { isLoggedIn: () => true });
-    store.selectPlace(PLACEMENT, { x: 0, y: 0 });
+    store.selectPlace(PLACEMENT);
     fireEvent.click(screen.getByText("Report"));
     expect(actions.onReport).toHaveBeenCalledWith("p1");
     expect(actions.onDeselect).toHaveBeenCalled();
@@ -141,7 +138,7 @@ describe("PlaceDetail", () => {
 
   it("offers Remove only to admins and passes the placement bbox", () => {
     const { store, actions } = mount(makeStore(), { isAdmin: () => true });
-    store.selectPlace(PLACEMENT, { x: 0, y: 0 });
+    store.selectPlace(PLACEMENT);
     expect(screen.getByText("Remove")).toBeTruthy();
     fireEvent.click(screen.getByText("Remove"));
     expect(actions.onRemove).toHaveBeenCalledWith("p1", {
@@ -154,13 +151,13 @@ describe("PlaceDetail", () => {
 
   it("hides Remove from non-admins", () => {
     const { store } = mount(makeStore(), { isAdmin: () => false });
-    store.selectPlace(PLACEMENT, { x: 0, y: 0 });
+    store.selectPlace(PLACEMENT);
     expect(screen.queryByText("Remove")).toBeNull();
   });
 
   it("Escape deselects through the unified action", () => {
     const { store, actions } = mount(makeStore());
-    store.selectPlace(PLACEMENT, { x: 0, y: 0 });
+    store.selectPlace(PLACEMENT);
     fireEvent.keyDown(window, { key: "Escape" });
     expect(actions.onDeselect).toHaveBeenCalled();
     expect(store.selectedPlace).toBeNull();
@@ -168,7 +165,7 @@ describe("PlaceDetail", () => {
 
   it("recomputes geometry when the viewport version bumps", () => {
     const { store, geometry, bump } = mount(makeStore());
-    store.selectPlace(PLACEMENT, { x: 0, y: 0 });
+    store.selectPlace(PLACEMENT);
     const calls = geometry.mock.calls.length;
     expect(calls).toBeGreaterThan(0);
     bump(1);
@@ -176,50 +173,10 @@ describe("PlaceDetail", () => {
   });
 });
 
-function cueClient(): ApiClient {
-  const stack = [
-    { ...PLACEMENT, username: "wren", depth: 1 },
-    { ...PLACEMENT, id: "p2", username: "noor", depth: 2 },
-    { ...PLACEMENT, id: "p3", username: "sable", depth: 3 },
-  ];
-  return makeClient(() =>
-    Promise.resolve({ stack, total: 3, truncated: false }),
-  );
-}
-
-describe("PlaceDetail dig depth cue", () => {
-  it("shows the depth cue and follows flips", async () => {
-    const store = makeStore(cueClient());
-    store.selectPlace(PLACEMENT, { x: 10, y: 10 });
-    mount(store);
-    await waitFor(() => {
-      expect(screen.getByText("1 of 3")).toBeTruthy();
-    });
-    store.flipDig(1);
-    await waitFor(() => {
-      expect(screen.getByText("2 of 3")).toBeTruthy();
-    });
-    await waitFor(() => {
-      expect(screen.getByText("@noor")).toBeTruthy();
-    });
-  });
-
-  it("hides the cue for single-stratum selections", async () => {
-    const store = makeStore(makeClient());
-    store.selectPlace(PLACEMENT, { x: 10, y: 10 });
-    mount(store);
-    await waitFor(() => {
-      expect(screen.getByText("@wren")).toBeTruthy();
-    });
-    expect(screen.queryByText("1 of 1")).toBeNull();
-  });
-
+describe("PlaceDetail anonymous view", () => {
   it("shows chips without an editor to anonymous viewers", async () => {
     const store = makeStore();
-    store.selectPlace(
-      { ...PLACEMENT, tags: ["stage", "encore"] },
-      { x: 10, y: 10 },
-    );
+    store.selectPlace({ ...PLACEMENT, tags: ["stage", "encore"] });
     mount(store);
     await waitFor(() => {
       expect(screen.getByText("encore")).toBeTruthy();
@@ -241,7 +198,7 @@ describe("PlaceDetail tags", () => {
       Promise.resolve({ id: "u9", username, is_admin, cooldown_until: null }),
     );
     const store = makeStore(client);
-    store.selectPlace(TAGGED, { x: 10, y: 10 });
+    store.selectPlace(TAGGED);
     const mounted = mount(store, overrides);
     await store.refreshMe();
     return mounted;
@@ -253,7 +210,7 @@ describe("PlaceDetail tags", () => {
 
   it("renders chips for a tagged selection", () => {
     const store = makeStore();
-    store.selectPlace(TAGGED, { x: 10, y: 10 });
+    store.selectPlace(TAGGED);
     mount(store);
     expect(screen.getByText("stage")).toBeTruthy();
     expect(screen.getByText("encore")).toBeTruthy();
@@ -261,7 +218,7 @@ describe("PlaceDetail tags", () => {
 
   it("renders nothing for untagged selections viewed by others", () => {
     const store = makeStore();
-    store.selectPlace(PLACEMENT, { x: 10, y: 10 });
+    store.selectPlace(PLACEMENT);
     mount(store);
     expect(screen.queryByRole("list", { name: "Tags" })).toBeNull();
   });

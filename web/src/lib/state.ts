@@ -2,7 +2,6 @@ import { createSignal } from "solid-js";
 import type {
   ApiClient,
   CenterInfo,
-  DigEntry,
   Me,
   PendingAccount,
   Placement,
@@ -68,22 +67,17 @@ export function createAppStore(
   const [selectedPlace, setSelectedPlace] = createSignal<Placement | null>(
     null,
   );
-  const [digStack, setDigStack] = createSignal<DigEntry[]>([]);
-  const [digTotal, setDigTotal] = createSignal(0);
-  const [digIndex, setDigIndex] = createSignal(-1);
   const toastHub = createToastHub(deps);
   const { push: pushToast, dismiss: dismissToast } = toastHub;
 
-  // Tag edits keep the open panel and dig stack consistent with the
-  // authoritative list (flipDig re-selects from the stack).
+  // Tag edits keep the open panel consistent with the authoritative list.
   const tagsEditor = createTagsEditor({
     client,
     requireAuth,
     toast: pushToast,
     selected: selectedPlace,
-    // Signal setters return the new value; these slots are void.
+    // Signal setters return the new value; this slot is void.
     setSelected: (p) => void setSelectedPlace(p),
-    setStack: (patch) => void setDigStack(patch),
   });
 
   function requireAuth(): boolean {
@@ -198,41 +192,11 @@ export function createAppStore(
     get selectedPlace() {
       return selectedPlace();
     },
-    get digStack() {
-      return digStack();
-    },
-    get digTotal() {
-      return digTotal();
-    },
-    get digIndex() {
-      return digIndex();
-    },
-    selectPlace(placement: Placement, point: { x: number; y: number }): void {
+    selectPlace(placement: Placement): void {
       setSelectedPlace(placement);
-      setDigStack([]);
-      setDigTotal(0);
-      setDigIndex(-1);
-      // A failed dig degrades silently; a superseded one is dropped.
-      void client.dig(point.x, point.y).then((stack) => {
-        if (selectedPlace()?.id !== placement.id) return;
-        setDigStack(stack.stack);
-        setDigTotal(stack.total);
-        setDigIndex(stack.stack.findIndex((e) => e.id === placement.id));
-      });
-    },
-    flipDig(delta: number): void {
-      const stack = digStack();
-      if (stack.length === 0) return;
-      const next = Math.min(Math.max(digIndex() + delta, 0), stack.length - 1);
-      if (next === digIndex()) return;
-      setDigIndex(next);
-      setSelectedPlace(stack[next] ?? null);
     },
     deselectPlace(): void {
       setSelectedPlace(null);
-      setDigStack([]);
-      setDigTotal(0);
-      setDigIndex(-1);
     },
     get prepared() {
       return prepared();

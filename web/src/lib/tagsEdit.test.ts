@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { ApiError, type ApiClient, type DigEntry, type Placement } from "./api";
+import { ApiError, type ApiClient, type Placement } from "./api";
 import type { ToastKind } from "./toasts";
 import { createTagsEditor, type TagsEditorDeps } from "./tagsEdit";
 
@@ -16,10 +16,8 @@ const PLACEMENT: Placement = {
 };
 
 function makeDeps(overrides: Partial<TagsEditorDeps> = {}): TagsEditorDeps & {
-  applied: { id: string; tags: string[] }[];
   errors: string[];
 } {
-  const applied: { id: string; tags: string[] }[] = [];
   const errors: string[] = [];
   const client: Pick<ApiClient, "updateTags"> = {
     updateTags: vi.fn(() => Promise.resolve({ id: "p1", tags: ["encore"] })),
@@ -33,14 +31,7 @@ function makeDeps(overrides: Partial<TagsEditorDeps> = {}): TagsEditorDeps & {
     }),
     selected: vi.fn(() => PLACEMENT),
     setSelected: vi.fn((_p: Placement | null) => {}),
-    setStack: vi.fn((patch: (stack: DigEntry[]) => DigEntry[]) => {
-      applied.push({
-        id: "stack",
-        tags: patch([{ ...PLACEMENT, depth: 1 }])[0]?.tags ?? [],
-      });
-    }),
     ...overrides,
-    applied,
     errors,
   };
 }
@@ -54,7 +45,7 @@ describe("tagsEdit", () => {
     expect(result).toBeNull();
   });
 
-  it("applies the authoritative list to selection and stack", async () => {
+  it("applies the authoritative list to the selection", async () => {
     const setSelected = vi.fn((_p: Placement | null) => {});
     const deps = makeDeps({ setSelected });
     const editor = createTagsEditor(deps);
@@ -68,7 +59,6 @@ describe("tagsEdit", () => {
       ...PLACEMENT,
       tags: ["encore"],
     });
-    expect(deps.applied[0]?.tags).toEqual(["encore"]);
   });
 
   it("leaves a different selection untouched", async () => {

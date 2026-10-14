@@ -66,7 +66,6 @@ export interface WorldMapController {
   /** Fires on every pan/zoom so anchored overlays can reposition. */
   onViewportChange(cb: () => void): void;
   /** Selection-held wheel mode: zoom disabled, wheel flips the stack. */
-  setDigMode(on: boolean, onWheel?: (deltaY: number) => void): void;
   destroy(): void;
 }
 
@@ -194,25 +193,6 @@ function wireWorldCentering(map: L.Map): () => void {
   };
 }
 
-// Wheel-dig channel: while a selection is held (a callback is set), wheel
-// events on the container flip through the stack instead of zooming.
-// Non-passive so the browser's scroll-zoom is suppressed.
-function createDigWheelChannel(container: HTMLElement): {
-  set: (cb: ((deltaY: number) => void) | null) => void;
-} {
-  let cb: ((deltaY: number) => void) | null = null;
-  container.addEventListener(
-    "wheel",
-    (event) => {
-      if (cb === null) return;
-      event.preventDefault();
-      cb(event.deltaY);
-    },
-    { passive: false },
-  );
-  return { set: (next) => void (cb = next) };
-}
-
 function addTileLayer(map: L.Map): L.TileLayer {
   return L.tileLayer("/api/tiles/{z}/{x}/{y}.webp", {
     tileSize: TILE_SIZE,
@@ -276,7 +256,6 @@ export function createWorldMap(
   map.on("move", () => {
     if (viewportCb !== null) viewportCb();
   });
-  const digWheel = createDigWheelChannel(container);
 
   const tileLayer = addTileLayer(map);
 
@@ -346,18 +325,6 @@ export function createWorldMap(
 
     onViewportChange(cb: () => void): void {
       viewportCb = cb;
-    },
-
-    /** While a selection is held: map zoom yields to wheel-dig, and the
-     * container's wheel events route to the flip callback. */
-    setDigMode(on: boolean, onWheel?: (deltaY: number) => void): void {
-      if (on) {
-        map.scrollWheelZoom.disable();
-        digWheel.set(onWheel ?? null);
-      } else {
-        digWheel.set(null);
-        map.scrollWheelZoom.enable();
-      }
     },
 
     destroy(): void {

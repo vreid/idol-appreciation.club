@@ -30,7 +30,7 @@ use std::sync::Arc;
 pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum::Router)> {
     img::init()?;
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(20)
+        .max_connections(cfg.database_pool_max)
         .acquire_timeout(std::time::Duration::from_secs(10))
         .connect(&cfg.database_url)
         .await?;

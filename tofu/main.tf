@@ -67,6 +67,12 @@ resource "upcloud_kubernetes_node_group" "this" {
   # to var.node_count — that destroys the scaled-up node. ignore_changes
   # stays for CA's lifetime; raise capacity via the bounds in
   # chart/values.yaml, not here. See docs/infra.md "Scaling".
+  #
+  # CNPG FLOOR (2026-10-14): the live count is bumped 2→3 once, out of
+  # band, by `task cnpg:node-scale` (UpCloud API PATCH — same
+  # UPCLOUD_TOKEN/CLUSTER env contract as infra:delete-lbs). The patch
+  # lands as drift this resource deliberately ignores; var.node_count
+  # records the intended floor for the next recreate.
   node_count = var.node_count
 
   lifecycle {

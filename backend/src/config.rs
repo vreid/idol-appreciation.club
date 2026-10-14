@@ -7,6 +7,10 @@ use std::path::PathBuf;
 pub struct Config {
     pub listen_addr: SocketAddr,
     pub database_url: String,
+    /// sqlx pool ceiling. Stopgap for #120: deep-zoom renders can hold
+    /// connections for minutes and starve the pool; idle-held connections
+    /// are free on the managed PG. DATABASE_POOL_MAX overrides the default.
+    pub database_pool_max: u32,
     /// S3-compatible endpoint. `file://…` selects a local-filesystem store
     /// (dev only); anything else is an S3 endpoint (UpCloud object storage).
     pub s3_endpoint: Option<String>,
@@ -96,6 +100,9 @@ impl Config {
                 .parse()
                 .expect("invalid LISTEN_ADDR"),
             database_url: env_req("DATABASE_URL"),
+            database_pool_max: env_or("DATABASE_POOL_MAX", "30")
+                .parse()
+                .expect("invalid DATABASE_POOL_MAX"),
             s3_endpoint: std::env::var("S3_ENDPOINT").ok(),
             s3_bucket: env_req("S3_BUCKET"),
             s3_access_key_id: std::env::var("S3_ACCESS_KEY_ID").ok(),

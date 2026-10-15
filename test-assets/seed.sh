@@ -31,8 +31,9 @@
 #                       fan-out accounts for the FAR cells (cooldown is
 #                       per-account, so N accounts ≈ N× rate); near-center
 #                       cells ALWAYS go to the seed account
-#   SEED_SLEEP=S        floor sleep between posts (default 1.5; use 0.25
-#                       when the seed account is cooldown-exempt)
+#   SEED_SLEEP=S        floor sleep between posts (default 0 — every seed
+#                       account is flagged cooldown-exempt via the admin
+#                       endpoint before placing; set >0 to throttle)
 #
 # Robustness: resumable (marker per cell), aborts after >3 consecutive
 # non-201s, logs every non-201 with cell coordinates.
@@ -48,16 +49,17 @@ SEED_DRY_RUN=${SEED_DRY_RUN:-0}
 SEED_COUNT=${SEED_COUNT:-0}
 SEED_STATE_DIR=${SEED_STATE_DIR:-./seed-state-${SEED_USERNAME}}
 SEED_ACCOUNTS_FILE=${SEED_ACCOUNTS_FILE:-}
-SEED_SLEEP=${SEED_SLEEP:-}
+SEED_SLEEP=${SEED_SLEEP:-0}
 SEED_RADIUS=${SEED_RADIUS:-100000}
 SEED_ROT_SIGMA=${SEED_ROT_SIGMA:-7.5}
 GRID=100
-SLOT=512
+NAT=1024   # natural long edge of every pool image (idols + idols-food)
 GUTTER=128
-PITCH=$((SLOT + GUTTER)) # 640
+PITCH=$((NAT + GUTTER)) # 1152 — classic-mode ring spacing at full size
 FAIL_LIMIT=3
 
 IDOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/idols"
+FOOD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/idols-food"
 WORLD_CENTER=134217728
 CX=$WORLD_CENTER
 CY=$WORLD_CENTER
@@ -81,17 +83,6 @@ if data[:2] == b'\xff\xd8':
         i += 2 + seglen
 sys.exit(f"cannot parse dimensions of {sys.argv[1]}")
 PYEOF
-}
-
-# scaled_size FILE -> "PWxPH" after the server scales the long edge to $SLOT.
-scaled_size() {
-  local d w h
-  d=$(img_dims "$1"); w=${d%x*}; h=${d#*x}
-  if [ "$w" -ge "$h" ]; then
-    printf '%dx%d' "$SLOT" $(( SLOT * h / w ))
-  else
-    printf '%dx%d' $(( SLOT * w / h )) "$SLOT"
-  fi
 }
 
 # original_size FILE -> "PWxPH" at the image's ORIGINAL dimensions, long
@@ -196,13 +187,32 @@ if [ "$SEED_DRY_RUN" != "1" ]; then
     login_account "$i" || { echo "ERROR: fanout account ${ACC_USER[$i]} login failed" >&2; exit 1; }
   done
   [ "$FANOUT_N" -gt 0 ] && echo "==> ${FANOUT_N} fan-out accounts logged in"
+
+  # Flag every seed account cooldown-exempt (admin endpoint, #37): the
+  # seeder places at full speed, no cooldown floors. Seed account (index 0)
+  # holds the admin session; non-admin → warn once, cooldowns apply.
+  EXEMPT_OK=0; EXEMPT_FAIL=0
+  for ((i = 0; i <= FANOUT_N; i++)); do
+    u=${ACC_USER[$i]}
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -b "${JARS[0]}" \
+      -X POST "${BASE_URL%/}/api/admin/accounts/${u}/cooldown-exempt" \
+      -H 'Content-Type: application/json' -d '{"exempt":true}') || code=000
+    if [ "$code" = "204" ]; then
+      EXEMPT_OK=$((EXEMPT_OK + 1))
+    else
+      EXEMPT_FAIL=$((EXEMPT_FAIL + 1))
+      echo "  ! cooldown-exempt ${u}: HTTP $code (admin session required — set SEED_SLEEP>0)" >&2
+    fi
+  done
+  echo "==> cooldown-exempt: ${EXEMPT_OK} flagged, ${EXEMPT_FAIL} failed"
 fi
 
 F01=$(ls "$IDOLS_DIR"/01-*.* 2>/dev/null | head -1 || true)
 [ -n "$F01" ] || { echo "ERROR: missing $IDOLS_DIR/01-*.*" >&2; exit 1; }
-FILES=("$IDOLS_DIR"/*.jpg)
+# Pool = stage idols + food idols (manifest categories), one flat cycle.
+FILES=("$IDOLS_DIR"/*.jpg "$FOOD_DIR"/*.jpg)
 N_FILES=${#FILES[@]}
-[ "$N_FILES" -ge 2 ] || { echo "ERROR: need >=2 images in $IDOLS_DIR" >&2; exit 1; }
+[ "$N_FILES" -ge 2 ] || { echo "ERROR: need >=2 images in $IDOLS_DIR/$FOOD_DIR" >&2; exit 1; }
 
 if [ "$SEED_COUNT" -gt 0 ]; then
   # ---------------- scrapbook pile mode ----------------
@@ -229,8 +239,8 @@ PYEOF
     mkdir -p "$SEED_STATE_DIR"; : > "$SEED_STATE_DIR/center.done"
   else
     echo "==> Center not covered — placing 01-solo on 0/0 from the seed account"
-    dims=$(scaled_size "$F01"); pw=${dims%x*}; ph=${dims#*x}
-    place_cell 0 "$F01" $(( CX - pw / 2 )) $(( CY - ph / 2 )) "center" 0 "$SLOT" || true
+    dims=$(original_size "$F01"); pw=${dims%x*}; ph=${dims#*x}
+    place_cell 0 "$F01" $(( CX - pw / 2 )) $(( CY - ph / 2 )) "center" 0 "$pw$([ "$ph" -gt "$pw" ] && echo "$ph" || echo "$pw")" || true
     [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || { echo "ABORT: $FAIL_LIMIT consecutive failures" >&2; exit 1; }
   fi
 
@@ -266,7 +276,7 @@ GEOEOF
     place_cell 0 "$f" "$x" "$y" "$tag" "$rot" "$size" || true # failures counted, not fatal
     [ "$CONSEC_FAIL" -lt "$FAIL_LIMIT" ] || {
       echo "ABORT: $FAIL_LIMIT consecutive non-201s (resume with the same command)" >&2; exit 1; }
-    [ "$DRY_RUN" = "1" ] || sleep "$SEED_SLEEP"
+    if [ "$DRY_RUN" != "1" ] && [ "$SEED_SLEEP" != "0" ]; then sleep "$SEED_SLEEP"; fi
     k=$((k + 1))
   done
   echo "==> Done: placed $PLACED, failed $FAILED (SEED_COUNT mode)"
@@ -274,8 +284,9 @@ GEOEOF
 fi
 
 # ---------------- classic 16-image mode ----------------
-HALF=$((SLOT / 2))
-STEP=$((HALF + GUTTER + SLOT))
+# Full-size rects with mixed aspects: layout is a dynamic 4-column shelf
+# (row height = tallest image in the row + GUTTER), anchored on the
+# world center.
 JAR=${JARS[0]}
 
 post() { # post URL curl-args... -> prints response body, fails hard on HTTP error
@@ -293,24 +304,25 @@ post() { # post URL curl-args... -> prints response body, fails hard on HTTP err
 
 RECTS=()
 place() { # place FILE X Y -> post (or just record in dry-run) + record the rect
-  local file=$1 x=$2 y=$3 name dims pw ph
+  local file=$1 x=$2 y=$3 name dims pw ph size
   name=$(basename "$file")
-  dims=$(scaled_size "$file"); pw=${dims%x*}; ph=${dims#*x}
+  dims=$(original_size "$file"); pw=${dims%x*}; ph=${dims#*x}
+  size=$pw; [ "$ph" -gt "$size" ] && size=$ph
   RECTS+=("$x $y $pw $ph $name")
   if [ "$DRY_RUN" = "1" ]; then
     printf 'DRY  %-28s at (%d, %d) size=%dx%d\n' "$name" "$x" "$y" "$pw" "$ph"
     return 0
   fi
-  printf '==> Placing %-28s at (%d, %d) size=%d ... ' "$name" "$x" "$y" "$SLOT"
+  printf '==> Placing %-28s at (%d, %d) size=%d ... ' "$name" "$x" "$y" "$size"
   post "${BASE_URL%/}/api/place" -b "$JAR" -X POST \
-    -F "image=@${file}" -F "x=${x}" -F "y=${y}" -F "size=${SLOT}" >/dev/null
+    -F "image=@${file}" -F "x=${x}" -F "y=${y}" -F "size=${size}" >/dev/null
   echo "OK (201)"
-  sleep 1.5
+  if [ "$SEED_SLEEP" != "0" ]; then sleep "$SEED_SLEEP"; fi
 }
 
 center_place() {
   local file=$1 dims pw ph
-  dims=$(scaled_size "$file"); pw=${dims%x*}; ph=${dims#*x}
+  dims=$(original_size "$file"); pw=${dims%x*}; ph=${dims#*x}
   place "$file" $(( CX - pw / 2 )) $(( CY - ph / 2 ))
 }
 
@@ -324,15 +336,71 @@ if [ "${#FILES16[@]}" -ne 15 ]; then
   exit 1
 fi
 center_place "$F01"
-ROWS=( -$((STEP + PITCH)) -$STEP $((HALF + GUTTER)) $((HALF + GUTTER + PITCH)) )
-COLS=( -1216 -576 64 704 )
+# Shelf layout: 4 columns, rows sized to their tallest member; dims are
+# parsed in-process (PNG/JPEG headers, same logic as img_dims).
+mapfile -t SLOTS < <(python3 - "$GUTTER" "${FILES16[@]}" <<'PYEOF'
+import struct, sys
+
+gutter = int(sys.argv[1])
+files = sys.argv[2:]
+
+def dims(path):
+    data = open(path, 'rb').read(64 * 1024)
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        w, h = struct.unpack('>II', data[16:24])
+        return w, h
+    i = 2
+    while i + 9 < len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        seglen = struct.unpack('>H', data[i + 2:i + 4])[0]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            h, w = struct.unpack('>HH', data[i + 5:i + 9])
+            return w, h
+        i += 2 + seglen
+    raise SystemExit(f"cannot parse dimensions of {path}")
+
+items = []
+for f in files:
+    w, h = dims(f)
+    if max(w, h) > 4096:
+        if w >= h:
+            w, h = 4096, 4096 * h // w
+        else:
+            w, h = 4096 * w // h, 4096
+    items.append((f, w, h))
+
+COLS = 4
+rows = [items[i:i + COLS] for i in range(0, len(items), COLS)]
+col_w = [max(w for _, w, _ in (rows[ri][ci] for ri in range(len(rows)) if ci < len(rows[ri]))) for ci in range(COLS)]
+row_h = [max(h for _, _, h in r) for r in rows]
+total_w = sum(col_w) + gutter * (COLS - 1)
+x0 = -total_w // 2
+# Shelf sits wholly BELOW the center image (01-solo occupies 0/0).
+y0 = 2364 // 2 + gutter  # center image half-height + gutter
+xs = []
+cur = x0
+for c in range(COLS):
+    xs.append(cur)
+    cur += col_w[c] + gutter
+for ri, r in enumerate(rows):
+    y = y0 + sum(row_h[:ri]) + (gutter * ri)
+    for ci, (f, w, h) in enumerate(r):
+        # center each image inside its shelf cell
+        print(f, xs[ci] + (col_w[ci] - w) // 2, y + (row_h[ri] - h) // 2)
+PYEOF
+)
 i=0
-for ROW in "${ROWS[@]}"; do
-  for COL in "${COLS[@]}"; do
-    [ "$i" -lt "${#FILES16[@]}" ] || break
-    place "${FILES16[$i]}" $(( CX + COL )) $(( CY + ROW ))
-    i=$((i + 1))
-  done
+for ROW in "${SLOTS[@]}"; do
+  read -r f x y <<< "$ROW"
+  [ -n "${f:-}" ] || continue
+  place "$f" $(( CX + x )) $(( CY + y ))
+  i=$((i + 1))
 done
 
 # pairwise non-overlap post-check (pure python3).

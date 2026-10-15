@@ -239,7 +239,11 @@ cnpg:
       memory: 1.5Gi
     limits:
       cpu: "2"
-      memory: 3Gi
+      # Request EQUALS the memory limit (2026-10-15 decision, salvage of
+      # the cancelled #206 retune): a busy instance must not starve the
+      # pods sharing its node — no memory overcommit on the baseline.
+      # Headroom checked against loadtest #163: primary peaked 1001MiB.
+      memory: 1.5Gi
 
 # OpenTelemetry Collector (contrib) as a DaemonSet — the doc's Phase 1
 # observability piece. Off by default (config-gated like the app's

@@ -34,6 +34,10 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        # kubelet group-owns the emptyDir volumes to this gid so the
+        # initContainer (uid 1000, caddy image) can drop the binary in
+        # and the main container (uid 1000, web image) can exec it.
+        fsGroup: 1000
       topologySpreadConstraints:
         - maxSkew: {{ .Values.web.topologySpread.maxSkew }}
           topologyKey: {{ .Values.web.topologySpread.topologyKey }}

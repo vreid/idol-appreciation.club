@@ -154,18 +154,22 @@ jobs:
             --aws-sigv4 'aws:amz:us-east-1:s3' -u "$sak:$ssk" \
             "https://$oshost/${bucket:-idol-canvas}?list-type=2&max-keys=1" || echo 000)"
           echo "minted-key signed list: HTTP $vcode" | tee -a "$GITHUB_STEP_SUMMARY"
-          dcode="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-            -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-            "https://api.upcloud.com/1.3/object-storage-2/$svc/users/app/access-keys/$sak")"
-          echo "probe key cleanup: HTTP $dcode" | tee -a "$GITHUB_STEP_SUMMARY"
-          test "$vcode" = "200" || { echo "minted key failed live signed verify" >&2; exit 1; }
-          # Probe runner: uses the LIVE app-env S3 creds (same ones caddy
-          # would use). curl --aws-sigv4, exactly like the deploy probe.
-          # The whole script is single-quoted ON PURPOSE: it must expand
-          # inside the pod, not on the runner.
+          # The probe key stays alive until after the in-cluster probes:
+          # app-env holds dead creds until the dark deploy rotates, and
+          # the conditional-write verdicts must not inherit that noise.
+          cleanup_probe_key() {
+            curl -sS -o /dev/null -w 'probe key cleanup: HTTP %{http_code}\n' -X DELETE \
+              -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+              "https://api.upcloud.com/1.3/object-storage-2/$svc/users/app/access-keys/$sak" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+          test "$vcode" = "200" || { cleanup_probe_key; echo "minted key failed live signed verify" >&2; exit 1; }
+          # Probe runner with the FRESH minted creds, exactly what the
+          # rotated app will hold. The whole script is single-quoted ON
+          # PURPOSE: it must expand inside the pod, not on the runner.
           kubectl -n idol delete job s3-vet --ignore-not-found >/dev/null
           # shellcheck disable=SC2016
-          # envFrom must be on the pod template AT creation: a Job's
+          # env must be on the pod template AT creation: a Job's
           # template is immutable after create (kubectl set env fails).
           kubectl -n idol create job s3-vet --image=curlimages/curl:8.16.0 \
             --dry-run=client -o json \
@@ -186,11 +190,17 @@ jobs:
               echo "PROBE cleanup $k: $(code -X DELETE --aws-sigv4 "aws:amz:us-east-1:s3" -u "$S3_ACCESS_KEY_ID:$S3_SECRET_ACCESS_KEY" "$P/$k")"
             done
           ' \
-            | jq '.spec.template.spec.containers[0].envFrom = [{"secretRef": {"name": "app-env"}}]' \
+            | jq --arg sak "$sak" --arg ssk "$ssk" --arg pep "https://$oshost" --arg bucket "${bucket:-idol-canvas}" \
+              '.spec.template.spec.containers[0].env = [
+                {name: "S3_ACCESS_KEY_ID", value: $sak},
+                {name: "S3_SECRET_ACCESS_KEY", value: $ssk},
+                {name: "S3_ENDPOINT", value: $pep},
+                {name: "S3_BUCKET", value: $bucket}]' \
             | kubectl apply -f -
           kubectl -n idol wait --for=condition=complete job/s3-vet --timeout=420s \
-            || { kubectl -n idol logs job/s3-vet || true; exit 1; }
+            || { kubectl -n idol logs job/s3-vet || true; cleanup_probe_key; exit 1; }
           kubectl -n idol logs job/s3-vet
+          cleanup_probe_key
       - name: restore verification (nodes, workloads, db, health)
         env:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}

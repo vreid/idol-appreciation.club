@@ -160,7 +160,15 @@ order always matches `seq` order):
    was a generated box of the unrotated rect; migration 0004 dropped the
    expression when rotation landed).
 2. Open tx: intersect test (GiST) → threshold = 300 s (paint) or 1 s (empty);
-   single guarded UPDATE — zero rows ⇒ rollback + `429` with `Retry-After`:
+   **unless the account is `cooldown_exempt`** — the pre-check (step "then a
+   read-only cooldown pre-check" above) and the transactional UPDATE both skip
+   the floor for flagged accounts (#37: `POST/DELETE
+   /api/admin/accounts/{username}/cooldown-exempt`, admin session required;
+   the flag lives on `accounts.cooldown_exempt`, migration 0003). Regular
+   users are byte-identical when the flag is false; the seeder flags its
+   fan-out accounts so full-size pile placement runs at full speed
+   (`test-assets/seed.sh`).
+   Single guarded UPDATE — zero rows ⇒ rollback + `429` with `Retry-After`:
 
    ```sql
    UPDATE accounts SET last_placement_at = now()

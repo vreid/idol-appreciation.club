@@ -14,6 +14,14 @@ images:
     repository: ghcr.io/vreid/idol-appreciation.club-web
     tag: main
     digest: ""
+  # Custom Caddy edge build (caddy/Dockerfile): cache-handler +
+  # CertMagic S3 storage. Used as the initContainer that donates the
+  # custom binary to the web image (web/Dockerfile is untouched); the
+  # digest is locked by images.yml like backend/web.
+  caddy:
+    repository: ghcr.io/vreid/idol-appreciation.club-caddy
+    tag: main
+    digest: ""
 
 domain: idol-appreciation.club
 
@@ -53,14 +61,45 @@ backend:
       memory: 2Gi
 
 web:
-  # Caddy edge: resources are tiny (static files + proxy).
+  # Two+ edge replicas: TLS certificates and ACME state live in object
+  # storage (edgeStorage below), so the old RWO-PVC single-mount
+  # constraint is gone and replicas spread across nodes. Every replica
+  # keeps its own in-memory tile cache; ACME renewal is coordinated
+  # through the storage lock (docs/scaling-architecture.md, "Caddy,
+  # horizontally").
+  replicas: 2
+  # Keep at least one edge pod through node drains and voluntary
+  # disruptions (descheduler included).
+  pdb:
+    minAvailable: 1
+  # Spread edge replicas across nodes; ScheduleAnyway because the
+  # baseline also hosts PG + API pods (soft preference, never a block).
+  topologySpread:
+    maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+  # Static files + proxy + the in-memory tile cache: the cache is the
+  # big term (~4000 tiles x ~60 KB worst case, chart/caddy/Caddyfile
+  # otter size); the rest is per-stream buffers.
   resources:
     requests:
       cpu: 50m
-      memory: 64Mi
+      memory: 128Mi
     limits:
       cpu: 500m
-      memory: 256Mi
+      memory: 512Mi
+
+# Object storage for the edge's certificates and ACME state (CertMagic
+# storage module; chart/caddy/Caddyfile `storage s3` block). Endpoint
+# and bucket are injected by deploy.yml on every deploy (the UpCloud API
+# is the source of truth, as for app-env); credentials are NOT part of
+# the ConfigMap — the module falls back to the AWS_ standard chain and
+# the Deployment maps them from the existing app-env secret. Prefix is
+# repo-static so the same objects are found after a recreate.
+edgeStorage:
+  endpoint: ""
+  bucket: ""
+  prefix: caddy-acme
 
 # UpCloud CCM load balancer config for the edge Service. TCP frontends with
 # TCP health checks: the LB must NOT terminate TLS (Caddy owns ACME) and

@@ -6,19 +6,20 @@ metadata:
   labels:
     app: web
 spec:
-  # fixed at 1: /data is an RWO PVC (Caddy TLS state) — replicas cannot share it
-  replicas: 1
-  # Recreate, not RollingUpdate: the caddy-data PVC is ReadWriteOnce, and
-  # nothing forces the surge pod onto the volume's node. When the scheduler
-  # places it elsewhere, attach is refused (Multi-Attach error, #186/#187
-  # deploys), the pod never passes readiness, and rollback-on-failure
-  # reverts the whole release. Past rolls succeeded only when both pods
-  # happened to co-locate on the PV's node. Recreate frees the volume
-  # before the replacement starts: always rolls, costs a few seconds of
-  # connection-refused at the edge per web deploy. ACME certs live on the
-  # persistent PVC, so rolls do NOT re-run ACME.
+  # Horizontal edge (docs/scaling-architecture.md, "Caddy,
+  # horizontally"): TLS + ACME state live in object storage
+  # (edgeStorage), so replicas are free to spread; every replica keeps
+  # its own in-memory tile cache and renewal is coordinated through the
+  # storage lock.
+  replicas: {{ .Values.web.replicas }}
+  # RollingUpdate with an unavailable-free surge: the old pod keeps
+  # serving until its replacement is ready, so deploys never take the
+  # whole edge down.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: web
@@ -33,32 +34,77 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
-        # kubelet chowns the PVC root to this gid so uid 1000 (caddy)
-        # can create /data/caddy.
+        # kubelet group-owns the emptyDir volumes to this gid so the
+        # initContainer (uid 1000, caddy image) can drop the binary in
+        # and the main container (uid 1000, web image) can exec it.
         fsGroup: 1000
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.web.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.web.topologySpread.topologyKey }}
+          whenUnsatisfiable: {{ .Values.web.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              app: web
       volumes:
-        - name: caddy-data
-          persistentVolumeClaim:
-            claimName: caddy-data
+        # The custom edge binary (cache-handler + CertMagic S3 storage)
+        # is built separately from the web image: this initContainer
+        # donates it, the main container execs it. Keeps web/ and its
+        # image pipeline untouched; only this chart wiring changes.
+        - name: caddy-bin
+          emptyDir: {}
         - name: caddy-config
           configMap:
             name: caddy-config
+      initContainers:
+        - name: caddy-binary
+          image: {{ include "idol-canvas.image" (dict "image" .Values.images.caddy "name" "caddy") }}
+          imagePullPolicy: Always
+          command: ["sh", "-c", "cp /usr/bin/caddy /mnt/caddy && chmod 0555 /mnt/caddy"]
+          volumeMounts:
+            - name: caddy-bin
+              mountPath: /mnt
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
       containers:
         - name: web
           image: {{ include "idol-canvas.image" (dict "image" .Values.images.web "name" "web") }}
           imagePullPolicy: Always
+          command: ["/opt/caddy/caddy"]
+          args:
+            - run
+            - --config
+            - /etc/caddy/Caddyfile
+            - --adapter
+            - caddyfile
           ports:
             - containerPort: 8080
               name: http
             - containerPort: 8443
               name: https
           volumeMounts:
-            - name: caddy-data
-              mountPath: /data
+            - name: caddy-bin
+              mountPath: /opt/caddy
+              readOnly: true
             - name: caddy-config
               mountPath: /etc/caddy/Caddyfile
               subPath: Caddyfile
               readOnly: true
+          env:
+            # CertMagic S3 storage credentials. The module takes them
+            # from the AWS_ standard chain (the Caddyfile ConfigMap
+            # carries no secrets); the keys are the same object-storage
+            # credentials the backend already rotates safely.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: app-env
+                  key: S3_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: app-env
+                  key: S3_SECRET_ACCESS_KEY
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
           readinessProbe:

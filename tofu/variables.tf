@@ -32,7 +32,13 @@ variable "k8s_version" {
 variable "network_cidr" {
   description = "Private network CIDR for cluster nodes and the control plane."
   type        = string
-  default     = "10.10.0.0/24"
+  # 2026-10-15 SEV: the live stack runs 10.30.0.0/24 while this default
+  # said 10.10.0.0/24 — drift invisible to refresh-only steps, but the
+  # first tofu-touching merge (#203) fired infra-apply, whose plan read
+  # "network address forces replacement", cascading cluster + default
+  # node group replacement. Adopt the live CIDR so a converge apply is
+  # purely additive; infra-recreate continues to own any true rebuild.
+  default = "10.30.0.0/24"
 }
 
 variable "node_group_name" {
@@ -64,37 +70,6 @@ variable "node_count" {
   EOT
   type        = number
   default     = 3
-}
-
-variable "worker_node_group_name" {
-  description = "Tainted worker-pool node group name (render/ingest workers)."
-  type        = string
-  default     = "workers"
-}
-
-variable "worker_node_plan" {
-  description = <<-EOT
-    Worker-pool node plan: 1 vCPU / 2 GiB per docs/scaling-architecture.md
-    "Cluster layout" (one libvips worker pod per node, ~800m/1.2Gi
-    requested). Verified against the account's plan list on 2026-10-15;
-    if the API ever rejects the plan, the next-smallest STARTER shape
-    (STARTER-2xCPU-4GB) is the documented fallback.
-  EOT
-  type        = string
-  default     = "STARTER-1xCPU-2GB"
-}
-
-variable "worker_node_count" {
-  description = <<-EOT
-    Worker-pool node count — the scale-to-zero FLOOR. The UpCloud 1.3
-    API documents node-group `count` as ">= 0" (verified against the
-    "Create node group" attributes, 2026-10-15), so the pool may shrink
-    to nothing when the render queue drains; the Cluster Autoscaler
-    (chart/ clusterAutoscaler, bounds in values.yaml) owns the live
-    count and tofu ignores that drift, exactly like the default group.
-  EOT
-  type        = number
-  default     = 0
 }
 
 variable "objsto_name" {

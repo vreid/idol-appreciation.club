@@ -57,10 +57,15 @@ jobs:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
         run: |
           set -euo pipefail
+          # Best-effort only: this diagnostic must never block the
+          # restore receipts below it.
           uid="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
             https://api.upcloud.com/1.3/objectstorage/users \
-            | jq -r '.[] | select(.username == "app") | .uuid')"
-          test -n "$uid" && echo "app user uuid: $uid"
+            | jq -r 'if type == "array" then (.[] | select(.username == "app") | .uuid) else (.users[]? | select(.username == "app") | .uuid) end // empty' 2>/dev/null || true)"
+          if [ -z "${uid:-}" ]; then
+            echo "users list unavailable; skipping key diagnostic (non-fatal)"
+            exit 0
+          fi && echo "app user uuid: $uid"
           before="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
             "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
             | jq -r '.access_keys | length')"
@@ -89,10 +94,15 @@ jobs:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
         run: |
           set -euo pipefail
+          # Best-effort only: this diagnostic must never block the
+          # restore receipts below it.
           uid="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
             https://api.upcloud.com/1.3/objectstorage/users \
-            | jq -r '.[] | select(.username == "app") | .uuid')"
-          test -n "$uid"
+            | jq -r 'if type == "array" then (.[] | select(.username == "app") | .uuid) else (.users[]? | select(.username == "app") | .uuid) end // empty' 2>/dev/null || true)"
+          if [ -z "${uid:-}" ]; then
+            echo "users list unavailable; skipping key diagnostic (non-fatal)"
+            exit 0
+          fi
           before="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
             "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
             | jq -r '.access_keys | length')"

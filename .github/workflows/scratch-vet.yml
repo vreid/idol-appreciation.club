@@ -125,7 +125,7 @@ jobs:
           # key never outlives this step.
           svc="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
             "https://api.upcloud.com/1.3/object-storage-2?limit=100" \
-            | jq -r '.[]? | select(.uuid == "127fbb4e-c649-46c4-9064-7cf1629b99b5") | .uuid')"
+            | jq -r '(if type == "array" then . else (.services // []) end)[]? | select(.uuid == "127fbb4e-c649-46c4-9064-7cf1629b99b5") | .uuid')"
           test -n "$svc" || { echo "object-storage service 127fbb4e… not found in object-storage-2 list" >&2; exit 1; }
           # 15:03 run (38756889898) got the authoritative 400 body: "User
           # app already has 2 access keys" — the legacy view (which the

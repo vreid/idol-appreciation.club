@@ -70,6 +70,12 @@
 # rollbacks; caddy auto-retries per the order's Retry-After). The
 # canonicalization redirect returns with the edge cleanup later.
 
+# The apex identifier's cert lives in the shared S3 storage (obtained
+# 15:35Z after the LE retry); it imports the same app snippet.
+idol-appreciation.club {
+	import app
+}
+
 www.idol-appreciation.club {
 	import app
 }

@@ -1542,6 +1542,7 @@ async fn two_instance_composite_no_lost_update() {
         import_group_concurrency: 2,
         import_derivative_long_edge: 1024,
         // Pipeline fields: these two-instance tests drive chunks directly.
+        ingest_pipeline_enabled: false,
         render_pipeline_enabled: false,
         render_pipeline_workers: 0,
         render_pipeline_poll_ms: 1_000,
@@ -1656,6 +1657,7 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
         import_group_concurrency: 2,
         import_derivative_long_edge: 1024,
         // Pipeline fields: these two-instance tests drive chunks directly.
+        ingest_pipeline_enabled: false,
         render_pipeline_enabled: false,
         render_pipeline_workers: 0,
         render_pipeline_poll_ms: 1_000,

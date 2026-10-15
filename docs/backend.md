@@ -12,6 +12,7 @@ file host. Source lives in `backend/src`, one module per concern:
 | `chunks`   | chunk raster mutation + moderation replay              |
 | `tiles`    | pyramid rendering, maxSeq staleness, caches            |
 | `place`    | `POST /api/place`, admin soft-delete pipeline          |
+| `ingest`   | Phase 4 quarantine consumer behind the 202 upload path |
 | `api`      | near / center / health / reports / image counts        |
 | `handlers` | register / login / logout / me                         |
 | `auth`     | HMAC-signed stateless cookies, `Authed` extractor      |
@@ -650,6 +651,62 @@ worker deployment (see the rollout plan below).
   chunk they touched repaints once on next activity (idempotent pixels, bounded
   by one pass), because `painted_seq` starts at 0 for pipeline-unaware writes.
 
+### The ingest pipeline (`ingest_jobs`, migration 0009 — Phase 4 upload flow, ships dark)
+
+`docs/scaling-architecture.md` § "Upload flow" as code: the placement request
+stops doing pixel work. `POST /api/place` validates cheaply (header probe,
+bounds, cooldown), stashes the upload under `quarantine/{job_id}` in object
+storage, inserts an `ingest_jobs` row and returns **202** with
+`{id, state: "pending", x, y, w, h, rot}` (contract `placeAcceptedSchema`). The
+in-process ingest consumer claims the job, runs the shared pixel engine
+(`place::process_original` — decode, strip, re-save, hash, derivative), puts the
+content-addressed `originals/{sha}` + `derivatives/{sha}.webp` objects, and
+records the placement in one transaction that holds the sequencer lock from the
+`nextval` draw to commit (commit order = sequence order, the doc's ordering
+doctrine), advances chunk versions (`bump_chunk_seqs_pipeline`), queues
+`render_jobs`, marks the job `placed` and notifies `placed` on the SSE stream —
+or `place_failed` when it gives up. The client follows the events or polls
+`GET /api/uploads/{id}`, whose body is exactly contract/zod's
+`uploadStatusSchema` (`pending` / `placed` with placement id, seq and AABB /
+`failed` with attempts, permanence and error); unknown ids are 404, and other
+users' jobs are 404 too (no existence leak).
+
+It ships **dark**: `INGEST_PIPELINE_ENABLED=false` (the default) keeps the
+synchronous 201 path byte-identical — same body, inline composite, no
+quarantine, no rows (test-enforced by
+`quarantine::dark_path_stays_synchronous_201`). Migration 0009 applies at boot
+either way.
+
+- **Failure doctrine.** Validation-class errors — the client lied about the
+  bytes, or libvips disagrees with the API's header read (decode failure, or
+  decoded dimensions ≠ probed dimensions) — fail the job permanently on the
+  first attempt. Everything else retries with a `RENDER_PIPELINE_POLL_MS`
+  backoff up to 5 attempts (`MAX_INGEST_ATTEMPTS`), then parks `failed`. A
+  terminal failure notifies `place_failed` (attempts, permanent, error) and
+  REFUNDS the cooldown the 202 consumed: `last_placement_at` is cleared when no
+  later placement has moved it, so the client can retry immediately.
+- **Claiming.** `FOR UPDATE SKIP LOCKED`, oldest first; `running` rows past the
+  lease (`RENDER_PIPELINE_LEASE_SECS`) are reclaimable — the claim is the retry
+  and bumps `attempts`. The record transaction is atomic (placement row + job
+  state commit together), so a crashed consumer's re-run cannot double-insert.
+- **Removal rides the same queue.** `DELETE /api/admin/placements/{id}` under
+  the flag returns **202** with a removal job; the consumer locks the placement
+  row, sets `removed_at`, draws the version bump, sets `needs_rebuild`, queues
+  the chunk jobs and notifies `remove`. Locking the row (rather than applying
+  inline) also orders a delete behind the placement's own ingest.
+  Already-removed targets complete idempotently; rapid double-deletes both 202
+  and both finish.
+- **Consumer.** One task per process (`ingest::spawn_consumer`, spawned only
+  when enabled), poll `RENDER_PIPELINE_POLL_MS` when idle; queue depth is
+  exposed as the `ingest_jobs_queue` gauge per state. The quarantine object is
+  deleted after the placement commits (best-effort; a lifecycle rule on
+  `quarantine/` backs up crashed consumers, doc step 3). `INGEST` is a query
+  family in the per-family DB latency series.
+- **Cutover order matters.** The consumer queues render jobs; with zero render
+  workers the placement would be recorded but never painted. Raise
+  `RENDER_PIPELINE_WORKERS` first, flip `RENDER_PIPELINE_ENABLED`, verify the
+  tiles, and only then flip `INGEST_PIPELINE_ENABLED` (the full Phase 4 flip).
+
 ## Moderation
 
 `DELETE /api/admin/placements/{id}` (403 for non-admins): soft delete
@@ -808,7 +865,11 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `TILE_RASTER_CACHE_ENTRIES=8`, `RUST_LOG=info`, `IMPORT_BLOCK_ENTRIES=500`,
 `IMPORT_GROUP_CONCURRENCY=2`, `IMPORT_DERIVATIVE_LONG_EDGE=1024`,
 `REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
-signups behind admin approval).
+signups behind admin approval), `RENDER_PIPELINE_ENABLED=false`,
+`RENDER_PIPELINE_WORKERS=0`, `RENDER_PIPELINE_POLL_MS=1000`,
+`RENDER_PIPELINE_LEASE_SECS=120`, `RENDER_PIPELINE_PARENT_QUIET_MS=3000`,
+`RENDER_PIPELINE_PARENT_LOW_MS=10000`, `RENDER_PIPELINE_PARENT_SPREAD_MS=20000`,
+`INGEST_PIPELINE_ENABLED=false` (see the two pipeline sections above).
 
 `S3_ENDPOINT=file:///path` selects a local-filesystem store (dev only); anything
 else is an S3 endpoint (`allow_http` for plain-http endpoints).

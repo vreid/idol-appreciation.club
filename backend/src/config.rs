@@ -81,6 +81,15 @@ pub struct Config {
     /// their z 18–20 tiles and bubbles parent versions. Cutover is the
     /// value flip (plus migration 0008, applied at boot regardless).
     pub render_pipeline_enabled: bool,
+    /// Phase 4 upload flow (docs "Upload flow", migration 0009): when
+    /// true, POST /api/place and admin DELETE validate cheaply, stash
+    /// the upload and return 202 with an ingest_jobs id; the in-process
+    /// ingest consumer does the pixel work and records the placement.
+    /// Requires the render pipeline for tiles to actually paint (the
+    /// consumer queues render jobs; see the cutover order in
+    /// docs/backend.md). Default false — the synchronous 201 path is the
+    /// shipped behavior until this flips.
+    pub ingest_pipeline_enabled: bool,
     /// Worker claim loops per process. Independent of
     /// `render_pipeline_enabled`: 0 = no worker at all (dark); > 0 lets
     /// workers burn a pre-seeded queue while the request path still
@@ -185,6 +194,7 @@ impl Config {
                 .parse()
                 .expect("invalid IMPORT_DERIVATIVE_LONG_EDGE"),
             render_pipeline_enabled: parse_bool(&env_or("RENDER_PIPELINE_ENABLED", "false")),
+            ingest_pipeline_enabled: parse_bool(&env_or("INGEST_PIPELINE_ENABLED", "false")),
             render_pipeline_workers: env_or("RENDER_PIPELINE_WORKERS", "0")
                 .parse()
                 .expect("invalid RENDER_PIPELINE_WORKERS"),

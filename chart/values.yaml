@@ -32,7 +32,7 @@ backend:
   # > 0 FIRST so workers burn the pre-seeded queue while the request
   # path still composites; flip renderPipelineEnabled last (place/remove
   # go queue-only). Workers spawn per pod: 2/pod x 2 pods = 4 claims.
-  renderPipelineEnabled: false
+  renderPipelineEnabled: true
   # Cutover stage 2 (2026-10-15): workers burn the pre-seeded chunk
   # backlog (30.7k repaints) while the request path still composites.
   # Stage 3 flips renderPipelineEnabled last.

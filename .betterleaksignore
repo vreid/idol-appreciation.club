@@ -140,7 +140,14 @@ chart/cnpg/barman-cloud-plugin-0.15.1.yaml:kubernetes-secret-yaml:976
 # Secret still carries the (now digest-pinned) public image ref, base64
 chart/cnpg/barman-cloud-plugin-0.15.1.yaml:kubernetes-secret-yaml:965
 # CI job wiring (PR #137): throwaway postgres service for the integration
-# harness — job-scoped, localhost-only, not a real credential.
-.github/workflows/ci.yml:generic-password:192
-.github/workflows/ci.yml:generic-credential-uri:206
-backend/tests/common/mod.rs:generic-password:310
+# harness — job-scoped, localhost-only, not a real credential. (Line
+# numbers drift with ci.yml edits; regenerate via the recipe above.)
+.github/workflows/ci.yml:generic-password:191
+.github/workflows/ci.yml:generic-credential-uri:205
+# Same fixture credential in the shared test harness login helper — line
+# drifted when Phase 3's render_jobs work merged into common/mod.rs.
+backend/tests/common/mod.rs:generic-password:431
+515912f229f4b9da09571dcd12e021eff5b39e2d:backend/crates/api/tests/common/mod.rs:generic-password:413
+backend/crates/api/tests/common/mod.rs:generic-password:413
+515912f229f4b9da09571dcd12e021eff5b39e2d:backend/crates/worker/tests/common/mod.rs:generic-password:413
+backend/crates/worker/tests/common/mod.rs:generic-password:413

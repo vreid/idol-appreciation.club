@@ -33,7 +33,10 @@ backend:
   # path still composites; flip renderPipelineEnabled last (place/remove
   # go queue-only). Workers spawn per pod: 2/pod x 2 pods = 4 claims.
   renderPipelineEnabled: false
-  renderPipelineWorkers: 0
+  # Cutover stage 2 (2026-10-15): workers burn the pre-seeded chunk
+  # backlog (30.7k repaints) while the request path still composites.
+  # Stage 3 flips renderPipelineEnabled last.
+  renderPipelineWorkers: 2
   # Two replicas: zero-blip rolls (surge pod ready before the old one
   # drains) and half the blast radius per pod. Multi-writer safety rides
   # the session-level PG advisory chunk locks (chunks.rs), not the replica

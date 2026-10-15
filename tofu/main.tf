@@ -133,11 +133,11 @@ resource "upcloud_managed_object_storage_user_policy" "app" {
 # create-shape question is answered upstream. Re-add this resource (and
 # the two secret outputs) with the ticket's answer; deploy's
 # verify-or-rotate owns the live key meanwhile.
-resource "upcloud_managed_object_storage_user_access_key" "s3" {
-  service_uuid = upcloud_managed_object_storage.this.id
-  username     = upcloud_managed_object_storage_user.app.username
-  status       = "Active"
-}
+# resource "upcloud_managed_object_storage_user_access_key" "s3" {
+#   service_uuid = upcloud_managed_object_storage.this.id
+#   username     = upcloud_managed_object_storage_user.app.username
+#   status       = "Active"
+# }
 
 # -------------------------------------------------------------- cloudflare
 

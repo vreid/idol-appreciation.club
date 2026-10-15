@@ -292,6 +292,37 @@ Once branch protection is on, every change ships via short-lived branch + PR;
 `gh pr create --fill --auto-merge=squash` queues the merge and deploy fires on
 merge. main stays green by construction. Agents stop pushing to main directly.
 
+## Baseline node group (2026-10-15 incident note)
+
+infra-apply run 38709145796 destroyed the baseline `default` node group and was
+killed at its own 30-minute job timeout mid-destroy: the open server-side
+operation held the remaining nodes cordoned, nothing recreated, API and edge
+503'd for ~3 h while the DB held 2/3 quorum.
+
+The apply's plan log named the defect: the config's `network_cidr` default
+(`10.10.0.0/24`) had never matched the live network (`10.30.0.0/24`) — drift
+invisible to refresh-only steps, read as "forces replacement" on
+`upcloud_network.k8s`, cascading cluster and node-group replacement. The merge
+that triggered it (#203, worker group + KEDA) was purely additive and not the
+cause; it was simply the first `tofu/**` merge since the drift appeared. Guards
+now:
+
+- the config adopts the live CIDR (see the comment on `var.network_cidr`);
+  infra-recreate owns any true rebuild;
+- the infra-apply job runs `timeout-minutes: 90` — node-group drain+provision
+  outlives 30m, and killing tofu mid-operation is what leaves UpCloud operations
+  open server-side;
+- capacity-first recovery pattern (Main-ordered): a replacement group
+  (`default-new`, 3×STARTER-4xCPU-8GB) was created alongside the dying one so DB
+  quorum and pods landed before any reaping — resource creation is not the gated
+  retune; the drain/destroy is. The consolidation back to one group (#217) and
+  its rename to `default` belong to the phase-4-gated #206 retune;
+- the state-tracked S3 access key was retired (#218/#219): its key no longer
+  existed upstream and every reissue 400s ERROR_INVALID_REQUEST with the quota
+  empty (UpCloud ticket, correlation `01M4ZPQ9YWM01GCRKM42YN9DKM`). The live key
+  in `app-env` works; deploy's verify-or-rotate owns it. Re-add the resource
+  (and the two secret outputs) with the ticket's answer.
+
 ## Deploy image digests (2026-10-13 incident note)
 
 A workflow-dispatch deploy whose image builds had been skipped rolled pods with

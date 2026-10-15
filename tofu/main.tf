@@ -177,3 +177,32 @@ data "cloudflare_zone" "apex" {
     name = var.domain
   }
 }
+
+# ------------------------------------------------------------------ SEV
+# CAPACITY-FIRST restore (2026-10-15, Main-authorized): the 08:55
+# aborted destroy left the `default` group's last two VMs terminating
+# server-side (open operation, invisible to tofu state; PATCH count→3
+# rejected HTTP 500). This group adds fresh baseline-shaped capacity
+# ALONGSIDE the dying one so DB quorum and app pods land before any
+# reaping — resource creation is not the gated retune; the drain/
+# destroy of the stuck group is. `this` stays untouched; consolidating
+# the two groups back to the documented baseline (and the name) is the
+# phase-4-gated #206 retune's job, via its staged create→drain→destroy.
+resource "upcloud_kubernetes_node_group" "baseline_capacity" {
+  cluster    = upcloud_kubernetes_cluster.this.id
+  name       = "default-new"
+  plan       = var.node_plan
+  node_count = var.node_count
+
+  lifecycle {
+    ignore_changes = [node_count]
+  }
+
+  labels = {
+    project    = "idol-appreciation.club"
+    managed-by = "tofu"
+    pool       = "baseline-new"
+  }
+
+  utility_network_access = true
+}

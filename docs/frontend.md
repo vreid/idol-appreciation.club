@@ -179,6 +179,24 @@ happy-dom via a `// @vitest-environment happy-dom` docblock.
   `<img>`; the dashed outline is a sibling div sized to the AABB at the current
   zoom. The long edge is clamped client-side to 16..4096 px.
 
+## Placement submit flow (202 quarantine)
+
+`POST /api/place` is era-split on the status line (`src/lib/placeApi.ts`), so
+the client works on both sides of the pipeline flip:
+
+- **201 (old era)** — the placement is recorded synchronously; the flow behaves
+  exactly as before (pulse, confetti, panel reset).
+- **202 (quarantine era)** — the acceptance carries the upload id and the AABB.
+  The user's own preview parks on the map as a pending marker
+  (`pendingUploads.ts` owns the registry; `worldMap.ts` renders the markers,
+  re-sized per zoom), the flow releases the panel immediately, and a detached
+  watcher resolves the upload through two lanes: the `placed`/`place_failed` SSE
+  events and a 2 s poll of `GET /api/uploads/{id}` (the fallback for a dead
+  event stream). Resolution clears the marker (revoking the borrowed object
+  URL), toasts the outcome — `Image placed!`, `Placement failed: <why>`, or the
+  30 s "still processing" hand-off — and pulses/confetti at the recorded AABB
+  via the store's `onUploadResolved` hook.
+
 ## Selection & the anchored detail panel
 
 - Clicking a placement selects it: the dashed AABB highlight stays on the image

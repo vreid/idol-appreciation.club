@@ -80,9 +80,23 @@ afterEach(() => {
 
 describe("parseWorldEvent", () => {
   it("parses place events with seq and bbox", () => {
+    // Legacy era.
     expect(
       parseWorldEvent('{"type":"place","seq":12,"bbox":[1,2,3,4]}'),
     ).toEqual({ type: "place", seq: 12, bbox: [1, 2, 3, 4] });
+    // Quarantine era.
+    expect(
+      parseWorldEvent(
+        '{"type":"placed","id":"a","job":"b","seq":12,"bbox":[1,2,3,4],"duplicate_count":0}',
+      ),
+    ).toEqual({
+      type: "placed",
+      id: "a",
+      job: "b",
+      seq: 12,
+      bbox: [1, 2, 3, 4],
+      duplicate_count: 0,
+    });
   });
 
   it("parses remove events", () => {
@@ -179,9 +193,20 @@ describe("SseClient", () => {
       sourceFactory: factory(),
     });
     client.start();
-    lastSource().emitMessage('{"type":"place","seq":1,"bbox":[0,0,1,1]}');
+    lastSource().emitMessage(
+      '{"type":"placed","id":"p1","job":"j1","seq":1,"bbox":[0,0,1,1],"duplicate_count":0}',
+    );
     lastSource().emitMessage("garbage");
-    expect(seen).toEqual([{ type: "place", seq: 1, bbox: [0, 0, 1, 1] }]);
+    expect(seen).toEqual([
+      {
+        type: "placed",
+        id: "p1",
+        job: "j1",
+        seq: 1,
+        bbox: [0, 0, 1, 1],
+        duplicate_count: 0,
+      },
+    ]);
     client.stop();
   });
 });

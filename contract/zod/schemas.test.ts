@@ -13,7 +13,9 @@ import {
   meSchema,
   pendingAccountsSchema,
   placedPlacementSchema,
-  placeEventSchema,
+  placedEventSchema,
+  placeAcceptedSchema,
+  uploadStatusSchema,
   placementSchema,
   placementsNearSchema,
   digEntrySchema,
@@ -58,20 +60,66 @@ describe("bbox", () => {
 });
 
 describe("world events", () => {
-  it("accepts a place event", () => {
-    ok(worldEventSchema, { type: "place", seq: 12, bbox: [1, 2, 3, 4] });
-    const parsed = placeEventSchema.safeParse({
-      type: "place",
+  it("accepts a placed event (the ingest worker's record notice)", () => {
+    ok(
+      worldEventSchema,
+      {
+        type: "placed",
+        id: "a",
+        job: "b",
+        seq: 12,
+        bbox: [1, 2, 3, 4],
+        duplicate_count: 0,
+      },
+    );
+    const parsed = placedEventSchema.safeParse({
+      type: "placed",
+      id: "a",
+      job: "b",
       seq: 1,
       bbox: [0, 0, 1, 1],
+      duplicate_count: 2,
     });
     expect(parsed.success).toBe(true);
     if (parsed.success)
       expect(parsed.data).toEqual({
-        type: "place",
+        type: "placed",
+        id: "a",
+        job: "b",
         seq: 1,
         bbox: [0, 0, 1, 1],
+        duplicate_count: 2,
       });
+  });
+
+  it("accepts a 202 place acceptance body", () => {
+    ok(placeAcceptedSchema, {
+      id: "a",
+      state: "pending",
+      x: 1,
+      y: 2,
+      w: 3,
+      h: 4,
+      rot: 0,
+    });
+  });
+
+  it("accepts every upload status shape", () => {
+    ok(uploadStatusSchema, { state: "pending" });
+    ok(uploadStatusSchema, {
+      state: "placed",
+      id: "a",
+      seq: 5,
+      bbox: [1, 2, 3, 4],
+    });
+    ok(uploadStatusSchema, {
+      state: "failed",
+      attempts: 5,
+      permanent: true,
+      error: "decode failed",
+    });
+    rejected(uploadStatusSchema, { state: "done" });
+    rejected(uploadStatusSchema, { state: "placed", id: "a" });
   });
 
   it("accepts a remove event with a non-empty id", () => {
@@ -135,25 +183,44 @@ describe("world events", () => {
 
   it("strips additive unknown fields", () => {
     const parsed = worldEventSchema.safeParse({
-      type: "place",
+      type: "placed",
+      id: "a",
+      job: "b",
       seq: 1,
       bbox: [1, 2, 3, 4],
+      duplicate_count: 0,
       future_field: "x",
     });
     expect(parsed.success).toBe(true);
     if (parsed.success)
       expect(parsed.data).toEqual({
-        type: "place",
+        type: "placed",
+        id: "a",
+        job: "b",
         seq: 1,
         bbox: [1, 2, 3, 4],
+        duplicate_count: 0,
       });
   });
 
   it("rejects malformed events", () => {
     rejected(worldEventSchema, {});
     rejected(worldEventSchema, { type: "unknown", bbox: [1, 2, 3, 4] });
-    rejected(worldEventSchema, { type: "place", seq: "x", bbox: [1, 2, 3, 4] });
-    rejected(worldEventSchema, { type: "place", seq: 1, bbox: [1, 2] });
+    rejected(
+      worldEventSchema,
+      {
+        type: "placed",
+        id: "a",
+        job: "b",
+        seq: "x",
+        bbox: [1, 2, 3, 4],
+        duplicate_count: 0,
+      },
+    );
+    rejected(
+      worldEventSchema,
+      { type: "placed", id: "a", job: "b", seq: 1, bbox: [1, 2], duplicate_count: 0 },
+    );
     rejected(worldEventSchema, { type: "remove", id: "", bbox: [1, 2, 3, 4] });
     rejected(worldEventSchema, { type: "remove", id: 7, bbox: [1, 2, 3, 4] });
   });

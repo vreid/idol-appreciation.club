@@ -59,6 +59,7 @@ function makeClient(page: Feed = PAGE): ApiClient {
     ),
     pendingAccounts: vi.fn(),
     approveAccount: vi.fn(),
+    uploadStatus: vi.fn(() => Promise.resolve(null)),
   };
 }
 

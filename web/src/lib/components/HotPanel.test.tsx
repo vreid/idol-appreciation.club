@@ -37,6 +37,7 @@ function makeClient(page: Hot = PAGE): ApiClient {
     hot: vi.fn(() => Promise.resolve(page)),
     pendingAccounts: vi.fn(),
     approveAccount: vi.fn(),
+    uploadStatus: vi.fn(() => Promise.resolve(null)),
   };
 }
 

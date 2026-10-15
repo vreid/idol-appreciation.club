@@ -50,7 +50,10 @@ export async function onMapClick(
   }
   if (store.placeMode === "choose") {
     const attempt = await store.confirmSpot(x, y);
-    if (attempt.ok && map.current !== null) {
+    // A pending (202-accepted) placement is not recorded yet: the
+    // pending marker carries the visual, the pulse/confetti waits for
+    // the placed event's resolution hook.
+    if (attempt.ok && attempt.pending !== true && map.current !== null) {
       const p = attempt.placement;
       map.current.pulse({ x: p.x, y: p.y, w: p.w, h: p.h });
       const at = map.current.worldToScreenPoint(p.x + p.w / 2, p.y + p.h / 2);

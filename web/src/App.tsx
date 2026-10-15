@@ -7,6 +7,8 @@ import {
   releaseSelection,
   type MapHandle,
 } from "./lib/appActions";
+import { burstConfetti } from "./lib/confetti";
+import type { PlacedEvent } from "@contract";
 import { createAppStore } from "./lib/state";
 import { SseClient, eventTouchesCenter } from "./lib/sse";
 import { createVersionedReadPath, mountWorldMap } from "./lib/versionedTiles";
@@ -48,6 +50,27 @@ function wireGhostSync(map: MapHandle, store: AppStore): void {
       controller.setGhost(null);
       controller.setPlacing(false);
     }
+  });
+}
+
+/** Keeps the map's pending-upload markers (the user's own preview for
+ * 202-accepted placements) in sync with the store. */
+function wirePendingSync(map: MapHandle, store: AppStore): void {
+  createEffect(() => {
+    const pending = store.pendingUploads;
+    const controller = map.current;
+    if (controller === null) return;
+    controller.setPendingMarkers(
+      pending.map((p) => ({
+        id: p.jobId,
+        x: p.x,
+        y: p.y,
+        w: p.w,
+        h: p.h,
+        rot: p.rot,
+        url: p.previewUrl,
+      })),
+    );
   });
 }
 
@@ -108,6 +131,17 @@ function sseConfig(
     onEvent: (event) => {
       // The versions branch lives in createVersionedReadPath.
       if (event.type === "versions") return;
+      // The place flow awaits these by job id; a placed event from
+      // another client still refreshes the tiles below.
+      if (event.type === "placed" || event.type === "place_failed") {
+        store.resolvePlacementEvent(event);
+        if (event.type === "place_failed") return;
+        const [fx, fy, fw, fh] = event.bbox;
+        const fbbox: BBox = { x: fx, y: fy, w: fw, h: fh };
+        map.current?.queueTileRefresh(fbbox);
+        if (eventTouchesCenter(event.bbox)) void store.refreshCenter();
+        return;
+      }
       const [x, y, w, h] = event.bbox;
       const bbox: BBox = { x, y, w, h };
       // The selected stratum vanished under someone else.
@@ -190,11 +224,28 @@ function WorldPanels(props: {
   );
 }
 
+/** A pending upload resolved: pulse (and celebrate) at the recorded
+ * AABB — the tiles themselves refresh through the versions events. */
+function wireUploadResolved(
+  map: MapHandle,
+): (jobId: string, placed: PlacedEvent | null) => void {
+  return (_jobId, placed) => {
+    const controller = map.current;
+    if (controller === null || placed === null) return;
+    const [x, y, w, h] = placed.bbox;
+    controller.pulse({ x, y, w, h });
+    const at = controller.worldToScreenPoint(x + w / 2, y + h / 2);
+    if (map.el !== undefined) burstConfetti(map.el, at.x, at.y);
+  };
+}
+
 export default function App() {
   const client = createApiClient();
-  const store = createAppStore(client);
-
   const map: MapHandle = { current: null, el: undefined };
+  const store = createAppStore(client, {
+    onUploadResolved: wireUploadResolved(map),
+  });
+
   let fileInput: HTMLInputElement | undefined;
   const [showAbout, setShowAbout] = createSignal(false);
   const [showFeed, setShowFeed] = createSignal(false);
@@ -209,6 +260,7 @@ export default function App() {
 
   // Keep the ghost image in sync with the placing flow.
   wireGhostSync(map, store);
+  wirePendingSync(map, store);
   wireSelectionSync(map, store);
   const detailActions = placeDetailActions(map, store);
 

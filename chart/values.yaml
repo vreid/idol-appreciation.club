@@ -83,14 +83,18 @@ web:
     whenUnsatisfiable: ScheduleAnyway
   # Static files + proxy + the in-memory tile cache: the cache is the
   # big term (~4000 tiles x ~60 KB worst case, chart/caddy/Caddyfile
-  # otter size); the rest is per-stream buffers.
+  # otter size); the rest is per-stream buffers. Sized from loadtest
+  # #163 phase 1 (2026-10-15): 500m/512Mi OOMKilled 5x/pod under a
+  # 500-connection TLS reconnect churn and starved the accept loop
+  # (readiness timeouts) — TLS handshakes are CPU-bound and the cache
+  # is resident, so request what the cache holds and limit at 2x.
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 500m
+      cpu: 250m
       memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
 
 # Object storage for the edge's certificates and ACME state (CertMagic
 # storage module; chart/caddy/Caddyfile `storage s3` block). Endpoint

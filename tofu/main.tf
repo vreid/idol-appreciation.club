@@ -124,6 +124,15 @@ resource "upcloud_managed_object_storage_user_policy" "app" {
 # Address is "s3" (was "app"): renaming forces a one-time key rotation after
 # the upstream key secret was regenerated out-of-band on 2026-10-13 while the
 # stored secret stayed stale. Do not rename back; that would rotate again.
+# RETIRED 2026-10-15 (SEV follow-up): the state-tracked access key no
+# longer exists upstream, so every apply planned a reissue — and the
+# create 400s ERROR_INVALID_REQUEST with the quota already empty
+# (UpCloud ticket, correlation_id=01M4ZPQ9YWM01GCRKM42YN9DKM). The LIVE
+# key held in the app-env secret works (caddy re-issued certs through
+# the app bucket post-restore), so tofu stops tracking keys until the
+# create-shape question is answered upstream. Re-add this resource (and
+# the two secret outputs) with the ticket's answer; deploy's
+# verify-or-rotate owns the live key meanwhile.
 resource "upcloud_managed_object_storage_user_access_key" "s3" {
   service_uuid = upcloud_managed_object_storage.this.id
   username     = upcloud_managed_object_storage_user.app.username

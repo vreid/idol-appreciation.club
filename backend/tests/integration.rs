@@ -1509,6 +1509,7 @@ async fn two_instance_composite_no_lost_update() {
     let mk_cfg = || Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         database_url: db_url.clone(),
+        database_ro_url: None,
         database_pool_max: 30,
         s3_endpoint: Some(format!("file://{}", store_dir.display())),
         s3_bucket: "test-bucket".to_string(),
@@ -1605,6 +1606,7 @@ async fn advisory_lock_opposite_orders_no_deadlock() {
     let mk_cfg = || Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         database_url: db_url.clone(),
+        database_ro_url: None,
         database_pool_max: 30,
         s3_endpoint: Some(format!("file://{}", store_dir.display())),
         s3_bucket: "test-bucket".to_string(),
@@ -1758,6 +1760,7 @@ async fn read_sse_until(addr: std::net::SocketAddr, needle: &str) -> Option<Stri
 /// exposition must surface all five series.
 #[tokio::test(flavor = "multi_thread")]
 async fn import_metrics_move_on_batch() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "metrics-importer").await; // first account = admin
 
@@ -1855,6 +1858,7 @@ async fn import_metrics_move_on_batch() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_batch_chunk_grouping_and_sse() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "importer").await; // first account = admin
 
@@ -1976,6 +1980,7 @@ async fn import_batch_chunk_grouping_and_sse() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_rotated_corner_entry_and_prewarm() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "corner").await;
     let maps = preupload(&server, &admin, &[png(32, 32)]).await;
@@ -2007,6 +2012,7 @@ async fn import_rotated_corner_entry_and_prewarm() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_resolves_derivative_from_source_sha() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "resolver").await;
     let image = png(48, 48);
@@ -2034,6 +2040,7 @@ async fn import_resolves_derivative_from_source_sha() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn import_rejects_bad_manifests() {
+    let _serial = metrics_serial_lock().await;
     let server = start_server(300, 1, 10 * 1024 * 1024).await;
     let admin = register(&server, "gatekeeper").await;
     let other = register(&server, "pleb").await;
@@ -2477,4 +2484,211 @@ async fn hot_regions_window_and_bounded_response() {
     assert_eq!(body["total"], 2);
     let cells = body["cells"].as_array().unwrap();
     assert_eq!(cells[0]["count"], 1);
+}
+
+// Versioned tile read path (#188 contract): ?v= cache-control table,
+// GET /api/versions bbox query, SSE versions events.
+#[tokio::test]
+async fn versioned_tile_read_path() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let c1 = register(&server, "versioner1").await;
+    let c2 = register(&server, "versioner2").await; // cooldown is per-account
+    let x = 1 << 20;
+    let tile20 = format!("/api/tiles/20/{}/{}.webp", x / 256, x / 256);
+
+    // Unrendered tile: version 0 = "never rendered"; any v>0 is from the
+    // future ⇒ no-store; v=0 and absent v keep today's max-age=1 + SWR.
+    let empty = request(&server, "GET", &format!("{tile20}?v=5"), &[], vec![]).await;
+    assert_eq!(empty.status, 200);
+    assert_eq!(empty.headers["cache-control"], "no-store");
+    let absent = request(&server, "GET", &format!("{tile20}?v=0"), &[], vec![]).await;
+    assert_eq!(
+        absent.headers["cache-control"],
+        "public, max-age=1, stale-while-revalidate=30"
+    );
+
+    // Place at (x, x): the tile renders inline on the next GET; the
+    // stored seq is the tile's version.
+    assert_eq!(
+        place(&server, &c1, &png(64, 64), x, x, 64).await.status,
+        201
+    );
+    assert_eq!(
+        place(&server, &c2, &png(48, 48), x + 16, x + 16, 48)
+            .await
+            .status,
+        201
+    );
+    let fresh = request(&server, "GET", &tile20, &[], vec![]).await;
+    assert_eq!(fresh.status, 200);
+    let version: i64 = fresh.headers["etag"].trim_matches('"').parse().unwrap();
+    // Two placements ⇒ version ≥ 2, so `version - 1` stays a valid
+    // client-held version (≥ 1 per the contract; 0 = never held).
+    assert!(version >= 2);
+
+    // v == current ⇒ immutable pin.
+    let pin = request(
+        &server,
+        "GET",
+        &format!("{tile20}?v={version}"),
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(pin.status, 200);
+    assert_eq!(
+        pin.headers["cache-control"],
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(pin.headers["etag"], format!("\"{version}\""));
+
+    // v older than current ⇒ current bytes, one-minute grace.
+    let older = request(
+        &server,
+        "GET",
+        &format!("{tile20}?v={}", version - 1),
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(older.status, 200);
+    assert_eq!(older.headers["cache-control"], "public, max-age=60");
+    assert_eq!(older.body, fresh.body, "older v still gets current bytes");
+
+    // No v ⇒ today's SWR behavior.
+    let plain = request(&server, "GET", &tile20, &[], vec![]).await;
+    assert_eq!(
+        plain.headers["cache-control"],
+        "public, max-age=1, stale-while-revalidate=30"
+    );
+}
+
+#[tokio::test]
+async fn versions_bbox_query() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let c1 = register(&server, "bboxer").await;
+    let x = 1 << 20;
+
+    // Rendered-only contract: no GET ⇒ no stored tile ⇒ empty list.
+    let pre = request(
+        &server,
+        "GET",
+        &format!("/api/versions?bbox={x},{x},4096,4096&z=20"),
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(pre.status, 200);
+    assert_eq!(pre.json()["tiles"], serde_json::json!([]));
+
+    assert_eq!(
+        place(&server, &c1, &png(64, 64), x, x, 64).await.status,
+        201
+    );
+    let tile20 = format!("/api/tiles/20/{}/{}.webp", x / 256, x / 256);
+    let rendered = request(&server, "GET", &tile20, &[], vec![]).await;
+    let version: i64 = rendered.headers["etag"].trim_matches('"').parse().unwrap();
+
+    let got = request(
+        &server,
+        "GET",
+        &format!("/api/versions?bbox={x},{x},4096,4096&z=20"),
+        &[],
+        vec![],
+    )
+    .await;
+    assert_eq!(got.status, 200);
+    assert_eq!(
+        got.json()["tiles"],
+        serde_json::json!([{
+            "key": format!("20/{}/{}", x / 256, x / 256),
+            "version": version,
+        }])
+    );
+
+    // Bad shapes are 400.
+    assert_eq!(
+        request(&server, "GET", "/api/versions?bbox=x,y&z=1", &[], vec![])
+            .await
+            .status,
+        400
+    );
+    assert_eq!(
+        request(
+            &server,
+            "GET",
+            "/api/versions?bbox=1,2,3,4&z=99",
+            &[],
+            vec![]
+        )
+        .await
+        .status,
+        400
+    );
+}
+
+// SSE: a subscriber scoped to the placed tile's area receives one
+// coalesced `versions` event after the tile re-renders; unscoped
+// subscribers (old clients) see place events exactly as before.
+#[tokio::test]
+async fn sse_versions_events_scoped_to_area() {
+    let server = start_server(300, 1, 10 * 1024 * 1024).await;
+    let c1 = register(&server, "sse-versioner").await;
+    let x = 1 << 20;
+
+    let stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+    stream.set_nodelay(true).unwrap();
+    let (mut reader, mut writer) = stream.into_split();
+    writer
+        .write_all(
+            format!(
+                "GET /api/events?bbox={x},{x},4096,4096&z=20 HTTP/1.1\r\n\
+                 Host: test\r\nAccept: text/event-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+
+    // Give the subscriber a beat to attach, then place + render the tile.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        place(&server, &c1, &png(64, 64), x, x, 64).await.status,
+        201
+    );
+    let tile20 = format!("/api/tiles/20/{}/{}.webp", x / 256, x / 256);
+    let version: i64 = request(&server, "GET", &tile20, &[], vec![]).await.headers["etag"]
+        .trim_matches('"')
+        .parse()
+        .unwrap();
+
+    // The versions event rides the 1s coalescer after the render's NOTIFY.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(6);
+    let mut buf = vec![0u8; 16384];
+    let mut seen_versions = false;
+    let mut saw_pass_through = false;
+    while tokio::time::Instant::now() < deadline && !(seen_versions && saw_pass_through) {
+        let n = tokio::time::timeout(std::time::Duration::from_secs(2), reader.read(&mut buf))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or(0);
+        if n == 0 {
+            continue;
+        }
+        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+        if chunk.contains("\"type\":\"versions\"")
+            && chunk.contains(&format!("\"version\":{version}"))
+        {
+            assert!(
+                chunk.contains(&format!("\"key\":\"20/{}/{}\"", x / 256, x / 256)),
+                "versions event must name the changed tile: {chunk}"
+            );
+            seen_versions = true;
+        }
+        if chunk.contains("\"type\":\"place\"") {
+            saw_pass_through = true;
+        }
+    }
+    assert!(seen_versions, "no versions event for the subscribed area");
 }

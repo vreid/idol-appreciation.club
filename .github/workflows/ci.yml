@@ -176,9 +176,33 @@ jobs:
     needs: [changed, tier1]
     if: needs.changed.outputs.backend == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The test leg now actually runs the container-based suites
+    # (integration + tile_queue against sibling docker); the dev-profile
+    # compile of the test binaries dominates the budget.
+    timeout-minutes: 40
+    # Postgres service for the integration harness (the pinned image has
+    # no docker socket for testcontainers; the harness skips its local
+    # container when DATABASE_URL is preset). S3 stays file:// in-image.
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       RUNNER: docker
+      # --network host: 127.0.0.1 inside the test container reaches the
+      # service's published port on the runner.
+      RUN_FLAGS: '--network host -e DATABASE_URL'
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

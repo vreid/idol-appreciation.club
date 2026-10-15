@@ -57,10 +57,10 @@ async fn s3_live_put_get_roundtrip() {
     println!("put_if_absent ok: {}", k2);
 
     // Cleanup so the live bucket stays clean.
-    object_store::ObjectStore::delete(&st, &store::key(&key))
+    object_store::ObjectStoreExt::delete(&st, &store::key(&key))
         .await
         .expect("del");
-    object_store::ObjectStore::delete(&st, &store::key(&k2))
+    object_store::ObjectStoreExt::delete(&st, &store::key(&k2))
         .await
         .expect("del2");
     println!("cleanup ok");

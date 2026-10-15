@@ -23,6 +23,7 @@ pub mod statics;
 pub mod store;
 pub mod telemetry;
 pub mod tiles;
+pub mod versions;
 pub mod world;
 
 use crate::state::{AppState, KeyLocks};
@@ -40,6 +41,18 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
     sqlx::migrate!().run(&pool).await?;
     let store = store::from_config(&cfg)?;
     let (events_tx, _) = tokio::sync::broadcast::channel(1024);
+    // Read-replica pool for the versioned read path (small: point lookups
+    // only). Absent DATABASE_RO_URL ⇒ the main pool serves them.
+    let pool_ro = match &cfg.database_ro_url {
+        Some(url) => Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(3)
+                .acquire_timeout(std::time::Duration::from_secs(10))
+                .connect(url)
+                .await?,
+        ),
+        None => None,
+    };
 
     let render_queue = tiles::RenderQueue::new(pool.clone(), cfg.tile_render_queue_cap);
     // Two concurrent full-pyramid renders max: each is minutes of work;
@@ -49,6 +62,7 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
     let state = Arc::new(AppState {
         tile_cache: tiles::TileCache::new(cfg.tile_cache_entries),
         pool,
+        pool_ro,
         store,
         chunk_locks: KeyLocks::new(),
         events_tx: events_tx.clone(),

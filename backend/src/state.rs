@@ -56,6 +56,9 @@ impl KeyLocks {
 pub struct AppState {
     pub cfg: Config,
     pub pool: sqlx::PgPool,
+    /// Optional read-replica pool (DATABASE_RO_URL): versioned tile-read
+    /// lookups prefer it when present. None ⇒ `pool` serves everything.
+    pub pool_ro: Option<sqlx::PgPool>,
     pub store: Store,
     pub chunk_locks: KeyLocks,
     /// NOTIFY "events" payloads fan out to SSE subscribers here.

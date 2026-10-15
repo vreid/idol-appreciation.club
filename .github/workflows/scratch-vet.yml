@@ -234,8 +234,8 @@ jobs:
           kubectl -n idol rollout status deploy/backend --timeout=600s
           kubectl -n idol rollout status deploy/web --timeout=600s
           echo "## database quorum" | tee -a "$GITHUB_STEP_SUMMARY"
-          kubectl -n idol get cnpg -o json | jq -r '.items[] | "\(.metadata.name): instances=\(.status.instances // "?") ready=\(.status.readyInstances // "?") phase=\(.status.phase // "?")"' | tee -a "$GITHUB_STEP_SUMMARY"
-          ready="$(kubectl -n idol get cnpg idol-db -o jsonpath='{.status.readyInstances}')"
+          kubectl -n idol get clusters.postgresql.cnpg.io -o json | jq -r '.items[] | "\(.metadata.name): instances=\(.status.instances // "?") ready=\(.status.readyInstances // "?") phase=\(.status.phase // "?")"' | tee -a "$GITHUB_STEP_SUMMARY"
+          ready="$(kubectl -n idol get clusters.postgresql.cnpg.io idol-db -o jsonpath='{.status.readyInstances}')"
           [ "$ready" = "3" ]
           echo "## api health" | tee -a "$GITHUB_STEP_SUMMARY"
           ok=0

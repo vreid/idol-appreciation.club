@@ -420,6 +420,47 @@ cluster uuid on every deploy, so flipping is a values-only change. Flip notes:
 at most €20/mo (2 nodes) over today's single node; HPA replicas cost nothing
 extra until a second node is actually needed.
 
+### Worker pool + KEDA (phase 5 scaffolding, staged)
+
+The tainted worker pool for the libvips render/ingest workers
+(docs/scaling-architecture.md "Cluster layout") is declared in tofu and
+scaffolded in the chart; neither half flips anything on its own.
+
+- **Node group** — `upcloud_kubernetes_node_group.workers` (`tofu/`,
+  `var.worker_*`): `STARTER-1xCPU-2GB` (≈ EUR 5/mo per node, hourly-billed),
+  tainted `dedicated=worker:NoSchedule`, UpCloud label `pool=worker`.
+  **Scale-to-zero is the floor**: the 1.3 API documents node-group `count` as
+  `>= 0` (verified against "Create node group", 2026-10-15), so
+  `var.worker_node_count = 0` is legal and the pool vanishes when the queue
+  drains. As with `default`, the group carries
+  `lifecycle { ignore_changes = [node_count] }` — the Cluster Autoscaler owns
+  the live count, tofu only records the intended floor.
+- **Cluster Autoscaler bounds** — `chart/` values gained a second `--nodes`
+  flag: `workerMinSize:0 : workerMaxSize:4 : workers` next to the CNPG-floored
+  `3:4:default`. Keep
+  `worker.autoscaling.maxReplicas <= clusterAutoscaler.workerMaxSize`: past the
+  bound, pending worker pods can never schedule.
+- **KEDA** — installed ONCE out-of-band by `task keda:operator:install` (NOT
+  chart-managed, same bootstrap/runtime split as the CNPG operator): vendored
+  manifest `chart/keda/keda-operator-2.21.0.yaml`, upstream v2.21.0 with the
+  three controller images rewritten to their registry index digests,
+  kubeconform-strict + provenance-checked by the task before it applies.
+- **ScaledObject** — `chart/templates/worker-scaledobject.yaml`, gated by
+  `worker.autoscaling.enabled` (default `false`). PostgreSQL scaler, one replica
+  per claimable job:
+  `SELECT count(*) FROM render_jobs WHERE state = 'pending' AND not_before <= now()`
+  (PR #190, migration 0008). Render with `helm template --show-only`, validate
+  server-side and apply via `task keda:scaledobject:install`.
+- **The Phase 4 contract** (values.yaml `worker.*`): the worker Deployment must
+  be named `worker.deploymentName` (default `worker`), carry `DATABASE_URL`
+  pointed at `idol-db-rw` (job claims are primary-only; KEDA reads that env var
+  from the scale target's pod spec), tolerate `dedicated=worker:NoSchedule`, and
+  request ~800m / 1.2Gi so exactly one libvips pod fits per 2 GB node.
+- **Flip order**: `task keda:operator:install` (harmless early) → Phase 4 lands
+  the worker Deployment + render_jobs → set `worker.autoscaling.enabled: true` →
+  deploy; enable the Cluster Autoscaler (values) when the first scale-up should
+  grow the pool.
+
 ## Readiness markers: removed
 
 The `backend/.ci-ready` / `web/.ci-ready` trust-based bootstrap gate and the

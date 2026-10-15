@@ -942,6 +942,52 @@ tasks:
           -target=upcloud_managed_database_user.app \
           -target=upcloud_managed_database_postgresql.this
 
+  # ---------------- KEDA (phase 5 worker pool; staged) ----------------
+  # Run order: keda:operator:install (once, any time) ->
+  # worker.autoscaling.enabled=true in values (only after Phase 4's
+  # worker Deployment + the render_jobs table exist) -> deploy.
+
+  keda:operator:install:
+    desc: apply the digest-pinned KEDA manifest and kubeconform it
+    cmds:
+      - |
+        set -o pipefail; set -e
+        # Offline schema gate on the pinned artifact. CRDs have no
+        # upstream json-schema (kubeconform can only skip them); their
+        # structural validation happens at apply time on the API server.
+        # Everything else (Deployment/RBAC/Webhook) is strict-validated.
+        kubeconform -strict -summary -ignore-missing-schemas \
+          -kubernetes-version 1.32.0 chart/keda/keda-operator-2.21.0.yaml
+        # Provenance guard: the committed manifest must equal upstream
+        # v2.21.0 with ONLY the three image-digest rewrites applied,
+        # below the fixed 18-line provenance header.
+        got="$(curl -sL https://github.com/kedacore/keda/releases/download/v2.21.0/keda-2.21.0.yaml \
+          | sed -e 's#ghcr.io/kedacore/keda:2\.21\.0#ghcr.io/kedacore/keda@sha256:81fe6547ce8d1cc29273f887b76507e9b853e5bc1f875ec23fe60061a38ed809#' -e 's#ghcr.io/kedacore/keda-metrics-apiserver:2\.21\.0#ghcr.io/kedacore/keda-metrics-apiserver@sha256:255375037fe592732eeb554743aae360c2da88cf0b9b1258d0a987ef885f0881#' -e 's#ghcr.io/kedacore/keda-admission-webhooks:2\.21\.0#ghcr.io/kedacore/keda-admission-webhooks@sha256:e1969628cca6123e32eea13c47c75817091af2657fa68d9d0d58a8620d1b75b1#' \
+          | sha256sum | cut -d' ' -f1)"
+        want="$(tail -n +19 chart/keda/keda-operator-2.21.0.yaml | sha256sum | cut -d' ' -f1)"
+        test "$got" = "$want" \
+          || { echo "pinned KEDA manifest drifted from upstream v2.21.0 + digest rewrites" >&2; exit 1; }
+        kubectl apply --server-side --force-conflicts --field-manager=keda-operator -f chart/keda/keda-operator-2.21.0.yaml
+        kubectl -n keda rollout status deploy/keda-operator --timeout=180s
+        kubectl -n keda rollout status deploy/keda-metrics-apiserver --timeout=180s
+
+  keda:scaledobject:install:
+    desc: server-dry-run the rendered ScaledObject, then apply it
+    cmds:
+      - |
+        set -o pipefail; set -e
+        # The ScaledObject is a CRD instance: no offline kubeconform
+        # schema, so validation is server-side, exactly like the CNPG
+        # Cluster (cnpg:cluster:install). Catches a stale CRD or a
+        # missing scale target before the real apply.
+        helm template chart --show-only templates/worker-scaledobject.yaml > /tmp/worker-scaledobject.yaml
+        test -s /tmp/worker-scaledobject.yaml \
+          || { echo "worker-scaledobject.yaml rendered empty; is worker.autoscaling.enabled set?" >&2; exit 1; }
+        kubectl apply --dry-run=server -f /tmp/worker-scaledobject.yaml
+        kubectl apply -f /tmp/worker-scaledobject.yaml
+        # Name mirrors values.yaml worker.deploymentName (the contract).
+        kubectl -n idol get scaledobject worker -o wide
+
   # ---------------- e2e (e2e.yml) ----------------
 
   web:e2e:

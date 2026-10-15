@@ -87,6 +87,43 @@ resource "upcloud_kubernetes_node_group" "this" {
   utility_network_access = true
 }
 
+# Tainted worker pool for the libvips render/ingest workers
+# (docs/scaling-architecture.md, "Cluster layout"): 1 vCPU / 2 GB nodes,
+# one libvips worker pod per node, scaled by the in-cluster Cluster
+# Autoscaler from KEDA's queue-depth signal — never by tofu.
+resource "upcloud_kubernetes_node_group" "workers" {
+  cluster = upcloud_kubernetes_cluster.this.id
+  name    = var.worker_node_group_name
+  plan    = var.worker_node_plan
+  # Scale-to-zero floor: the UpCloud API documents node-group `count` as
+  # ">= 0" (1.3 API, "Create node group"), so the pool can shrink to
+  # nothing when the render queue is empty. Like the default group, the
+  # Cluster Autoscaler owns the live count — tofu records the intended
+  # floor and ignores drift (see the `this` group above).
+  node_count = var.worker_node_count
+
+  lifecycle {
+    ignore_changes = [node_count]
+  }
+
+  # Pool label survives on the UpCloud node-group resource; the k8s-side
+  # scheduling gate is the taint below (pods must tolerate
+  # dedicated=worker:NoSchedule).
+  labels = {
+    project    = "idol-appreciation.club"
+    managed-by = "tofu"
+    pool       = "worker"
+  }
+
+  taint {
+    key    = "dedicated"
+    value  = "worker"
+    effect = "NoSchedule"
+  }
+
+  utility_network_access = true
+}
+
 # ----------------------------------------------------------------- postgres
 # RETIRED (2026-10-14 CNPG migration): the managed PostgreSQL service is
 # replaced by an in-cluster CloudNativePG Cluster (chart/, cnpg.* values;

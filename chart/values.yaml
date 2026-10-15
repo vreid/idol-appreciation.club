@@ -87,15 +87,55 @@ clusterAutoscaler:
   # Cluster uuid; injected by deploy.yml (--set-string). Unused while
   # enabled is false.
   clusterId: ""
-  # worker node group managed by tofu (tofu/ var.node_group_name).
+  # Two bounds, one --nodes flag each (docs/scaling-architecture.md
+  # "Cluster layout"): the baseline `default` group is floored at 3 by
+  # the CNPG anti-affinity (one instance per node), the tainted worker
+  # pool scales 0..4 with the render queue.
   nodeGroup: default
   minSize: 3
   maxSize: 4
+  workerNodeGroup: workers
+  workerMinSize: 0
+  workerMaxSize: 4
   scaleDownEnabled: true
   # Digest pins tag v1.29.5 (verified anonymously pullable from GHCR,
   # 2026-10-13); a mutable tag is not acceptable for a component that
   # adds and removes nodes.
   image: ghcr.io/upcloudltd/autoscaler@sha256:54aa2662c57e58961080436bb27e70c3a9670ec582001ffd36a6573649de35c5
+
+# Render/ingest worker pool — the Phase 4 <-> Phase 5 contract.
+#
+# Phase 4 owns the worker Deployment; Phase 5 owns the pool it runs on
+# (tofu/ var.worker_*: 1 vCPU / 2 GiB nodes, tainted
+# dedicated=worker:NoSchedule, label pool=worker) and the autoscaling
+# scaffolding. CONTRACT the Phase 4 worker Deployment must satisfy for
+# the ScaledObject below to drive it:
+#   - metadata.name == worker.deploymentName (default "worker")
+#   - env DATABASE_URL, pointing at idol-db-rw (job claims are primary-
+#     only; KEDA reads this var from the scale target's pod spec)
+#   - toleration for dedicated=worker:NoSchedule
+#   - requests ~800m CPU / 1.2Gi memory — one libvips pod per node
+#     (docs/scaling-architecture.md "Cluster layout")
+# Flip worker.autoscaling.enabled only after KEDA is installed
+# (`task keda:operator:install`) and the render_jobs table + worker
+# Deployment exist (Phase 3/4).
+worker:
+  deploymentName: worker
+  autoscaling:
+    enabled: false
+    # KEDA polls Postgres this often (queue depth is cheap to read).
+    pollingInterval: 5
+    # Keep finished-job nodes billing only as long as needed; idle
+    # nodes are removed by the Cluster Autoscaler afterwards.
+    cooldownPeriod: 300
+    minReplicas: 0
+    # Never above clusterAutoscaler.workerMaxSize: past that, pods stay
+    # Pending forever (no node can join).
+    maxReplicas: 4
+    # One replica per pending render job — libvips pipelines are
+    # single-threaded, so a pod adds no throughput while one job runs.
+    targetPendingJobs: 1
+    activationTargetPendingJobs: 1
 
 # CloudNativePG (migration off the managed 1-CPU Postgres; staged).
 # Operator install is NOT chart-managed: the pinned upstream manifest

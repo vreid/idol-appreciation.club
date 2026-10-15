@@ -90,6 +90,53 @@ jobs:
             "https://api.upcloud.com/1.3/kubernetes/$uuid/node-groups" \
             | jq '{groups: [(if type == "array" then . else .node_groups end)[]? | {name, state, count, planned_count, node_states: [.nodes[]? | {name, state}]}]}' \
             | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: clusterip blackhole repro + datapath inventory
+        env:
+          UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          uuid="$(cat /tmp/cluster-uuid 2>/dev/null || true)"
+          if [ -z "$uuid" ]; then
+            uuid="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+              https://api.upcloud.com/1.3/kubernetes \
+              | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
+          fi
+          curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/kubernetes/${uuid}/kubeconfig" \
+            | jq -r '.kubeconfig' > /tmp/kubeconfig
+          chmod 600 /tmp/kubeconfig
+          export KUBECONFIG=/tmp/kubeconfig
+          echo "## datapath inventory (report only)" | tee -a "$GITHUB_STEP_SUMMARY"
+          kubectl get ds -A -o wide 2>/dev/null | grep -iE "cilium|router|proxy|calico|flannel|net" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          # stale endpoint check: slice addresses vs live Running pod IPs
+          for svc in backend idol-db-rw; do
+            kubectl -n idol get pods -o json 2>/dev/null \
+              | jq -r '.items[] | select(.status.phase == "Running") | .status.podIP' | sort -u > /tmp/live-ips
+            kubectl -n idol get endpointslices -l kubernetes.io/service-name=$svc -o json 2>/dev/null \
+              | jq -r '.items[].endpoints[]?.addresses[]?' | sort -u > /tmp/slice-ips
+            comm -13 /tmp/live-ips /tmp/slice-ips > /tmp/stale-ips || true
+            stale="$(wc -l < /tmp/stale-ips)"
+            echo "## $svc: slice=$(wc -l < /tmp/slice-ips) live=$(wc -l < /tmp/live-ips) stale=$stale" | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$stale" != "0" ]; then
+              echo "stale IPs:" | tee -a "$GITHUB_STEP_SUMMARY"
+              tee -a "$GITHUB_STEP_SUMMARY" < /tmp/stale-ips
+              # SAFE remediation: the endpointSlice controller recreates
+              # the slice from live pods within seconds.
+              kubectl -n idol delete endpointslices -l kubernetes.io/service-name=$svc --ignore-not-found
+              echo "deleted stale $svc endpointslice(s); controller recreates from live pods"
+            fi
+          done
+          # fresh-pod repro against ClusterIP after any cleanup
+          kubectl -n idol delete pod cip-repro --ignore-not-found >/dev/null
+          kubectl -n idol run cip-repro --image=curlimages/curl:8.16.0 --restart=Never \
+            --command -- sleep 60 >/dev/null
+          kubectl -n idol wait --for=condition=ready pod/cip-repro --timeout=120s
+          kubectl -n idol exec cip-repro -- \
+            curl -s -o /dev/null -m 8 \
+            -w "fresh pod -> backend ClusterIP: %{http_code} (%{time_total}s)\n" \
+            http://backend.idol.svc.cluster.local/api/health | tee -a "$GITHUB_STEP_SUMMARY" \
+            || echo "clusterip repro: request FAILED (blackhole reproduced)" | tee -a "$GITHUB_STEP_SUMMARY"
+          kubectl -n idol delete pod cip-repro --ignore-not-found >/dev/null
       - name: kubeconfig + in-cluster probes
         env:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}

@@ -26,17 +26,6 @@ output "node_count" {
   value       = upcloud_kubernetes_node_group.this.node_count
 }
 
-output "worker_node_plan" {
-  description = "Worker-pool node plan (1 vCPU / 2 GiB render pool)."
-  value       = upcloud_kubernetes_node_group.workers.plan
-}
-
-output "worker_node_group" {
-  description = "Worker-pool node group name (Cluster Autoscaler --nodes bound)."
-  value       = upcloud_kubernetes_node_group.workers.name
-}
-
-
 output "s3_endpoint" {
   description = "Public S3 endpoint of the object storage service."
   value = format(

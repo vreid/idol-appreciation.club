@@ -70,11 +70,12 @@ web:
   # keeps its own in-memory tile cache; ACME renewal is coordinated
   # through the storage lock (docs/scaling-architecture.md, "Caddy,
   # horizontally").
-  replicas: 2
-  # Keep at least one edge pod through node drains and voluntary
-  # disruptions (descheduler included).
+  replicas: 3
+  # One edge per baseline node through drains and voluntary disruptions
+  # (descheduler included); with 3 replicas this keeps 2 serving during
+  # any single disruption.
   pdb:
-    minAvailable: 1
+    minAvailable: 2
   # Spread edge replicas across nodes; ScheduleAnyway because the
   # baseline also hosts PG + API pods (soft preference, never a block).
   topologySpread:
@@ -84,17 +85,18 @@ web:
   # Static files + proxy + the in-memory tile cache: the cache is the
   # big term (~4000 tiles x ~60 KB worst case, chart/caddy/Caddyfile
   # otter size); the rest is per-stream buffers. Sized from loadtest
-  # #163 phase 1 (2026-10-15): 500m/512Mi OOMKilled 5x/pod under a
-  # 500-connection TLS reconnect churn and starved the accept loop
-  # (readiness timeouts) — TLS handshakes are CPU-bound and the cache
-  # is resident, so request what the cache holds and limit at 2x.
+  # #163 verdict 2 (2026-10-15): 1Gi passed the 500-conn ramp (plateau
+  # 831-855Mi) but the 5k ramp OOM'd both pods by ~1-2k streams — the
+  # round goes HORIZONTAL (3 replicas across the 3 baseline nodes) with
+  # 1.5Gi per edge. CPU request yields to 1C (see the PR math): the
+  # failure mode was memory, the limit keeps 2.5C of burst headroom.
   resources:
     requests:
-      cpu: 250m
-      memory: 512Mi
+      cpu: 1
+      memory: 1.5Gi
     limits:
-      cpu: "1"
-      memory: 1Gi
+      cpu: 2500m
+      memory: 1.5Gi
 
 # Object storage for the edge's certificates and ACME state (CertMagic
 # storage module; chart/caddy/Caddyfile `storage s3` block). Endpoint

@@ -481,17 +481,61 @@ Current edge:
 
 - `web` Service is **type=LoadBalancer** (Essentials plan): port 80 -> Caddy
   8080, port 443 (TCP passthrough) -> Caddy 8443. TCP health checks.
-- `web/Caddyfile` (baked into the web image): automatic Let's Encrypt for
-  `idol-appreciation.club` + www->apex redirect, `route` block so `/api/*`
-  proxies to `backend.idol.svc.cluster.local:8080` BEFORE `try_files` can
-  rewrite it, `flush_interval -1` for SSE, immutable asset caching.
+- `chart/caddy/Caddyfile` (helm-templated into the `caddy-config` ConfigMap —
+  **the chart is the source of truth now**; `web/Caddyfile` only covers
+  stock-caddy local dev and is no longer synced at deploy time): automatic Let's
+  Encrypt for `idol-appreciation.club` + www->apex redirect, `handle` groups so
+  `/api/tiles/*` passes through the cache handler while the rest of `/api/*`
+  proxies untouched with `flush_interval -1` for SSE, immutable asset caching.
+
+### Horizontal edge: 2+ replicas, shared TLS, tile cache (phase 5)
+
+The single-mount TLS volume (`caddy-data` PVC) is gone; certificates and ACME
+state live in object storage via a CertMagic S3 storage module, so the edge runs
+`web.replicas: 2` with a PodDisruptionBudget (`minAvailable: 1`) and topology
+spread across nodes (docs/scaling-architecture.md, "Caddy, horizontally").
+
+- **Custom build** (`caddy/Dockerfile`, `task image:caddy`, digest-pinned in
+  `images.lock.json` like backend/web): Caddy 2.11.7 + xcaddy-pinned
+  `caddyserver/cache-handler` v0.17.0 with the in-memory otter storage plugin
+  (RFC 7234 strict, `default_cache_control no-store` — only responses carrying
+  explicit cache headers are stored, i.e. the versioned tile responses; each
+  replica keeps its own cache) + `darkweak/storages/otter/caddy` v0.0.20.
+- **CertMagic S3 storage** (`caddy/certmagic-s3/`, vendored): upstream
+  `techknowlogick/certmagic-s3` v1.5.0 carries a broken not-found path (its
+  `Stat`/`Load` only match `*types.NoSuchKey`; `HeadObject` 404s surface as
+  `*types.NotFound`, so certmagic can't tell "not stored yet" from "storage
+  error") and logs credentials at INFO. The vendored copy carries the four local
+  fixes a production deployment of the same module needed (not-found reporting,
+  log redaction, reload refresher cleanup, endpoint validation) — see
+  `caddy/certmagic-s3/VENDORED.md`. The lock is S3-native: atomic
+  `If-None-Match: *` creation, heartbeat, staleness via the server's `Date` —
+  one replica renews, the other reads the renewed object. The lock's store
+  requirements (conditional writes honoured) and the missing-key error shape
+  were probed against the live bucket before this design was locked in —
+  receipts in the phase 5 vet run (PR #202). Credentials ride the `AWS_`
+  standard chain from the existing `app-env` secret; endpoint/bucket are
+  helm-injected by deploy.yml from the same API-verified values app-env uses,
+  prefix `caddy-acme/`.
+- **Binary delivery**: the caddy image is an initContainer that copies the
+  custom binary into an emptyDir; the web image (static assets) execs it.
+  `web/Dockerfile` and its pipeline are untouched; a module bump rolls only the
+  initContainer digest.
+- **ACME boot note**: the first horizontal rollout starts from an empty storage
+  prefix — both replicas coordinate through the shared lock and one fresh
+  certificate is issued (1 of the 5/week Let's Encrypt duplicate budget). The
+  old PVC cert is unrecoverable by design; the rollback path is reverting the
+  chart (replicas 1 + stock binary) and re-running ACME, which the same budget
+  covers.
 - ingress-nginx and cert-manager are **not installed** by deploy.yml anymore;
   `deploy/20-ingress.yaml` and `deploy/30-issuer.yaml` are dead files kept only
-  for history.
+  for history (the issuer's nginx solver is obsolete — if the S3 module ever has
+  to be abandoned, the documented fallback is cert-manager with a DNS-01 solver
+  writing a Secret every replica mounts, plus a restart on renewal).
 - Because images are tag-pinned (`:main`), all Deployments set
   `imagePullPolicy: Always` (a node-cached `:main` otherwise masks new pushes;
-  the deploy job additionally pins exact digests via
-  `kubectl set image ...@digest`).
+  the deploy job additionally pins exact digests via helm
+  `--set-string images.*.digest`).
 
 Cluster-level-by-hand changes made during the outage were repo-ified:
 securityContext relaxations (`deploy/10-backend.yaml`: image USER idol is
@@ -641,11 +685,13 @@ exist but a full re-import is manual). The recreate capability is for dev; run
 
 ### PV cleanup after recreate
 
-The caddy PVC uses the chart-owned `idol-caddy-data` StorageClass (reclaimPolicy
-Delete, WaitForFirstConsumer): deleting a release or recreating the cluster
-removes its backing disk automatically — no manual volume cleanup after destroy.
-(The CCM-provided upcloud classes are Retain and their policy is immutable; do
-not use them for stateful chart volumes.)
+The caddy-data PVC was removed with the horizontal edge (phase 5): TLS state
+lives in object storage, so no edge volume exists to clean up. The remaining
+chart-owned StorageClasses (`idol-pg-data` for CloudNativePG, reclaimPolicy
+Delete, WaitForFirstConsumer) still mean deleting a release or recreating the
+cluster removes their backing disks automatically — no manual volume cleanup
+after destroy. (The CCM-provided upcloud classes are Retain and their policy is
+immutable; do not use them for stateful chart volumes.)
 
 ### DNS during recreate
 

@@ -10,6 +10,7 @@ on:
     paths:
       - "backend/**"
       - "web/**"
+      - "caddy/**"
     tags:
       - "v*"
   workflow_dispatch:
@@ -48,6 +49,7 @@ jobs:
     outputs:
       backend: ${{ steps.backend.outputs.digest || steps.reuse.outputs.backend_digest }}
       web: ${{ steps.web.outputs.digest || steps.reuse.outputs.web_digest }}
+      caddy: ${{ steps.caddy.outputs.digest || steps.reuse.outputs.caddy_digest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -71,17 +73,24 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           b_sha="$(jq -r '.backend.mergeSha // empty' images.lock.json)"
           w_sha="$(jq -r '.web.mergeSha // empty' images.lock.json)"
+          c_sha="$(jq -r '.caddy.mergeSha // empty' images.lock.json)"
           backend=false
           web=false
+          caddy=false
           if [ -z "$b_sha" ] || [ -n "$(git diff --name-only "$b_sha" HEAD -- backend)" ]; then
             backend=true
           fi
           if [ -z "$w_sha" ] || [ -n "$(git diff --name-only "$w_sha" HEAD -- web)" ]; then
             web=true
           fi
+          if [ -z "$c_sha" ] || [ -n "$(git diff --name-only "$c_sha" HEAD -- caddy)" ]; then
+            caddy=true
+          fi
+          # shellcheck disable=SC2129
           echo "backend=$backend" >> "$GITHUB_OUTPUT"
           echo "web=$web" >> "$GITHUB_OUTPUT"
-          echo "mode tag=$tag backend changed: $backend; web changed: $web"
+          echo "caddy=$caddy" >> "$GITHUB_OUTPUT"
+          echo "mode tag=$tag backend changed: $backend; web changed: $web; caddy changed: $caddy"
 
       - name: docker login ghcr.io
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
@@ -98,7 +107,7 @@ jobs:
       # Ordering by run id means no two runs ever wait on each other.
       # Best effort: an API error or the 15 min cap just stops waiting.
       - name: wait for earlier images runs of this commit
-        if: steps.mode.outputs.backend == 'true' || steps.mode.outputs.web == 'true'
+        if: steps.mode.outputs.backend == 'true' || steps.mode.outputs.web == 'true' || steps.mode.outputs.caddy == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -122,12 +131,16 @@ jobs:
           TAG: ${{ steps.mode.outputs.tag }}
           WANT_BACKEND: ${{ steps.mode.outputs.backend }}
           WANT_WEB: ${{ steps.mode.outputs.web }}
+          WANT_CADDY: ${{ steps.mode.outputs.caddy }}
         run: |
           set -euo pipefail
           backend_tree="$(git rev-parse HEAD:backend)"
           web_tree="$(git rev-parse HEAD:web)-$(git rev-parse HEAD:contract)"
+          caddy_tree="$(git rev-parse HEAD:caddy)"
+          # shellcheck disable=SC2129
           echo "backend_tree=$backend_tree" >> "$GITHUB_OUTPUT"
           echo "web_tree=$web_tree" >> "$GITHUB_OUTPUT"
+          echo "caddy_tree=$caddy_tree" >> "$GITHUB_OUTPUT"
           find_reusable() { # $1 = package, $2 = tree; prints a matching digest
             local repo="ghcr.io/vreid/idol-appreciation.club-$1" pin ref d label
             pin="$(jq -r ".$1.digest // empty" images.lock.json)"
@@ -138,8 +151,12 @@ jobs:
               if [ -n "$label" ] && [ "$label" = "$2" ]; then echo "$d"; return 0; fi
             done
           }
-          for pkg in backend web; do
-            if [ "$pkg" = backend ]; then want="$WANT_BACKEND" tree="$backend_tree"; else want="$WANT_WEB" tree="$web_tree"; fi
+          for pkg in backend web caddy; do
+            case "$pkg" in
+              backend) want="$WANT_BACKEND" tree="$backend_tree" ;;
+              web) want="$WANT_WEB" tree="$web_tree" ;;
+              caddy) want="$WANT_CADDY" tree="$caddy_tree" ;;
+            esac
             build=false
             if [ "$want" = "true" ]; then
               d="$(find_reusable "$pkg" "$tree" || true)"
@@ -171,6 +188,15 @@ jobs:
           BUILD_CACHE_REF: ghcr.io/vreid/idol-appreciation.club-web:buildcache
           BUILD_TREE: ${{ steps.reuse.outputs.web_tree }}
 
+      - name: build and push caddy image
+        id: caddy
+        if: steps.reuse.outputs.caddy_build == 'true'
+        run: echo "digest=$(task image:caddy | tail -1)" >> "$GITHUB_OUTPUT"
+        env:
+          CADDY_IMAGE: ghcr.io/vreid/idol-appreciation.club-caddy:${{ steps.mode.outputs.tag }}
+          BUILD_CACHE_REF: ghcr.io/vreid/idol-appreciation.club-caddy:buildcache
+          BUILD_TREE: ${{ steps.reuse.outputs.caddy_tree }}
+
       # Release tag with NO component drift: the version's images are the
       # current lock digests — alias them with the version tag so every
       # version resolves, without a pointless rebuild.
@@ -178,12 +204,16 @@ jobs:
         if: >-
           startsWith(github.ref, 'refs/tags/') &&
           steps.mode.outputs.backend == 'false' &&
-          steps.mode.outputs.web == 'false'
+          steps.mode.outputs.web == 'false' &&
+          steps.mode.outputs.caddy == 'false'
         run: |
           set -euo pipefail
           tag="${{ steps.mode.outputs.tag }}"
-          for pkg in backend web; do
-            d="$(jq -r ".${pkg}.digest" images.lock.json)"
+          for pkg in backend web caddy; do
+            # A component without a lock entry yet (e.g. a tag cut before
+            # its first build) has nothing to alias.
+            d="$(jq -r ".${pkg}.digest // empty" images.lock.json)"
+            [ -n "$d" ] || { echo "$pkg: no lock digest yet, skipping alias"; continue; }
             crane tag "ghcr.io/vreid/idol-appreciation.club-$pkg@$d" "$tag"
             echo "$pkg: aliased $tag -> $d"
           done
@@ -214,7 +244,8 @@ jobs:
     needs: [images]
     if: >-
       always() && !failure() && !cancelled() &&
-      (needs.images.outputs.backend != '' || needs.images.outputs.web != '')
+      (needs.images.outputs.backend != '' || needs.images.outputs.web != '' ||
+       needs.images.outputs.caddy != '')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -231,14 +262,18 @@ jobs:
           set -euo pipefail
           b="${{ needs.images.outputs.backend }}"
           w="${{ needs.images.outputs.web }}"
+          c="${{ needs.images.outputs.caddy }}"
           sha="${{ github.sha }}"
           tmp="$(mktemp)"
-          jq --arg b "$b" --arg w "$w" --arg sha "$sha" '
-            if $b != "" then .backend.digest = $b | .backend.mergeSha = $sha else . end
-            | if $w != "" then .web.digest = $w | .web.mergeSha = $sha else . end
+          jq --arg b "$b" --arg w "$w" --arg c "$c" --arg sha "$sha" '
+            if $b != "" then (.backend |= (. + {digest: $b, mergeSha: $sha})) else . end
+            | if $w != "" then (.web |= (. + {digest: $w, mergeSha: $sha})) else . end
+            | if $c != "" then (.caddy |= ((. // {}) + {digest: $c, mergeSha: $sha})) else . end
           ' images.lock.json > "$tmp"
-          # never write a lock missing either digest
-          jq -e '(.backend.digest | type == "string" and startswith("sha256:")) and (.web.digest | type == "string" and startswith("sha256:"))' "$tmp" > /dev/null
+          # never write a lock missing a digest the chart consumes
+          jq -e '(.backend.digest | type == "string" and startswith("sha256:")) and
+                 (.web.digest | type == "string" and startswith("sha256:")) and
+                 (.caddy.digest | type == "string" and startswith("sha256:"))' "$tmp" > /dev/null
           mv "$tmp" images.lock.json
           if git diff --quiet -- images.lock.json; then
             echo "lock unchanged; nothing to record"
@@ -272,7 +307,7 @@ jobs:
             echo "Automated image digest update from run ${{ github.run_id }} (ref ${{ github.ref }})."
             echo
             echo '```'
-            jq -r '"backend  \(.backend.digest)  \(.backend.mergeSha[0:7])", "web      \(.web.digest)  \(.web.mergeSha[0:7])"' images.lock.json
+            jq -r '"backend  \(.backend.digest)  \(.backend.mergeSha[0:7])", "web      \(.web.digest)  \(.web.mergeSha[0:7])", "caddy    \(.caddy.digest)  \(.caddy.mergeSha[0:7])"' images.lock.json
             echo '```'
             echo
             echo "Squash-merges automatically once checks are green; the merge triggers deploy (images.lock.json consumer)."

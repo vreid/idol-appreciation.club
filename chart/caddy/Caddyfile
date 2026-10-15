@@ -1,27 +1,66 @@
 {
 	http_port 8080
 	https_port 8443
+
+	# Certificates + ACME state in object storage: both edge replicas
+	# see the same cert objects, and CertMagic's S3 lock makes exactly
+	# one replica renew at a time (docs/scaling-architecture.md, "Caddy,
+	# horizontally"). Credentials ride the AWS_ standard chain from the
+	# app-env secret; endpoint/bucket are helm-injected by deploy.yml.
+	storage s3 {
+		endpoint "{{ .Values.edgeStorage.endpoint }}"
+		bucket "{{ .Values.edgeStorage.bucket }}"
+		prefix "{{ .Values.edgeStorage.prefix }}"
+	}
+
+	# In-memory tile cache (Souin/cache-handler, otter storage). RFC
+	# 7234 strict + no-store default means ONLY responses carrying
+	# explicit cache headers are stored: versioned tile responses say
+	# `Cache-Control: public, max-age=31536000, immutable`; everything
+	# unmarked (SSE, API JSON, SPA index) passes through untouched.
+	cache {
+		default_cache_control no-store
+		ttl 31536000s
+		cache_name idol-edge
+		otter {
+			configuration {
+				# Items, not bytes: ~4000 tiles x ~60 KB worst case
+				# stays well under the 512Mi memory limit.
+				size 4000
+			}
+		}
+	}
 }
 
 idol-appreciation.club {
 	encode zstd gzip
 	root * /usr/share/caddy
 
-	# route preserves written order: proxy /api BEFORE try_files can
-	# rewrite it to index.html. SSE: flush_interval -1 keeps events live.
+	# route preserves written order; handle groups are exclusive, so
+	# only /api/tiles ever passes through the cache handler (SSE and
+	# the rest of /api must not touch it: streaming, uncacheable).
 	route {
-		reverse_proxy /api/* backend.idol.svc.cluster.local:80 {
-			flush_interval -1
+		handle /api/tiles/* {
+			cache
+			reverse_proxy backend.idol.svc.cluster.local:80
 		}
 
-		@immutable path /assets/*
-		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		handle /api/* {
+			reverse_proxy backend.idol.svc.cluster.local:80 {
+				flush_interval -1
+			}
+		}
 
-		@index path / /index.html
-		header @index Cache-Control "no-cache"
+		handle {
+			@immutable path /assets/*
+			header @immutable Cache-Control "public, max-age=31536000, immutable"
 
-		try_files {path} /index.html
-		file_server
+			@index path / /index.html
+			header @index Cache-Control "no-cache"
+
+			try_files {path} /index.html
+			file_server
+		}
 	}
 }
 

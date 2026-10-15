@@ -1,6 +1,8 @@
 # Edge config lives in a ConfigMap so routing/TLS changes never need an
-# image rebuild. Kept in sync with web/Caddyfile by deploy.yml before
-# upgrade (chart/caddy/Caddyfile is the packaged copy).
+# image rebuild. THIS file is the source of truth (web/Caddyfile only
+# covers the stock-caddy local-dev case): chart/caddy/Caddyfile is
+# helm-templated with the object-storage coordinates the CertMagic
+# storage module needs (deploy.yml injects endpoint/bucket per deploy).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,4 +10,4 @@ metadata:
   namespace: idol
 data:
   Caddyfile: |
-{{ .Files.Get "caddy/Caddyfile" | indent 4 }}
+{{ tpl (.Files.Get "caddy/Caddyfile") . | indent 4 }}

@@ -142,7 +142,7 @@ jobs:
           echo "keys on the current view:" | tee -a "$GITHUB_STEP_SUMMARY"
           sed -E "s/^([0-9A-Za-z]{8})[0-9A-Za-z]*/\1…/" /tmp/keys-current.txt | sed 's/^/  /' | tee -a "$GITHUB_STEP_SUMMARY"
           awk -v live="$ak_live" '$1 != live {print $1}' /tmp/keys-current.txt > /tmp/keys-stale.txt
-          if ! grep -qx "$ak_live" /tmp/keys-current.txt; then
+          if ! awk -v live="$ak_live" '$1 == live {found=1} END {exit !found}' /tmp/keys-current.txt; then
             echo "live key (app-env) NOT on the current view — deleting nothing; investigate before touching keys" >&2
             exit 1
           fi

@@ -132,20 +132,32 @@ trap 'rm -f "${JARS_CLEANUP[@]}"' EXIT
 
 login_account() { # login_account INDEX -> 0 on success
   local i=$1 u=${ACC_USER[$1]} p=${ACC_PASS[$1]} jar=${JARS[$1]} code
-  code=$(curl -sS -o /dev/null -w '%{http_code}' -c "$jar" -X POST \
-    "${BASE_URL%/}/api/auth/register" -H 'Content-Type: application/json' \
-    -d "{\"username\":\"${u}\",\"password\":\"${p}\"}") || return 1
+  local attempt
+  # Auth endpoints sit behind the edge burst limiter: retry 429s with a
+  # short backoff, stagger accounts so a fresh fleet logs in cleanly.
+  for attempt in 1 2 3 4; do
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -c "$jar" -X POST \
+      "${BASE_URL%/}/api/auth/register" -H 'Content-Type: application/json' \
+      -d "{\"username\":\"${u}\",\"password\":\"${p}\"}") || return 1
+    [ "$code" = "429" ] || break
+    sleep $((attempt * 2))
+  done
   case $code in 2*|409) : ;; *) echo "  ! register $u HTTP $code" >&2; return 1 ;; esac
-  code=$(curl -sS -o /dev/null -w '%{http_code}' -c "$jar" -X POST \
-    "${BASE_URL%/}/api/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"username\":\"${u}\",\"password\":\"${p}\"}") || return 1
+  for attempt in 1 2 3 4; do
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -c "$jar" -X POST \
+      "${BASE_URL%/}/api/auth/login" -H 'Content-Type: application/json' \
+      -d "{\"username\":\"${u}\",\"password\":\"${p}\"}") || return 1
+    [ "$code" = "429" ] || break
+    sleep $((attempt * 2))
+  done
   [ "$code" = "200" ] || { echo "  ! login $u HTTP $code (pending approval?)" >&2; return 1; }
+  sleep 0.3
   return 0
 }
 
 # --- helpers ------------------------------------------------------------------
 place_cell() { # place_cell ACCOUNT_IDX FILE X Y CELL_TAG [ROT] [SIZE]
-  local ai=$1 file=$2 x=$3 y=$4 tag=$5 rot=${6:-0} size=${7:-$SLOT}
+  local ai=$1 file=$2 x=$3 y=$4 tag=$5 rot=${6:-0} size=${7:-}
   local body code t tsum
   if [ "$DRY_RUN" = "1" ]; then
     printf 'DRY  %-28s cell %s at (%d, %d)\n' "$(basename "$file")" "$tag" "$x" "$y"

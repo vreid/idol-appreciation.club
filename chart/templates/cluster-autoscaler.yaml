@@ -161,8 +161,11 @@ spec:
             - /cluster-autoscaler
             - --cloud-provider=upcloud
             # min:max:<node-group-name> — the UpCloud manager matches the
-            # group by name within UPCLOUD_CLUSTER_ID.
+            # group by name within UPCLOUD_CLUSTER_ID. One flag per node
+            # group: the CNPG-floored baseline and the scale-to-zero
+            # worker pool (docs/scaling-architecture.md "Cluster layout").
             - --nodes={{ .Values.clusterAutoscaler.minSize }}:{{ .Values.clusterAutoscaler.maxSize }}:{{ .Values.clusterAutoscaler.nodeGroup }}
+            - --nodes={{ .Values.clusterAutoscaler.workerMinSize }}:{{ .Values.clusterAutoscaler.workerMaxSize }}:{{ .Values.clusterAutoscaler.workerNodeGroup }}
             - --scale-down-enabled={{ .Values.clusterAutoscaler.scaleDownEnabled }}
             - --stderrthreshold=info
             - --v=4

@@ -1,0 +1,34 @@
+{{- if .Values.worker.autoscaling.enabled }}
+# KEDA ScaledObject for the render/ingest worker Deployment (Phase 4).
+# Replica count follows the pending render_jobs depth; pods that don't
+# fit stay Pending and the Cluster Autoscaler adds a tainted worker node
+# (clusterAutoscaler.worker* bounds), so the two bounds must agree.
+# The postgresql trigger reads DATABASE_URL from the scale target's pod
+# spec — the contract with the Phase 4 Deployment lives in values.yaml.
+# NOTE: the CRD instance has no offline kubeconform schema (like the
+# CNPG Cluster); `task keda:scaledobject:install` dry-runs server-side
+# before the real apply.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ .Values.worker.deploymentName }}
+  namespace: idol
+  labels:
+    app.kubernetes.io/part-of: idol-appreciation.club
+spec:
+  scaleTargetRef:
+    name: {{ .Values.worker.deploymentName }}
+  pollingInterval: {{ .Values.worker.autoscaling.pollingInterval }}
+  cooldownPeriod: {{ .Values.worker.autoscaling.cooldownPeriod }}
+  minReplicaCount: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.worker.autoscaling.maxReplicas }}
+  triggers:
+    - type: postgresql
+      metadata:
+        # Only jobs a worker can actually claim: pending and past their
+        # per-zoom not_before delay (PR #190 migration 0008).
+        query: "SELECT count(*) FROM render_jobs WHERE state = 'pending' AND not_before <= now()"
+        targetQueryValue: "{{ .Values.worker.autoscaling.targetPendingJobs }}"
+        activationTargetQueryValue: "{{ .Values.worker.autoscaling.activationTargetPendingJobs }}"
+        connectionFromEnv: DATABASE_URL
+{{- end }}

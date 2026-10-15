@@ -323,6 +323,21 @@ now:
   in `app-env` works; deploy's verify-or-rotate owns it. Re-add the resource
   (and the two secret outputs) with the ticket's answer.
 
+## ClusterIP blackhole after node churn (2026-10-15, known issue)
+
+pipeline3's Stage-3 verification hit a transient where freshly-created pods'
+ClusterIP requests to `backend:80` hung while pod-IP-direct answered in 0.9 ms —
+suspected stale endpoint propagation in the Cilium datapath (the cluster runs
+cilium + cilium-envoy, no kube-proxy) after the day's rapid endpoint churn
+(baseline group rebuild + two backend rollouts + worker pods). Follow-up run
+38780411161: no stale slice addresses remained (backend 2 slice IPs, idol-db-rw
+1, zero not backed by a live pod) and a fresh pod reached backend over ClusterIP
+in 3.4 ms — self-converged within hours. The scratch vet now diffs endpointSlice
+addresses against live Running pod IPs for `backend` and `idol-db-rw` on every
+dispatch and deletes stale slices when found (the endpointSlice controller
+recreates them from live pods). If it bites again during Phase 4's worker churn,
+the lever is in place; deeper Cilium investigation only on recurrence.
+
 ## Deploy image digests (2026-10-13 incident note)
 
 A workflow-dispatch deploy whose image builds had been skipped rolled pods with

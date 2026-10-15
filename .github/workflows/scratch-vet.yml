@@ -42,7 +42,69 @@ jobs:
     environment: production
     env:
       CLUSTER: idol-canvas
+      DOMAIN: idol-appreciation.club
     steps:
+      # SEV 2026-10-15 precondition: the object-storage `app` user sits at
+      # its 2-key quota with orphan keys, so tofu's key reissue (state
+      # drift) and deploy's rotation both 400. Free the slot first; the
+      # infra-apply then owns exactly one fresh key.
+      - name: free app access-key quota
+        env:
+          UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          uid="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            https://api.upcloud.com/1.3/objectstorage/users \
+            | jq -r '.[] | select(.username == "app") | .uuid')"
+          test -n "$uid" && echo "app user uuid: $uid"
+          before="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
+            | jq -r '.access_keys | length')"
+          echo "keys before: $before"
+          if [ "$before" != "0" ]; then
+            for kid in $(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+              "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
+              | jq -r '.access_keys[].access_key_id'); do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+                "https://api.upcloud.com/1.3/objectstorage/users/$uid/access_keys/$kid")"
+              echo "delete $kid -> HTTP $code"
+            done
+          fi
+          after="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
+            | jq -r '.access_keys | length')"
+          echo "keys after: $after"
+          [ "$after" = "0" ]
+      # SEV 2026-10-15: the aborted 08:55 group destroy left a server-side
+      # operation holding 2/3 nodes cordoned (invisible to tofu state).
+      # Diagnose the group, restore the count to the documented baseline
+      # if the platform shrank it, and report node operation state.
+      - name: node-group state + count restore
+        env:
+          UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          uuid="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            https://api.upcloud.com/1.3/kubernetes \
+            | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
+          test -n "$uuid"
+          echo "$uuid" > /tmp/cluster-uuid
+          echo "## default group state" | tee -a "$GITHUB_STEP_SUMMARY"
+          curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/kubernetes/$uuid/node-groups/default" \
+            | tee /tmp/group.json | jq -r '{count, planned_count, state, node_states: [.nodes[]? | {name, state, status}]}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          count="$(jq -r '.count // .node_groups[0].count // empty' /tmp/group.json)"
+          echo "live count: ${count:-unknown}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -n "$count" ] && [ "$count" -lt 3 ]; then
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
+              -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"count": 3}' \
+              "https://api.upcloud.com/1.3/kubernetes/$uuid/node-groups/default")"
+            echo "PATCH count->3: HTTP $code" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       - name: kubeconfig + in-cluster probes
         env:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
@@ -89,4 +151,42 @@ jobs:
           kubectl -n idol wait --for=condition=complete job/s3-vet --timeout=420s \
             || { kubectl -n idol logs job/s3-vet || true; exit 1; }
           kubectl -n idol logs job/s3-vet
+      - name: restore verification (nodes, workloads, db, health)
+        env:
+          UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          uuid="$(cat /tmp/cluster-uuid)"
+          curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/kubernetes/${uuid}/kubeconfig" \
+            | jq -r '.kubeconfig' > /tmp/kubeconfig
+          chmod 600 /tmp/kubeconfig
+          export KUBECONFIG=/tmp/kubeconfig
+          # Give a just-PATCHed group time to join a node before judging.
+          for i in $(seq 1 30); do
+            n_ready="$(kubectl get nodes -o json | jq '[.items[] | select(.status.conditions[] | select(.type == "Ready" and .status == "True"))] | length')"
+            unsched="$(kubectl get nodes -o json | jq '[.items[] | select(.spec.unschedulable == true)] | length')"
+            echo "nodes ready=$n_ready unschedulable=$unsched (poll $i)"
+            [ "$n_ready" = "3" ] && [ "$unsched" = "0" ] && break
+            sleep 30
+          done
+          kubectl get nodes -o wide | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$n_ready" = "3" ] && [ "$unsched" = "0" ]
+          echo "## workloads" | tee -a "$GITHUB_STEP_SUMMARY"
+          kubectl -n idol get deploy -o wide | tee -a "$GITHUB_STEP_SUMMARY"
+          kubectl -n idol rollout status deploy/backend --timeout=600s
+          kubectl -n idol rollout status deploy/web --timeout=600s
+          echo "## database quorum" | tee -a "$GITHUB_STEP_SUMMARY"
+          kubectl -n idol get cnpg -o json | jq -r '.items[] | "\(.metadata.name): instances=\(.status.instances // "?") ready=\(.status.readyInstances // "?") phase=\(.status.phase // "?")"' | tee -a "$GITHUB_STEP_SUMMARY"
+          ready="$(kubectl -n idol get cnpg idol-db -o jsonpath='{.status.readyInstances}')"
+          [ "$ready" = "3" ]
+          echo "## api health" | tee -a "$GITHUB_STEP_SUMMARY"
+          ok=0
+          for i in 1 2 3 4 5; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$DOMAIN/api/health")"
+            echo "attempt $i: /api/health -> $code" | tee -a "$GITHUB_STEP_SUMMARY"
+            [ "$code" = "200" ] && ok=1 && break
+            sleep 15
+          done
+          [ "$ok" = "1" ]
           kubectl -n idol delete job s3-vet --ignore-not-found >/dev/null

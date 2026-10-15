@@ -147,3 +147,8 @@ chart/cnpg/barman-cloud-plugin-0.15.1.yaml:kubernetes-secret-yaml:965
 # Same fixture credential in the shared test harness login helper — line
 # drifted when Phase 3's render_jobs work merged into common/mod.rs.
 backend/tests/common/mod.rs:generic-password:431
+backend/tests/common/mod.rs:generic-password:256
+backend/tests/integration.rs:generic-password:578
+backend/tests/integration.rs:generic-password:589
+backend/tests/integration.rs:generic-password:1215
+backend/tests/common/mod.rs:generic-password:437

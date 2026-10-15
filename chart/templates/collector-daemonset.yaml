@@ -1,0 +1,198 @@
+{{- if .Values.telemetry.collector.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  labels:
+    app: otel-collector
+data:
+  config.yaml: |
+    # docs/scaling-architecture.md § Observability: scrape /api/metrics and
+    # CNPG's per-instance 9187, receive OTLP (app telemetry module), read
+    # pod logs off the node. Export = stdout until a backend is chosen.
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: backend
+              metrics_path: /api/metrics
+              scrape_interval: 15s
+              kubernetes_sd_configs:
+                - role: pod
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_label_app]
+                  regex: backend
+                  action: keep
+                - source_labels: [__meta_kubernetes_pod_ip]
+                  target_label: __address__
+                  replacement: $1:8080
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: pod
+            - job_name: cnpg
+              scrape_interval: 30s
+              kubernetes_sd_configs:
+                - role: pod
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_label_cnpg_io_cluster]
+                  regex: .+
+                  action: keep
+                - source_labels: [__meta_kubernetes_pod_ip]
+                  target_label: __address__
+                  replacement: $1:9187
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: pod
+      filelog:
+        include:
+          - /var/log/pods/*/*/*.log
+        exclude:
+          # Don't re-ingest collector's own stdout.
+          - /var/log/pods/*otel-collector*/*/*.log
+        start_at: end
+        include_file_path: true
+        operators:
+          # CRI containerd format: split, then parse the app's JSON lines.
+          - type: router
+            id: cri_split
+            routes:
+              - output: parse_cri
+                expr: 'body matches "^\\{"'
+            default: noop
+          - type: move
+            id: noop
+            from: body
+            to: body
+          - id: parse_cri
+            type: regex_parser
+            regex: '^{.*"log":"(?P<log>[^"]*)".*}$'
+            parse_from: body
+            if: 'body matches "\"log\""'
+          - id: parse_app_json
+            type: json_parser
+            parse_from: body
+            if: 'body matches "^\\{" and body matches "\"level\""'
+          - type: move
+            from: attributes.log
+            to: body
+            if: 'attributes.log != nil'
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+      memory_limiter:
+        check_interval: 2s
+        limit_mib: 160
+        spike_limit_mib: 48
+      resource/k8s:
+        attributes:
+          - key: k8s.node.name
+            from_attribute: host.name
+            action: upsert
+    exporters:
+      # No external backend chosen yet (doc's open question): stdout is the
+      # receipt — kubectl logs on the DaemonSet shows every pipeline's output.
+      debug:
+        verbosity: basic
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
+        metrics:
+          receivers: [prometheus, otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
+        logs:
+          receivers: [filelog, otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      tolerations:
+        # Worker pool (docs § node layout: dedicated=worker:NoSchedule) so
+        # collector reads worker-pod logs too; plus baseline NoExecute
+        # tolerations so it runs on every ready node.
+        - key: dedicated
+          operator: Equal
+          value: worker
+          effect: NoSchedule
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+      containers:
+        - name: collector
+          image: {{ .Values.telemetry.collector.image }}
+          args: ["--config=/conf/config.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              hostPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+              hostPort: 4318
+            - name: health
+              containerPort: 13133
+          resources:
+{{ toYaml .Values.telemetry.collector.resources | indent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+            - name: podlogs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: libpods
+              mountPath: /var/lib/kubelet/pods
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+        - name: podlogs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: libpods
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+{{- end }}

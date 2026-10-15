@@ -178,6 +178,18 @@ worker:
     # single-threaded, so a pod adds no throughput while one job runs.
     targetPendingJobs: 1
     activationTargetPendingJobs: 1
+# Descheduler (phase 5 retune; GATED on the Phase 4 signal — enable only
+# together with the baseline node group, `task infra:retune-baseline`).
+# Rebalances the baseline pool; the worker pool is left to the Cluster
+# Autoscaler. CloudNativePG instances are protected through their PVC
+# (PodsWithPVC) and their PDB. The nodeSelector must match the kubelet
+# label the tofu baseline group sets (pool=baseline).
+descheduler:
+  enabled: false
+  nodeSelector: pool=baseline
+  interval: 15m
+  # Digest pins tag v0.37.0 (registry-resolved, 2026-10-15).
+  image: registry.k8s.io/descheduler/descheduler@sha256:88deef34ff5c85cb69676d7073dd641bd5c35b156bc1ef4a35ca8fbf9644da98
 
 # CloudNativePG (migration off the managed 1-CPU Postgres; staged).
 # Operator install is NOT chart-managed: the pinned upstream manifest
@@ -217,12 +229,16 @@ cnpg:
     storageClass: idol-pg-data
     size: 5Gi
   resources:
+    # Request EQUALS the memory limit (docs/scaling-architecture.md
+    # "Cluster layout", phase 5): on 4 GB baseline nodes a busy instance
+    # must not starve the API pod sharing the node. Flip together with
+    # the gated retune (`task infra:retune-baseline`).
     requests:
       cpu: 500m
       memory: 1.5Gi
     limits:
       cpu: "2"
-      memory: 3Gi
+      memory: 1.5Gi
 
 # OpenTelemetry Collector (contrib) as a DaemonSet — the doc's Phase 1
 # observability piece. Off by default (config-gated like the app's

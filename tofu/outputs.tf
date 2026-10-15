@@ -26,6 +26,16 @@ output "node_count" {
   value       = upcloud_kubernetes_node_group.baseline_capacity.node_count
 }
 
+output "baseline_node_group" {
+  description = "Baseline pool node group name (descheduler scope)."
+  value       = upcloud_kubernetes_node_group.baseline.name
+}
+
+output "baseline_node_plan" {
+  description = "Baseline pool node plan (2 vCPU / 4 GiB)."
+  value       = upcloud_kubernetes_node_group.baseline.plan
+}
+
 output "s3_endpoint" {
   description = "Public S3 endpoint of the object storage service."
   value = format(

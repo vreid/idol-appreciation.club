@@ -72,6 +72,34 @@ variable "node_count" {
   default     = 3
 }
 
+variable "baseline_node_group_name" {
+  description = "Baseline pool node group name (PG + API + edge, 2 vCPU / 4 GB)."
+  type        = string
+  default     = "baseline"
+}
+
+variable "baseline_node_plan" {
+  description = <<-EOT
+    Baseline pool node plan: 2 vCPU / 4 GiB per docs/scaling-architecture.md
+    "Cluster layout". This is the plan the 4 vCPU / 8 GB `default` group
+    shrinks to in the gated phase 5 retune (`task infra:retune-baseline`);
+    STARTER-2xCPU-4GB was this group's plan before the approved vertical
+    bump, so it is a known-valid k8s node plan.
+  EOT
+  type        = string
+  default     = "STARTER-2xCPU-4GB"
+}
+
+variable "baseline_node_count" {
+  description = <<-EOT
+    Baseline pool node count. Three: one per CNPG instance (required pod
+    anti-affinity). Fixed — the Cluster Autoscaler does not manage this
+    group; do not wire it into chart/ clusterAutoscaler bounds.
+  EOT
+  type        = number
+  default     = 3
+}
+
 variable "objsto_name" {
   description = "Managed Object Storage (S3) service name."
   type        = string

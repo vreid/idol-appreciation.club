@@ -1,0 +1,188 @@
+{{- if .Values.descheduler.enabled }}
+# Descheduler (docs/scaling-architecture.md "Cluster layout"): rebalances
+# the BASELINE pool only. Scope + exclusions are deliberate:
+#   - DefaultEvictor nodeSelector `pool=baseline` (kubelet label from the
+#     tofu baseline group) — the tainted worker pool is left to the
+#     Cluster Autoscaler, since evicting a running render job wastes it.
+#   - PodsWithPVC protection + PDB respect: CloudNativePG instances
+#     (label cnpg.io/cluster) carry their data PVC and a PDB, so they are
+#     never evicted — one instance per node survives rebalancing.
+# Upstream v0.37.0 deployment/rbac adapted; image digest-pinned (a
+# mutable tag is not acceptable for a component that evicts prod pods).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: descheduler
+  namespace: idol
+  labels:
+    app.kubernetes.io/part-of: idol-appreciation.club
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: descheduler
+  labels:
+    app.kubernetes.io/part-of: idol-appreciation.club
+rules:
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "update"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  - apiGroups: ["scheduling.k8s.io"]
+    resources: ["priorityclasses"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create", "update"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["descheduler"]
+    verbs: ["get", "patch", "delete"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: descheduler
+  labels:
+    app.kubernetes.io/part-of: idol-appreciation.club
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: descheduler
+subjects:
+  - kind: ServiceAccount
+    name: descheduler
+    namespace: idol
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: descheduler-policy
+  namespace: idol
+  labels:
+    app.kubernetes.io/part-of: idol-appreciation.club
+data:
+  policy.yaml: |
+    apiVersion: descheduler/v1alpha2
+    kind: DeschedulerPolicy
+    profiles:
+      - name: baseline
+        pluginConfig:
+          - name: DefaultEvictor
+            args:
+              nodeSelector: {{ .Values.descheduler.nodeSelector | quote }}
+              podProtections:
+                extraEnabled:
+                  - PodsWithPVC
+          - name: RemoveDuplicates
+          - name: RemovePodsViolatingTopologySpreadConstraint
+            args:
+              constraints:
+                - DoNotSchedule
+                - ScheduleAnyway
+          - name: RemovePodsViolatingNodeTaints
+          - name: LowNodeUtilization
+            args:
+              thresholds:
+                cpu: 50
+                memory: 50
+                pods: 50
+              targetThresholds:
+                cpu: 80
+                memory: 80
+                pods: 80
+        plugins:
+          deschedule:
+            enabled:
+              - RemovePodsViolatingNodeTaints
+          balance:
+            enabled:
+              - RemoveDuplicates
+              - RemovePodsViolatingTopologySpreadConstraint
+              - LowNodeUtilization
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: descheduler
+  namespace: idol
+  labels:
+    app: descheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: descheduler
+  template:
+    metadata:
+      labels:
+        app: descheduler
+    spec:
+      serviceAccountName: descheduler
+      priorityClassName: system-cluster-critical
+      containers:
+        - name: descheduler
+          image: {{ .Values.descheduler.image }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/descheduler"]
+          args:
+            - --policy-config-file
+            - /policy-dir/policy.yaml
+            # docs/scaling-architecture.md: run every 10-30 minutes.
+            - --descheduling-interval
+            - {{ .Values.descheduler.interval }}
+            - --v
+            - "3"
+          ports:
+            - containerPort: 10258
+              protocol: TCP
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /healthz
+              port: 10258
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - mountPath: /policy-dir
+              name: policy-volume
+      volumes:
+        - name: policy-volume
+          configMap:
+            name: descheduler-policy
+{{- end }}

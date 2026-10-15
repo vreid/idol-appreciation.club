@@ -149,10 +149,17 @@ happy-dom via a `// @vitest-environment happy-dom` docblock.
   rotated AABB). Events queue in a ~500 ms coalescing window (`tileRefresh.ts`);
   each flush intersects the buffered bboxes against visible tile keys (Leaflet's
   internal `_tiles`, format `x:y:z`), restricted to the current viewport, and
-  reassigns each matching `<img>.src` once, deduped. The refetch URL is
-  cache-busted (`?r=`) so stale-while-revalidate cannot serve the old bitmap —
-  the old pixels stay on screen until the new bytes decode: no blanking, no
-  flicker.
+  reassigns each matching `<img>.src` once, deduped. Batched `versions` events
+  (`tileVersions.ts`) refine this to exactly the named keys.
+- Versioned tile URLs (`versionedTiles.ts`): the client keeps a store of
+  per-tile versions learned from `versions` events and from a viewport-area
+  snapshot (`GET /api/versions?bbox=…&z=…`, resubscribed on zoom change, first
+  snapshot, and pans beyond a 25% pad). Tile requests carry `?v={version}` so
+  only changed tiles re-fetch (docs/scaling-architecture.md, Read path). A
+  version-less backend — or any store miss — falls back to cache-busting
+  `?r=Date.now()` for that request, so the old backend and this client
+  interoperate during the staggered deploy. Either way the old pixels stay on
+  screen until the new bytes decode: no blanking, no flicker.
 - Popup query radius: `256 * 2^(16 - z)` clamped to `[256, 65536]`.
 
 ## URL view state (`#z/x/y`)

@@ -24,6 +24,8 @@ export interface TileRefreshSource {
 export interface TileRefresher {
   /** Buffer a world-space AABB (place or remove event). */
   queue(bbox: BBox): void;
+  /** Buffer explicit tile keys (version events name their tiles). */
+  queueKeys(keys: string[]): void;
   /** Refresh pending bboxes immediately and clear the window timer. */
   flush(): void;
   /** Bboxes buffered but not yet flushed. */
@@ -76,6 +78,7 @@ export function createTileRefresher(
   windowMs: number = TILE_REFRESH_WINDOW_MS,
 ): TileRefresher {
   let pending: BBox[] = [];
+  let pendingKeys: string[] = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
 
@@ -88,9 +91,16 @@ export function createTileRefresher(
 
   const flush = (): void => {
     clearTimer();
-    if (disposed || pending.length === 0) return;
+    if (disposed || (pending.length === 0 && pendingKeys.length === 0)) return;
     const hits = affectedRenderedTiles(source, pending);
     pending = [];
+    // Explicit keys (version events) skip the bbox math but still pass
+    // through the rendered-set filter so offscreen entries are dropped.
+    const rendered = new Set(source.renderedTileKeys());
+    for (const key of pendingKeys) {
+      if (rendered.has(key) && !hits.includes(key)) hits.push(key);
+    }
+    pendingKeys = [];
     if (hits.length > 0) refresh(hits);
   };
 
@@ -100,12 +110,18 @@ export function createTileRefresher(
       pending.push(bbox);
       timer ??= setTimeout(flush, windowMs);
     },
+    queueKeys(keys: string[]): void {
+      if (disposed) return;
+      pendingKeys.push(...keys);
+      timer ??= setTimeout(flush, windowMs);
+    },
     flush,
-    pending: () => pending.length,
+    pending: () => pending.length + pendingKeys.length,
     dispose(): void {
       disposed = true;
       clearTimer();
       pending = [];
+      pendingKeys = [];
     },
   };
 }

@@ -118,7 +118,6 @@ describe("eventTouchesCenter", () => {
     expect(eventTouchesCenter([c + 1, c, 10, 10])).toBe(false);
   });
 });
-
 describe("SseClient", () => {
   it("connects to the events URL on start", () => {
     const client = new SseClient({
@@ -127,6 +126,47 @@ describe("SseClient", () => {
     });
     client.start();
     expect(lastSource().url).toBe("/api/events");
+    client.stop();
+  });
+
+  it("setArea reopens the stream with the area query", () => {
+    const client = new SseClient({
+      onEvent: () => {},
+      sourceFactory: factory(),
+    });
+    client.start();
+    client.setArea("bbox=0,0,100,100&z=16");
+    // The previous source is closed; a fresh one carries the query.
+    expect(FakeEventSource.instances.at(-2)?.closed).toBe(true);
+    expect(lastSource().url).toBe("/api/events?bbox=0,0,100,100&z=16");
+    // Unchanged query is a no-op.
+    const before = lastSource();
+    client.setArea("bbox=0,0,100,100&z=16");
+    expect(lastSource()).toBe(before);
+    // Null clears back to subscribe-all.
+    client.setArea(null);
+    expect(lastSource().url).toBe("/api/events");
+    client.stop();
+  });
+
+  it("onOpen fires on every stream open", () => {
+    let opens = 0;
+    const client = new SseClient({
+      onEvent: () => {},
+      onOpen: () => {
+        opens += 1;
+      },
+      sourceFactory: factory(),
+    });
+    client.start();
+    lastSource().emitOpen();
+    expect(opens).toBe(1);
+    // Reconnect (hard close + timer) fires it again.
+    lastSource().close();
+    lastSource().fail(true);
+    vi.advanceTimersByTime(2000);
+    lastSource().emitOpen();
+    expect(opens).toBe(2);
     client.stop();
   });
 
@@ -144,7 +184,9 @@ describe("SseClient", () => {
     expect(seen).toEqual([{ type: "place", seq: 1, bbox: [0, 0, 1, 1] }]);
     client.stop();
   });
+});
 
+describe("SseClient reconnects and areas", () => {
   it("schedules a reconnect with doubling backoff after hard close", () => {
     const client = new SseClient({
       onEvent: () => {},

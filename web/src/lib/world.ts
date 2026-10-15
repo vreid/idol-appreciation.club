@@ -134,8 +134,18 @@ export function clampToWorldPoint(p: WorldPoint): WorldPoint {
   return { x: clampToWorld(p.x), y: clampToWorld(p.y) };
 }
 
-export function tileUrl(z: number, x: number, y: number): string {
-  return `/api/tiles/${z}/${x}/${y}.webp`;
+export function tileUrl(
+  z: number,
+  x: number,
+  y: number,
+  version?: number,
+): string {
+  const base = `/api/tiles/${z}/${x}/${y}.webp`;
+  // ?v is a hint backed by the same counter as the tile etag (contract
+  // tileVersionsSchema); the server's fallback table decides caching.
+  // Omitted when the client hasn't learned a version yet (first paint
+  // before the snapshot resolves) → the server's max-age=1 legacy row.
+  return version === undefined ? base : `${base}?v=${version}`;
 }
 
 /** Native-px bbox covered by tile (x, y) at zoom z. */

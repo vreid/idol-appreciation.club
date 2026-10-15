@@ -86,6 +86,8 @@ describe("clamping", () => {
 describe("tiles", () => {
   it("builds slippy tile URLs", () => {
     expect(tileUrl(5, 3, 7)).toBe("/api/tiles/5/3/7.webp");
+    expect(tileUrl(5, 3, 7, 42)).toBe("/api/tiles/5/3/7.webp?v=42");
+    expect(tileUrl(5, 3, 7)).toBe("/api/tiles/5/3/7.webp");
   });
 
   it("z=0 is a single tile covering the whole world", () => {

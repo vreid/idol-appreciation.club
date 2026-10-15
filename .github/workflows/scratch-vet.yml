@@ -44,15 +44,10 @@ jobs:
       CLUSTER: idol-canvas
       DOMAIN: idol-appreciation.club
     steps:
-      # SEV 2026-10-15 precondition: the object-storage `app` user sits at
-      # its 2-key quota with orphan keys, so tofu's key reissue (state
-      # drift) and deploy's rotation both 400. Free the slot first; the
-      # infra-apply then owns exactly one fresh key.
-      # SEV 2026-10-15 precondition: the object-storage `app` user sits at
-      # its 2-key quota with orphan keys, so tofu's key reissue (state
-      # drift) and deploy's rotation both 400. Free the slot first; the
-      # infra-apply then owns exactly one fresh key.
-      - name: free app access-key quota
+      # One-time quota cleanup already ran (38728759864, after=0). Never
+      # delete keys from this workflow again: deploy's rotation owns the
+      # live key; this is report-only receipts.
+      - name: app access-key inventory (report only)
         env:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
         run: |
@@ -61,70 +56,19 @@ jobs:
           # restore receipts below it.
           uid="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
             https://api.upcloud.com/1.3/objectstorage/users \
-            | jq -r 'if type == "array" then (.[] | select(.username == "app") | .uuid) else (.users[]? | select(.username == "app") | .uuid) end // empty' 2>/dev/null || true)"
-          if [ -z "${uid:-}" ]; then
-            echo "users list unavailable; skipping key diagnostic (non-fatal)"
-            exit 0
-          fi && echo "app user uuid: $uid"
-          before="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            | jq -r '.[] | select(.username == "app") | .uuid')"
+          test -n "$uid" && echo "app user uuid: $uid"
+          echo "$uid" > /tmp/app-user-uuid
+          curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
             "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
-            | jq -r '.access_keys | length')"
-          echo "keys before: $before"
-          if [ "$before" != "0" ]; then
-            for kid in $(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-              "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
-              | jq -r '.access_keys[].access_key_id'); do
-              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-                -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-                "https://api.upcloud.com/1.3/objectstorage/users/$uid/access_keys/$kid")"
-              echo "delete $kid -> HTTP $code"
-            done
-          fi
-          after="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-            "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
-            | jq -r '.access_keys | length')"
-          echo "keys after: $after"
-          [ "$after" = "0" ]
+            | jq '{username, state, keys: [.access_keys[]? | {access_key_id, created_at, status}]}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       # SEV 2026-10-15: the aborted 08:55 group destroy left a server-side
       # operation holding 2/3 nodes cordoned (invisible to tofu state).
-      # Diagnose the group, restore the count to the documented baseline
-      # if the platform shrank it, and report node operation state.
-      - name: key reissue diagnostic (capture the 400 body)
-        env:
-          UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Best-effort only: this diagnostic must never block the
-          # restore receipts below it.
-          uid="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-            https://api.upcloud.com/1.3/objectstorage/users \
-            | jq -r 'if type == "array" then (.[] | select(.username == "app") | .uuid) else (.users[]? | select(.username == "app") | .uuid) end // empty' 2>/dev/null || true)"
-          if [ -z "${uid:-}" ]; then
-            echo "users list unavailable; skipping key diagnostic (non-fatal)"
-            exit 0
-          fi
-          before="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-            "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
-            | jq -r '.access_keys | length')"
-          echo "keys before diagnostic: $before" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "$before" = "0" ]; then
-            resp="$(mktemp)"
-            code="$(curl -sS -o "$resp" -w '%{http_code}' -X POST \
-              -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-              -H "Content-Type: application/json" -d '{}' \
-              "https://api.upcloud.com/1.3/objectstorage/users/$uid/access_keys")"
-            echo "POST access_keys -> HTTP $code" | tee -a "$GITHUB_STEP_SUMMARY"
-            jq -r 'del(.secret_access_key)' "$resp" | tee -a "$GITHUB_STEP_SUMMARY"
-            if [ "$code" = "201" ]; then
-              echo "key create WORKS now — tofu owns the reissue; removing the diagnostic key"
-              kid="$(jq -r '.access_key_id' "$resp")"
-              dcode="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-                -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-                "https://api.upcloud.com/1.3/objectstorage/users/$uid/access_keys/$kid")"
-              echo "cleanup diagnostic key -> HTTP $dcode"
-            fi
-          fi
-      - name: node-group state + count restore
+      # Capacity recovery went through the capacity-first `default-new`
+      # group (38730423613 created it); the stuck `default` group is
+      # retired by the gated #206 retune, not patched here. Report only.
+      - name: node-group inventory (report only)
         env:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
         run: |
@@ -134,32 +78,11 @@ jobs:
             | jq -r --arg c "$CLUSTER" '.[] | select(.name == $c) | .uuid')"
           test -n "$uuid"
           echo "$uuid" > /tmp/cluster-uuid
-          echo "## default group state" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "## node groups" | tee -a "$GITHUB_STEP_SUMMARY"
           curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-            "https://api.upcloud.com/1.3/kubernetes/$uuid/node-groups/default" \
-            | tee /tmp/group.json | jq -r '{count, planned_count, state, node_states: [.nodes[]? | {name, state, status}]}' \
+            "https://api.upcloud.com/1.3/kubernetes/$uuid/node-groups" \
+            | jq '{groups: [(.node_groups // .)[]? | {name, state, count, planned_count, node_states: [.nodes[]? | {name, state}]}]}' \
             | tee -a "$GITHUB_STEP_SUMMARY"
-          count="$(jq -r '.count // .node_groups[0].count // empty' /tmp/group.json)"
-          echo "live count: ${count:-unknown}" | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ -n "$count" ] && [ "$count" -lt 3 ]; then
-            # The PATCH 500s while the group is mid-operation (nodes
-            # terminating => state "pending"): retry until it settles.
-            code=000
-            for attempt in 1 2 3 4 5 6; do
-              code="$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
-                -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d '{"count": 3}' \
-                "https://api.upcloud.com/1.3/kubernetes/$uuid/node-groups/default")"
-              echo "PATCH count->3 attempt $attempt: HTTP $code" | tee -a "$GITHUB_STEP_SUMMARY"
-              case "$code" in 2??) break;; esac
-              sleep 60
-            done
-            case "$code" in
-              2??) ;;
-              *) echo "node-group count restore FAILED (last HTTP $code); refusing to probe a nodeless cluster" >&2; exit 1;;
-            esac
-          fi
       - name: kubeconfig + in-cluster probes
         env:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
@@ -184,8 +107,58 @@ jobs:
             sleep 30
           done
           [ "${nodes_ready:-0}" -ge 1 ] \
-            || { echo "no Ready node after 10m; probes need a node — check the count restore above" >&2; exit 1; }
+            || { echo "no Ready node after 10m; probes need a node — check the node-group inventory above" >&2; exit 1; }
           kubectl get nodes | head -6
+          # SEV 2026-10-15: #213's quota cleanup deleted every app key,
+          # and the tofu provider's key reissue 400s (ERROR_INVALID_REQUEST,
+          # run 38730423613) even with the slot free — while deploy:k8s
+          # rotates through the CURRENT object-storage-2 endpoint. Probe
+          # exactly that mint path (create -> signed verify -> delete) so
+          # the dark deploy's rotation is proven before it runs. The probe
+          # key never outlives this step.
+          svc="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/object-storage-2?limit=100" \
+            | jq -r '.[]? | select(.uuid == "127fbb4e-c649-46c4-9064-7cf1629b99b5") | .uuid')"
+          test -n "$svc" || { echo "object-storage service 127fbb4e… not found in object-storage-2 list" >&2; exit 1; }
+          mcode="$(curl -sS -o /tmp/mint.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/object-storage-2/$svc/users/app/access-keys")"
+          echo "mint via object-storage-2: HTTP $mcode" | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -r 'if .secret_access_key then "minted access_key_id: \(.access_key_id) (secret withheld)" else "body: \(.)" end' /tmp/mint.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$mcode" != "201" ]; then
+            # Compare with the legacy endpoint shape the tofu provider
+            # exercises; its full error body is the UpCloud-ticket exhibit.
+            uid="$(cat /tmp/app-user-uuid)"
+            lcode="$(curl -sS -o /tmp/mint-legacy.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+              -H "Content-Type: application/json" -d '{}' \
+              "https://api.upcloud.com/1.3/objectstorage/users/$uid/access_keys")"
+            echo "legacy objectstorage POST: HTTP $lcode"
+            jq -c 'if .secret_access_key then {access_key_id} else . end' /tmp/mint-legacy.json \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$lcode" = "201" ]; then
+              lid="$(jq -r .access_key_id /tmp/mint-legacy.json)"
+              echo "legacy mint WORKS - provider payload is the fault; cleaning up probe key $lid"
+              curl -sS -o /dev/null -w 'legacy probe key cleanup: HTTP %{http_code}\n' -X DELETE \
+                -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+                "https://api.upcloud.com/1.3/objectstorage/users/$uid/access_keys/$lid"
+            fi
+            exit 1
+          fi
+          sak="$(jq -r .access_key_id /tmp/mint.json)"
+          ssk="$(jq -r .secret_access_key /tmp/mint.json)"
+          oshost="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' 2>/dev/null | base64 -d | sed 's#https://##')"
+          bucket="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_BUCKET}' 2>/dev/null | base64 -d)"
+          vcode="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+            --aws-sigv4 'aws:amz:us-east-1:s3' -u "$sak:$ssk" \
+            "https://$oshost/${bucket:-idol-canvas}?list-type=2&max-keys=1" || echo 000)"
+          echo "minted-key signed list: HTTP $vcode" | tee -a "$GITHUB_STEP_SUMMARY"
+          dcode="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/object-storage-2/$svc/users/app/access-keys/$sak")"
+          echo "probe key cleanup: HTTP $dcode" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$vcode" = "200" || { echo "minted key failed live signed verify" >&2; exit 1; }
           # Probe runner: uses the LIVE app-env S3 creds (same ones caddy
           # would use). curl --aws-sigv4, exactly like the deploy probe.
           # The whole script is single-quoted ON PURPOSE: it must expand

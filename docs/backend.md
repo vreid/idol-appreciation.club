@@ -811,6 +811,31 @@ responses echo `x-request-id` (set per request by the request-id middleware).
 Pin set: `opentelemetry` 0.33, `opentelemetry_sdk` 0.33, `opentelemetry-otlp`
 0.33, `tracing-opentelemetry` 0.34.
 
+## Versioned tile read path
+
+Phase 2 of `docs/scaling-architecture.md`'s read path, paired with the client
+half (#188 — contract/zod is the single source of truth).
+
+- `GET /api/versions?bbox=x,y,w,h&z=<zoom>` →
+  `{tiles: [{key: "z/x/y", version}]}` for the **rendered** tiles intersecting
+  the bbox (version ≥ 1 = `tiles.seq`, the same number the ETag carries;
+  never-rendered tiles are absent).
+- Tile GETs accept `?v=<held version>`: `v` == current ⇒
+  `public, max-age=31536000, immutable` (the bytes are version-pinned); `v`
+  older ⇒ current bytes with `public, max-age=60`; `v` newer (client ahead of
+  this pod — flip/rollback window) ⇒ `no-store`; absent ⇒ today's
+  `max-age=1 + stale-while-revalidate=30`. Old clients send no `v` and see no
+  change.
+- SSE `/api/events?bbox&z` (both optional — old clients get everything, as
+  today): `versions` payloads are coalesced into one event per connection per
+  second and trimmed to the subscribed area; each tile's latest version wins.
+- The per-pod version map (`versions.rs`) is a lazy read-through over
+  `tiles.seq` (the optional `DATABASE_RO_URL` pool serves the lookups when
+  configured). Every render write-through notes the new version and publishes it
+  on the `events` NOTIFY channel, so every pod's map stays fresh and area
+  subscribers learn within the 1s tick. `versions::note` is the seam #190's
+  render pipeline plugs into.
+
 ## Known risks / limits
 
 - Crash window: chunk rasters are written before the manifest row commits; a

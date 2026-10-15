@@ -147,6 +147,7 @@ pub async fn start_server_full(
     let cfg = Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         database_url,
+        database_ro_url: None,
         database_pool_max: 30,
         s3_endpoint: Some(format!("file://{}", store_dir.display())),
         s3_bucket: "test-bucket".to_string(),

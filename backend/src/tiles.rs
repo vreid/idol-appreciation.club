@@ -426,9 +426,16 @@ async fn render_worker(app: App, executor: impl RenderExecutor) {
 }
 
 /// GET /api/tiles/{z}/{x}/{y}.webp
+#[derive(serde::Deserialize, Default)]
+pub struct TileQuery {
+    /// Client-held version (`?v=`): the versioned read path's cache key.
+    v: Option<i64>,
+}
+
 pub async fn get_tile(
     State(app): State<App>,
     axum::extract::Path((z, x, y)): axum::extract::Path<(String, String, String)>,
+    axum::extract::Query(q): axum::extract::Query<TileQuery>,
     headers: HeaderMap,
 ) -> AppResult<Response> {
     // axum 0.8 has no suffix captures, so the last segment is a wildcard
@@ -494,7 +501,7 @@ pub async fn get_tile(
     let inm = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok());
-    Ok(tile_response(bytes, seq, stale, inm))
+    Ok(tile_response(bytes, seq, stale, inm, q.v))
 }
 
 /// 304 when If-None-Match carries the served `"maxSeq"` tag, else 200 with
@@ -506,7 +513,13 @@ pub async fn get_tile(
 /// (`stale` ⇒ `X-Tile-Stale: true` + the STORED seq as ETag) keeps a GET
 /// with stale bytes available entirely off the render path — the ETag
 /// still makes every revalidation a cheap 304 while the seq is unchanged.
-fn tile_response(bytes: Bytes, seq: i64, stale: bool, if_none_match: Option<&str>) -> Response {
+fn tile_response(
+    bytes: Bytes,
+    seq: i64,
+    stale: bool,
+    if_none_match: Option<&str>,
+    version: Option<i64>,
+) -> Response {
     let etag = format!("\"{seq}\"");
     let matched = if_none_match.is_some_and(|inm| inm.split(',').any(|t| t.trim() == etag));
     if matched {
@@ -521,14 +534,22 @@ fn tile_response(bytes: Bytes, seq: i64, stale: bool, if_none_match: Option<&str
         }
         return resp;
     }
+    // Versioned read path (contract #188): ?v=<held version> selects the
+    // cache policy; absent v keeps today's max-age=1 + SWR. v == current
+    // pins the bytes immutable; older is servable for a minute; newer
+    // (client ahead of this pod — flip/rollback window) is not cacheable.
+    let cache_control = match version {
+        Some(v) if v > 0 && v == seq => "public, max-age=31536000, immutable",
+        Some(v) if v > 0 && v < seq => "public, max-age=60",
+        Some(v) if v > 0 && v > seq => "no-store",
+        _ => "public, max-age=1, stale-while-revalidate=30",
+    };
     let mut resp = (StatusCode::OK, bytes).into_response();
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, "image/webp".parse().expect("mime"));
     h.insert(
         header::CACHE_CONTROL,
-        "public, max-age=1, stale-while-revalidate=30"
-            .parse()
-            .expect("cache-control header"),
+        cache_control.parse().expect("cache-control header"),
     );
     h.insert(header::ETAG, etag.parse().expect("etag header"));
     if stale {
@@ -1022,6 +1043,19 @@ async fn tile_bytes_inner(
     )
     .await?;
     app.tile_cache.put(z, key, encoded.clone());
+    // Version seam: every tiles.seq write publishes the new version —
+    // in-pod map for this pod's /api/versions + a `versions` NOTIFY so
+    // other pods' maps and area subscribers follow (#190's pipeline goes
+    // through this same seam).
+    crate::versions::note(z, x, y, seq);
+    let payload = crate::versions::payload_for(z, x, y, seq);
+    let pool = app.pool.clone();
+    tokio::spawn(async move {
+        let _ = sqlx::query("SELECT pg_notify('events', $1)")
+            .bind(&payload)
+            .execute(&pool)
+            .await;
+    });
     crate::metrics::tile_done(crate::metrics::tile_outcome("render"), t0.elapsed());
     Ok(TileResolved::Bytes {
         bytes: encoded,
@@ -1180,7 +1214,7 @@ mod tests {
 
     #[test]
     fn fresh_get_is_200_with_cache_headers() {
-        let resp = tile_response(BYTES.clone(), 7, false, None);
+        let resp = tile_response(BYTES.clone(), 7, false, None, None);
         assert_eq!(resp.status(), StatusCode::OK);
         let h = resp.headers();
         assert_eq!(h[header::CONTENT_TYPE], "image/webp");
@@ -1193,20 +1227,20 @@ mod tests {
 
     #[test]
     fn matching_if_none_match_is_304_with_etag() {
-        let resp = tile_response(BYTES.clone(), 7, false, Some("\"7\""));
+        let resp = tile_response(BYTES.clone(), 7, false, Some("\"7\""), None);
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(resp.headers()[header::ETAG], "\"7\"");
     }
 
     #[test]
     fn if_none_match_list_matches_after_trim() {
-        let resp = tile_response(BYTES.clone(), 7, false, Some("\"3\", \"7\""));
+        let resp = tile_response(BYTES.clone(), 7, false, Some("\"3\", \"7\""), None);
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
     }
 
     #[test]
     fn stale_if_none_match_still_serves_200() {
-        let resp = tile_response(BYTES.clone(), 7, false, Some("\"6\""));
+        let resp = tile_response(BYTES.clone(), 7, false, Some("\"6\""), None);
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers()[header::ETAG], "\"7\"");
     }
@@ -1214,12 +1248,12 @@ mod tests {
     #[test]
     fn stale_serve_flags_both_success_kinds() {
         // Server-side SWR: stored seq served with X-Tile-Stale on 200...
-        let resp = tile_response(BYTES.clone(), 6, true, None);
+        let resp = tile_response(BYTES.clone(), 6, true, None, None);
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers()[header::ETAG], "\"6\"");
         assert_eq!(resp.headers()["x-tile-stale"], "true");
         // ...and on the 304 when the client already holds those bytes.
-        let resp = tile_response(BYTES.clone(), 6, true, Some("\"6\""));
+        let resp = tile_response(BYTES.clone(), 6, true, Some("\"6\""), None);
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(resp.headers()["x-tile-stale"], "true");
     }

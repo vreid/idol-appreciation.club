@@ -116,7 +116,11 @@ spec:
             tcpSocket:
               port: 8080
             initialDelaySeconds: 3
-            periodSeconds: 10
+            # 5s x 5 (loadtest verdict 2): survive a TLS-ramp accept
+            # stall without flapping the endpoint, flap it fast enough
+            # to shed load when actually dead.
+            periodSeconds: 5
+            failureThreshold: 5
           # Give kubelet time to propagate endpoint removal to the
           # UpCloud LB before caddy drains, so in-flight TLS connections
           # land on the surged pod.
@@ -128,7 +132,8 @@ spec:
             tcpSocket:
               port: 8080
             initialDelaySeconds: 10
-            periodSeconds: 20
+            periodSeconds: 10
+            failureThreshold: 5
           # caddy exec fails EPERM under drop:[ALL] + RuntimeDefault
           # seccomp (observed CrashLoopBackOff); keep non-root + no
           # privilege escalation, drop the rest.

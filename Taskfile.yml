@@ -184,10 +184,19 @@ tasks:
         set -euo pipefail
         d="sha256:$(head -c 64 /dev/zero | tr '\0' a)"
         img() { helm template chart "$@" | grep -E 'image: ghcr\.io' | sed 's/^ *image: //' | sort; }
-        all() { printf -- '--set-string images.%s.digest=%s --set-string images.%s.tag=%s ' backend "$1" backend "$2" web "$1" web "$2" caddy "$1" caddy "$2"; }
+        # No dash-leading printf FORMAT: task's mvdan-sh swallows it
+        # (prints bare "--"), so build the flags as a plain string.
+        all() {
+          local out="" pkg
+          for pkg in backend web caddy; do
+            out="$out --set-string images.$pkg.digest=$1 --set-string images.$pkg.tag=$2"
+          done
+          printf '%s' "$out"
+        }
         [ "$(img $(all "$d" v9.9.9) | grep -vc "^ghcr.io/[^@]*@$d$")" = 0 ] \
           || { echo "digest set: every ref must be exactly repository@digest" >&2; exit 1; }
-        [ "$(img $(all "" "") | grep -vc ':main$')" = 0 ] \
+        # digest empty, tag defaulting: every ref must fall back to :main
+        [ "$(img --set-string images.backend.digest= --set-string images.web.digest= --set-string images.caddy.digest= | grep -vc ':main$')" = 0 ] \
           || { echo "digest empty: refs must fall back to repository:tag" >&2; exit 1; }
         if helm template chart --set-string images.backend.digest= --set-string images.backend.tag= --set-string images.web.digest= --set-string images.web.tag= --set-string images.caddy.digest= --set-string images.caddy.tag= >/dev/null 2>/tmp/helm-img.err; then
           echo "neither digest nor tag: expected loud render failure, got success" >&2

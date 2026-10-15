@@ -48,44 +48,6 @@ resource "upcloud_kubernetes_cluster" "this" {
   }
 }
 
-resource "upcloud_kubernetes_node_group" "this" {
-  cluster = upcloud_kubernetes_cluster.this.id
-  name    = var.node_group_name
-  plan    = var.node_plan
-  # node_count is the autoscaling FLOOR (see var.node_count). There are
-  # no min/max autoscaling fields on this resource — the provider
-  # v5.47.0 schema and the 1.3 API expose only a fixed count (API JSON
-  # field: "count"). Scaling 1..2 is done by the in-cluster Cluster
-  # Autoscaler (chart/, gated off) PATCHing this count.
-  #
-  # FIELD-NAME TRAP (2026-10-13 outage): a bare `count` here is tofu's
-  # meta-argument — it CLONES this resource once per integer and rolls
-  # every node. The provider attribute is node_count; never write count.
-  #
-  # DRIFT: the Cluster Autoscaler owns the live count (chart/
-  # clusterAutoscaler), so a real `tofu apply` must never snap it back
-  # to var.node_count — that destroys the scaled-up node. ignore_changes
-  # stays for CA's lifetime; raise capacity via the bounds in
-  # chart/values.yaml, not here. See docs/infra.md "Scaling".
-  #
-  # CNPG FLOOR (2026-10-14): the live count is bumped 2→3 once, out of
-  # band, by `task cnpg:node-scale` (UpCloud API PATCH — same
-  # UPCLOUD_TOKEN/CLUSTER env contract as infra:delete-lbs). The patch
-  # lands as drift this resource deliberately ignores; var.node_count
-  # records the intended floor for the next recreate.
-  node_count = var.node_count
-
-  lifecycle {
-    ignore_changes = [node_count]
-  }
-
-  labels = {
-    project    = "idol-appreciation.club"
-    managed-by = "tofu"
-  }
-
-  utility_network_access = true
-}
 
 
 # ----------------------------------------------------------------- postgres
@@ -176,4 +138,33 @@ data "cloudflare_zone" "apex" {
   filter = {
     name = var.domain
   }
+}
+
+# ------------------------------------------------------------------ SEV
+# CAPACITY-FIRST restore (2026-10-15, Main-authorized): the 08:55
+# aborted destroy left the `default` group's last two VMs terminating
+# server-side (open operation, invisible to tofu state; PATCH count→3
+# rejected HTTP 500). This group adds fresh baseline-shaped capacity
+# ALONGSIDE the dying one so DB quorum and app pods land before any
+# reaping — resource creation is not the gated retune; the drain/
+# destroy of the stuck group is. `this` stays untouched; consolidating
+# the two groups back to the documented baseline (and the name) is the
+# phase-4-gated #206 retune's job, via its staged create→drain→destroy.
+resource "upcloud_kubernetes_node_group" "baseline_capacity" {
+  cluster    = upcloud_kubernetes_cluster.this.id
+  name       = "default-new"
+  plan       = var.node_plan
+  node_count = var.node_count
+
+  lifecycle {
+    ignore_changes = [node_count]
+  }
+
+  labels = {
+    project    = "idol-appreciation.club"
+    managed-by = "tofu"
+    pool       = "baseline-new"
+  }
+
+  utility_network_access = true
 }

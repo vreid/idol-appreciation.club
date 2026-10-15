@@ -18,12 +18,12 @@ output "cluster_zone" {
 
 output "node_plan" {
   description = "Worker node plan actually in use."
-  value       = upcloud_kubernetes_node_group.this.plan
+  value       = upcloud_kubernetes_node_group.baseline_capacity.plan
 }
 
 output "node_count" {
   description = "Worker node count."
-  value       = upcloud_kubernetes_node_group.this.node_count
+  value       = upcloud_kubernetes_node_group.baseline_capacity.node_count
 }
 
 output "s3_endpoint" {

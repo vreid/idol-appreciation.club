@@ -238,5 +238,12 @@ jobs:
             [ "$code" = "200" ] && ok=1 && break
             sleep 15
           done
+          if [ "$ok" != "1" ]; then
+            # External health failed while in-cluster pieces look fine:
+            # the edge (web deployment runs Caddy) is the suspect. Its
+            # certmagic/ACME errors decide TLS-vs-LB-vs-S3 instantly.
+            echo "## web (caddy) logs — external health failed" | tee -a "$GITHUB_STEP_SUMMARY"
+            kubectl -n idol logs deploy/web --all-containers --tail=80 2>&1 | tail -120 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          fi
           [ "$ok" = "1" ]
           kubectl -n idol delete job s3-vet --ignore-not-found >/dev/null

@@ -98,6 +98,17 @@ web:
       cpu: 2500m
       memory: 1.5Gi
 
+# Descheduler (phase 5, salvage of the cancelled #206 retune): rebalances
+# the baseline pool; the worker pool stays with the Cluster Autoscaler.
+# CloudNativePG instances are protected through their PVC (PodsWithPVC)
+# and their PDB. DEFAULT OFF — flip `descheduler.enabled` to roll it;
+# the nodeSelector must match the kubelet label the live baseline group
+# carries (`pool=baseline-new`, not the retune's never-created
+# `pool=baseline`).
+descheduler:
+  enabled: false
+  nodeSelector: "pool=baseline-new"
+
 # Object storage for the edge's certificates and ACME state (CertMagic
 # storage module; chart/caddy/Caddyfile `storage s3` block). Endpoint
 # and bucket are injected by deploy.yml on every deploy (the UpCloud API

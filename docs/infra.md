@@ -775,26 +775,33 @@ and run the script manually.
 
 ## Baseline retune (phase 5, GATED on the phase 4 signal)
 
-The 4 vCPU / 8 GB `default` group becomes the doc's 3 x 2 vCPU / 4 GB `baseline`
-group once the API image ships without libvips (until then the 2 GiB libvips
-burst headroom does not fit beside a PG instance on a 4 GB node). **Never resize
-a group in place**: UpCloud plan changes roll every node in the group — the
-exact churn the stack forbids. The staged path, automated up to the soak in
+The interim 4 vCPU / 8 GB `default-new` group (SEV capacity-first, see the
+2026-10-15 incident note) becomes the doc's 3 x 2 vCPU / 4 GB group once the API
+image ships without libvips (until then the 2 GiB libvips burst headroom does
+not fit beside a PG instance on a 4 GB node). **Never resize a group in place**:
+UpCloud plan changes roll every node in the group — the exact churn the stack
+forbids. The staged path, automated up to the soak in
 `task infra:retune-baseline` (GATE=phase4-libvips-gone):
 
 1. `tofu apply -target=upcloud_kubernetes_node_group.baseline` — a NEW group
-   (plan STARTER-2xCPU-4GB, kubelet label `pool=baseline`), the old group stays
-   untouched and serving.
+   under the canonical name `default` (free since #217 retired the stuck group;
+   plan STARTER-2xCPU-4GB, kubelet label `pool=baseline`), the interim group
+   stays untouched and serving. Taking the final name up front means cutover
+   needs no rename — a rename is a replacement, i.e. another dance.
 2. Wait for the three `pool=baseline` nodes to go Ready.
-3. Cordon + drain the old nodes ONE AT A TIME; between drains the task verifies
-   the CNPG instances are still one-per-node (required pod anti-affinity must
-   survive — 3 Running instances on 3 distinct nodes). Rollback at any point:
-   `kubectl uncordon <node>` — nothing is destroyed until step 5.
+3. Cordon + drain the `default-new` nodes ONE AT A TIME; between drains the task
+   verifies the CNPG instances are still one-per-node (required pod
+   anti-affinity must survive — 3 Running instances on 3 distinct nodes).
+   Rollback at any point: `kubectl uncordon <node>` — nothing is destroyed until
+   step 5.
 4. Enable the descheduler (values `descheduler.enabled: true`): it rebalances
    the baseline pool only (`pool=baseline` nodeSelector), never touches the
    tainted worker pool (Cluster Autoscaler territory), and never evicts pods
    with PVCs (the CNPG instances) — PDB respect on top.
-5. Soak, then `tofu destroy -target=upcloud_kubernetes_node_group.this` and
-   remove the old group + `var.node_*` from tofu in the cutover commit. CNPG
-   memory moves to request == limit (1.5 GiB) in the same flip so a busy
-   instance cannot starve the API on a 4 GB node.
+5. Soak, then
+   `tofu destroy -target=upcloud_kubernetes_node_group.baseline_capacity` and
+   drop that resource in the cutover commit (re-point the
+   `node_plan`/`node_count` outputs at the retuned group; the cluster autoscaler
+   bounds already target name `default`). CNPG memory moves to request == limit
+   (1.5 GiB) in the same flip so a busy instance cannot starve the API on a 4 GB
+   node.

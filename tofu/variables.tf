@@ -73,9 +73,17 @@ variable "node_count" {
 }
 
 variable "baseline_node_group_name" {
-  description = "Baseline pool node group name (PG + API + edge, 2 vCPU / 4 GB)."
+  description = <<-EOT
+    Baseline pool node group name. `default`: the canonical single-group
+    name the cluster autoscaler bounds target (chart values nodeGroup)
+    and the name docs/scaling-architecture.md documents. It has been
+    free since the SEV consolidation deleted the stuck `default` group
+    (#217), so the gated retune creates the replacement under the final
+    name directly — no rename (a rename is a replacement, i.e. another
+    node dance) after cutover.
+  EOT
   type        = string
-  default     = "baseline"
+  default     = "default"
 }
 
 variable "baseline_node_plan" {

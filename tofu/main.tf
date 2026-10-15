@@ -50,11 +50,15 @@ resource "upcloud_kubernetes_cluster" "this" {
 
 
 # Baseline pool (docs/scaling-architecture.md "Cluster layout", phase 5):
-# 3 x 2 vCPU / 4 GB carrying PG, the API and the edge. Replaces the 4 vCPU
-# / 8 GB `this` group — ONLY via the staged `task infra:retune-baseline`
-# runbook (create -> drain -> destroy), never by in-place plan changes:
-# UpCloud node-group plan updates roll every node in the group, which is
-# exactly the vertical churn this stack forbids.
+# 3 x 2 vCPU / 4 GB carrying PG, the API and the edge. Replaces the interim
+# 4 vCPU / 8 GB `default-new` group (SEV capacity-first, #217) — ONLY via
+# the staged `task infra:retune-baseline` runbook (create -> drain ->
+# destroy), never by in-place plan changes: UpCloud node-group plan
+# updates roll every node in the group, which is exactly the vertical
+# churn this stack forbids. The replacement takes the canonical `default`
+# name (free since #217 retired the stuck group; the cluster autoscaler
+# bounds already target it) so cutover needs no rename — a rename is a
+# replacement, i.e. another node dance.
 # GATED on the Phase 4 signal (API image without libvips): the 2 GiB
 # libvips burst headroom no longer fits a 4 GB node beside PG.
 resource "upcloud_kubernetes_node_group" "baseline" {
@@ -64,8 +68,10 @@ resource "upcloud_kubernetes_node_group" "baseline" {
   node_count = var.baseline_node_count
 
   # CNPG keeps one instance per node via required pod anti-affinity, so
-  # three nodes is the floor; the Cluster Autoscaler must NOT touch this
-  # group (its --nodes bounds cover only `default` and `workers`).
+  # three nodes is the floor; the Cluster Autoscaler scales THIS group
+  # within its `default` bounds (3..4) once it exists — the interim
+  # `default-new` group is outside the bounds, so the CA never touches
+  # it while the retune drains it.
   lifecycle {
     ignore_changes = [node_count]
   }

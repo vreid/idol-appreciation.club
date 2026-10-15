@@ -1047,12 +1047,14 @@ tasks:
   # ---------------- phase 5 baseline retune (GATED) ----------------
   # GATE: run only after the Phase 4 lane confirms the API image ships
   # without libvips (docs/scaling-architecture.md phased-rollout gate).
-  # The old 4 vCPU / 8 GB `default` group is replaced by the 2 vCPU /
-  # 4 GB `baseline` group via create -> drain -> destroy, never by
-  # in-place plan changes (UpCloud plan updates roll every node).
+  # The interim 4 vCPU / 8 GB `default-new` group (SEV capacity-first,
+  # #217) is replaced by the 2 vCPU / 4 GB `default` group via
+  # create -> drain -> destroy, never by in-place plan changes (UpCloud
+  # plan updates roll every node). The replacement carries the final
+  # canonical name directly: renames are replacements (another dance).
   # Rollback at every step: the release keeps scheduling onto whatever
   # nodes exist; `tofu destroy -target=…baseline` + uncordon restores
-  # the old shape. Env contract: UPCLOUD_TOKEN/CLUSTER (as
+  # the interim shape. Env contract: UPCLOUD_TOKEN/CLUSTER (as
   # infra:delete-lbs), KUBECONFIG (as deploy:k8s).
 
   infra:retune-baseline:
@@ -1086,11 +1088,13 @@ tasks:
           sleep 30
           cnpg_ok || { echo "CNPG instances not one-per-node after draining $node — INVESTIGATE before continuing (rollback: kubectl uncordon $node)" >&2; exit 1; }
         done
-        echo "== all old nodes drained and Cordoned; baseline carries the whole stack"
+        echo "== all old nodes drained and Cordoned; the retuned default group carries the whole stack"
         echo "== next (manual, in order):"
         echo "   1. enable descheduler (values descheduler.enabled=true) + deploy"
-        echo "   2. soak, then: tofu destroy -target=upcloud_kubernetes_node_group.this"
-        echo "   3. remove the 'this' group + var.node_* from tofu (cutover commit)"
+        echo "   2. soak, then: tofu destroy -target=upcloud_kubernetes_node_group.baseline_capacity"
+        echo "   3. cutover commit: drop the baseline_capacity resource + re-point the"
+        echo "      node_plan/node_count outputs and the clusterAutoscaler group bounds"
+        echo "      at the retuned group (the CA already targets name 'default')"
 
   # ---------------- e2e (e2e.yml) ----------------
 

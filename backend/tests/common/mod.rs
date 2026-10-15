@@ -46,6 +46,9 @@ impl Default for TileRenderCfg {
 #[derive(Clone, Copy)]
 pub struct PipelineCfg {
     pub enabled: bool,
+    /// Worker loops spawned per server (0 = none; tests drive claims
+    /// manually with 0).
+    pub workers: u32,
     pub poll_ms: u64,
     pub lease_secs: i64,
     /// z 11–17 quiet window.
@@ -59,6 +62,7 @@ impl Default for PipelineCfg {
     fn default() -> Self {
         Self {
             enabled: false,
+            workers: 0,
             poll_ms: 1000,
             lease_secs: 120,
             parent_quiet_ms: 3000,
@@ -74,6 +78,7 @@ impl PipelineCfg {
     pub fn fast() -> Self {
         Self {
             enabled: true,
+            workers: 1,
             poll_ms: 10,
             lease_secs: 120,
             parent_quiet_ms: 0,
@@ -259,6 +264,7 @@ pub async fn start_server_full(
         import_group_concurrency: 2,
         import_derivative_long_edge: 1024,
         render_pipeline_enabled: pipeline.enabled,
+        render_pipeline_workers: pipeline.workers,
         render_pipeline_poll_ms: pipeline.poll_ms,
         render_pipeline_lease_secs: pipeline.lease_secs,
         render_pipeline_parent_quiet_ms: pipeline.parent_quiet_ms,

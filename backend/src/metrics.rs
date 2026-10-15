@@ -6,7 +6,7 @@
 //!
 //! Aggregates only — no usernames, keys, or request payloads.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -108,6 +108,12 @@ pub struct Metrics {
     import_batches: AtomicU64,
     import_images: AtomicU64,
     import_chunk_writes: AtomicU64,
+    // render_jobs queue depth (refreshed by the worker claim loop; a
+    // dark deploy with 0 workers reports 0/0/0 — the runbook watches
+    // these only once workers are on).
+    render_jobs_pending: AtomicI64,
+    render_jobs_running: AtomicI64,
+    render_jobs_failed: AtomicI64,
     import_duration: Histogram<{ IMPORT_BUCKETS.len() }>,
     /// Pyramid gate (issue #120): leases currently held by full-pyramid
     /// (z < BASE_Z) renders, and entry GETs shed because the gate was
@@ -147,6 +153,9 @@ pub static METRICS: LazyLock<Metrics> = LazyLock::new(|| Metrics {
     import_batches: AtomicU64::new(0),
     import_images: AtomicU64::new(0),
     import_chunk_writes: AtomicU64::new(0),
+    render_jobs_pending: AtomicI64::new(0),
+    render_jobs_running: AtomicI64::new(0),
+    render_jobs_failed: AtomicI64::new(0),
     import_duration: Histogram::new(IMPORT_BUCKETS),
     pyramid_active: AtomicUsize::new(0),
     pyramid_sheds: AtomicU64::new(0),
@@ -255,11 +264,23 @@ pub fn auth_rate_limited() {
 /// tile prewarm is excluded).
 pub fn import_done(images: u64, chunk_writes: u64, elapsed: Duration) {
     let m = &*METRICS;
+
     m.import_batches.fetch_add(1, Ordering::Relaxed);
     m.import_images.fetch_add(images, Ordering::Relaxed);
     m.import_chunk_writes
         .fetch_add(chunk_writes, Ordering::Relaxed);
     m.import_duration.observe(elapsed);
+}
+
+/// Snapshot of the `render_jobs` queue depth, refreshed by the worker
+/// claim loop each tick (the only component with a live DB connection
+/// once the pipeline is on; a dark deploy with zero workers leaves the
+/// gauges at their 0 init).
+pub fn render_jobs_queue(pending: i64, running: i64, failed: i64) {
+    let m = &*METRICS;
+    m.render_jobs_pending.store(pending, Ordering::Relaxed);
+    m.render_jobs_running.store(running, Ordering::Relaxed);
+    m.render_jobs_failed.store(failed, Ordering::Relaxed);
 }
 
 /// Exposition of all series. `pool` supplies the sqlx connection gauges;
@@ -402,6 +423,17 @@ pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> Stri
         "# HELP chunk_write_amplification Images per chunk raster write (batch import).\n# TYPE chunk_write_amplification gauge\n",
     );
     out.push_str(&format!("chunk_write_amplification {amp}\n"));
+
+    out.push_str(
+        "# HELP render_jobs_queue Depth of the Phase 3 render_jobs queue by state (refreshed by the worker claim loop).\n# TYPE render_jobs_queue gauge\n",
+    );
+    for (state, v) in [
+        ("pending", m.render_jobs_pending.load(Ordering::Relaxed)),
+        ("running", m.render_jobs_running.load(Ordering::Relaxed)),
+        ("failed", m.render_jobs_failed.load(Ordering::Relaxed)),
+    ] {
+        out.push_str(&format!("render_jobs_queue{{state=\"{state}\"}} {v}\n"));
+    }
 
     out.push_str(
         "# HELP tile_pyramid_active Full-pyramid (z < BASE_Z) renders currently in flight (issue #120 gate).\n# TYPE tile_pyramid_active gauge\n",

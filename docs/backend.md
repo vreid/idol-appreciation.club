@@ -576,10 +576,14 @@ version-driven job queue that brings chunks up to date and cuts their 21 zoom
 parent jobs, so tile requests never render anything. It ships **dark**:
 `RENDER_PIPELINE_ENABLED=false` (the default) keeps every code path above
 exactly as-is — synchronous placement composites, synchronous removal replays,
-the `tile_render_jobs` queue — and no worker runs (test-enforced by
+the `tile_render_jobs` queue. Workers are a separate knob:
+`RENDER_PIPELINE_WORKERS` (default 0) spawns the claim loops, and may be raised
+BEFORE the enabled flip so a pre-seeded queue is painted while the request path
+still composites (the staged cutover below). With zero workers and the flag off
+nothing runs (test-enforced by
 `render_jobs::pipeline_disabled_keeps_request_path_unchanged`). Migration 0008
 applies at boot either way; the new columns back-fill untouched (`painted_seq`
-0 = "nothing painted by the pipeline yet"). Cutover is the value flip plus a
+0 = "nothing painted by the pipeline yet"). Cutover is the values flip plus a
 worker deployment (see the rollout plan below).
 
 - **Schema.** `chunk_seqs` gains `painted_seq` (the version the stored raster

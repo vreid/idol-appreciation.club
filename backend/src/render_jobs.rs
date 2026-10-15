@@ -248,6 +248,23 @@ pub fn spawn_worker(app: &App) {
     let app = app.clone();
     tokio::spawn(async move {
         loop {
+            // Queue-depth gauges for the cutover watch (one cheap
+            // aggregate per tick; also the worker's liveness signal —
+            // frozen gauges = dead worker).
+            if let Ok(rows) = sqlx::query_as::<_, (String, i64)>(
+                "SELECT state, count(*)::bigint FROM render_jobs GROUP BY state",
+            )
+            .fetch_all(&app.pool)
+            .await
+            {
+                let get = |s: &str| {
+                    rows.iter()
+                        .find(|(st, _)| st == s)
+                        .map(|(_, n)| *n)
+                        .unwrap_or(0)
+                };
+                crate::metrics::render_jobs_queue(get("pending"), get("running"), get("failed"));
+            }
             let claimed = match claim_due(&app.pool, app.cfg.render_pipeline_lease_secs).await {
                 Ok(Some((z, x, y))) => {
                     tracing::info!(z, x, y, "render job claimed");
@@ -469,7 +486,37 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
 /// 4. otherwise delete (finished rows are deleted) — unless a change
 ///    arrived meanwhile, then re-queue;
 /// 5. mark the zoom 17 parent dirty.
-#[doc(hidden)]
+///
+/// The Phase 2 version seam (docs/backend.md): a rendered version is
+/// noted in this pod's map and published as ONE transactional `versions`
+/// NOTIFY inside the finish transaction — subscribers learn at commit,
+/// other pods' maps follow via `note_payload`.
+async fn queue_version_event(
+    tx: &mut sqlx::PgConnection,
+    written: &[(i64, i64, i64)],
+    v: i64,
+) -> AppResult<()> {
+    if written.is_empty() || v <= 0 {
+        return Ok(());
+    }
+    let tiles: Vec<serde_json::Value> = written
+        .iter()
+        .map(|(z, x, y)| {
+            crate::versions::note(*z, *x, *y, v);
+            serde_json::json!({ "key": format!("{z}/{x}/{y}"), "version": v })
+        })
+        .collect();
+    let payload = serde_json::json!({ "type": "versions", "tiles": tiles }).to_string();
+    crate::dbq::timed(
+        "render_jobs",
+        sqlx::query("SELECT pg_notify('events', $1)")
+            .bind(payload)
+            .execute(&mut *tx),
+    )
+    .await?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn finish_chunk(
     app: &App,
@@ -501,6 +548,13 @@ pub async fn finish_chunk(
             .execute(&mut *tx),
         )
         .await?;
+        let written: Vec<(i64, i64, i64)> = tile_zs
+            .iter()
+            .zip(tile_xs)
+            .zip(tile_ys)
+            .map(|((z, x), y)| (*z as i64, *x as i64, *y as i64))
+            .collect();
+        queue_version_event(&mut tx, &written, v).await?;
     }
     // 1. A change arrived while the job ran: re-queue, never abort.
     let requeued: Option<(i32,)> = crate::dbq::timed(
@@ -711,6 +765,7 @@ pub async fn finish_parent(app: &App, z: i64, x: i64, y: i64, v: i64) -> AppResu
         .execute(&mut *tx),
     )
     .await?;
+    queue_version_event(&mut tx, &[(z, x, y)], v).await?;
     // A change arrived while the job ran: re-queue, never abort.
     let requeued: Option<(i32,)> = crate::dbq::timed(
         "render_jobs",

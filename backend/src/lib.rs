@@ -80,9 +80,12 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
     ));
     tiles::spawn_render_worker(&state);
     // Phase 3 pipeline (docs/scaling-architecture.md): DARK by default —
-    // the worker (and the queue-only place/remove paths) only run when
-    // RENDER_PIPELINE_ENABLED=true.
-    if state.cfg.render_pipeline_enabled {
+    // workers only run when RENDER_PIPELINE_WORKERS > 0 (default 0), and
+    // the queue-only place/remove paths additionally require
+    // RENDER_PIPELINE_ENABLED=true. The split lets workers burn a
+    // pre-seeded queue while the request path still composites (staged
+    // cutover, docs/backend.md).
+    for _ in 0..state.cfg.render_pipeline_workers {
         render_jobs::spawn_worker(&state);
     }
 

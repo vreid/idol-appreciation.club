@@ -81,6 +81,12 @@ pub struct Config {
     /// their z 18–20 tiles and bubbles parent versions. Cutover is the
     /// value flip (plus migration 0008, applied at boot regardless).
     pub render_pipeline_enabled: bool,
+    /// Worker claim loops per process. Independent of
+    /// `render_pipeline_enabled`: 0 = no worker at all (dark); > 0 lets
+    /// workers burn a pre-seeded queue while the request path still
+    /// composites (the staged cutover in docs/backend.md: prewarm before
+    /// the enabled flip).
+    pub render_pipeline_workers: u32,
     /// render_jobs worker: claim-loop poll interval when the queue is
     /// empty (claims are instant when a job is due).
     pub render_pipeline_poll_ms: u64,
@@ -179,6 +185,9 @@ impl Config {
                 .parse()
                 .expect("invalid IMPORT_DERIVATIVE_LONG_EDGE"),
             render_pipeline_enabled: parse_bool(&env_or("RENDER_PIPELINE_ENABLED", "false")),
+            render_pipeline_workers: env_or("RENDER_PIPELINE_WORKERS", "0")
+                .parse()
+                .expect("invalid RENDER_PIPELINE_WORKERS"),
             render_pipeline_poll_ms: env_or("RENDER_PIPELINE_POLL_MS", "1000")
                 .parse()
                 .expect("invalid RENDER_PIPELINE_POLL_MS"),
@@ -215,8 +224,10 @@ mod tests {
         std::env::set_var("S3_BUCKET", "test-bucket");
         std::env::set_var("SESSION_SECRET", "x".repeat(32));
         std::env::remove_var("RENDER_PIPELINE_ENABLED");
+        std::env::remove_var("RENDER_PIPELINE_WORKERS");
         let cfg = super::Config::from_env();
         assert!(!cfg.render_pipeline_enabled);
+        assert_eq!(cfg.render_pipeline_workers, 0);
         // Doc defaults: z ≤ 10 at most every 10–30 s; z 11–17 quiet.
         assert_eq!(cfg.render_pipeline_parent_low_ms, 10_000);
         assert_eq!(cfg.render_pipeline_parent_spread_ms, 20_000);

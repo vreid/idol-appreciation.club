@@ -48,6 +48,10 @@ jobs:
       # its 2-key quota with orphan keys, so tofu's key reissue (state
       # drift) and deploy's rotation both 400. Free the slot first; the
       # infra-apply then owns exactly one fresh key.
+      # SEV 2026-10-15 precondition: the object-storage `app` user sits at
+      # its 2-key quota with orphan keys, so tofu's key reissue (state
+      # drift) and deploy's rotation both 400. Free the slot first; the
+      # infra-apply then owns exactly one fresh key.
       - name: free app access-key quota
         env:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
@@ -80,6 +84,36 @@ jobs:
       # operation holding 2/3 nodes cordoned (invisible to tofu state).
       # Diagnose the group, restore the count to the documented baseline
       # if the platform shrank it, and report node operation state.
+      - name: key reissue diagnostic (capture the 400 body)
+        env:
+          UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          uid="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            https://api.upcloud.com/1.3/objectstorage/users \
+            | jq -r '.[] | select(.username == "app") | .uuid')"
+          test -n "$uid"
+          before="$(curl -sS -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+            "https://api.upcloud.com/1.3/objectstorage/users/$uid" \
+            | jq -r '.access_keys | length')"
+          echo "keys before diagnostic: $before" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$before" = "0" ]; then
+            resp="$(mktemp)"
+            code="$(curl -sS -o "$resp" -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+              -H "Content-Type: application/json" -d '{}' \
+              "https://api.upcloud.com/1.3/objectstorage/users/$uid/access_keys")"
+            echo "POST access_keys -> HTTP $code" | tee -a "$GITHUB_STEP_SUMMARY"
+            jq -r 'del(.secret_access_key)' "$resp" | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$code" = "201" ]; then
+              echo "key create WORKS now — tofu owns the reissue; removing the diagnostic key"
+              kid="$(jq -r '.access_key_id' "$resp")"
+              dcode="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+                "https://api.upcloud.com/1.3/objectstorage/users/$uid/access_keys/$kid")"
+              echo "cleanup diagnostic key -> HTTP $dcode"
+            fi
+          fi
       - name: node-group state + count restore
         env:
           UPCLOUD_TOKEN: ${{ secrets.UPCLOUD_API_TOKEN }}

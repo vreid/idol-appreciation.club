@@ -62,6 +62,10 @@ spec:
           env:
             - name: REGISTRATION_APPROVAL_REQUIRED
               value: {{ .Values.backend.registrationApprovalRequired | quote }}
+            - name: RENDER_PIPELINE_ENABLED
+              value: {{ .Values.backend.renderPipelineEnabled | quote }}
+            - name: RENDER_PIPELINE_WORKERS
+              value: {{ .Values.backend.renderPipelineWorkers | quote }}
             - name: DATABASE_POOL_MAX
               # 15/pod x 2 replicas = 30 total, back under the managed
               # instance's connection ceiling. The 30 stopgap was sized

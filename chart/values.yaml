@@ -27,6 +27,13 @@ domain: idol-appreciation.club
 
 backend:
   registrationApprovalRequired: true
+  # Phase 3 render pipeline (docs/scaling-architecture.md): dark by
+  # default. Staged cutover (docs/backend.md): set renderPipelineWorkers
+  # > 0 FIRST so workers burn the pre-seeded queue while the request
+  # path still composites; flip renderPipelineEnabled last (place/remove
+  # go queue-only). Workers spawn per pod: 2/pod x 2 pods = 4 claims.
+  renderPipelineEnabled: false
+  renderPipelineWorkers: 0
   # Two replicas: zero-blip rolls (surge pod ready before the old one
   # drains) and half the blast radius per pod. Multi-writer safety rides
   # the session-level PG advisory chunk locks (chunks.rs), not the replica

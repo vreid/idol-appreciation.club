@@ -144,4 +144,6 @@ chart/cnpg/barman-cloud-plugin-0.15.1.yaml:kubernetes-secret-yaml:965
 # numbers drift with ci.yml edits; regenerate via the recipe above.)
 .github/workflows/ci.yml:generic-password:191
 .github/workflows/ci.yml:generic-credential-uri:205
-backend/tests/common/mod.rs:generic-password:331
+# Same fixture credential in the shared test harness login helper — line
+# drifted when Phase 3's render_jobs work merged into common/mod.rs.
+backend/tests/common/mod.rs:generic-password:431

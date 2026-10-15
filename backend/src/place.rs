@@ -401,6 +401,14 @@ pub async fn place(
         .await?;
     }
 
+    // Pipeline-on ordering doctrine (docs/scaling-architecture.md
+    // "Ordering"): hold the single sequencer row lock from the seq draw
+    // to commit so commit order equals sequence order — the worker's
+    // incremental painting depends on it. Off (the default): today's
+    // path, unchanged.
+    if app.cfg.render_pipeline_enabled {
+        crate::render_jobs::lock_sequencer(&mut tx).await?;
+    }
     let seq: (i64,) = crate::dbq::timed(
         "place",
         sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
@@ -409,9 +417,12 @@ pub async fn place(
     let seq = seq.0;
 
     // Paint chunks before the row commits: tiles/ETags advance only when
-    // the rasters already show the placement.
-    crate::chunks::composite_placement(&app, aabb, rot, derivative_bytes).await?;
-    crate::metrics::chunk_composited();
+    // the rasters already show the placement. Pipeline-on: the worker
+    // paints — this transaction only records and queues.
+    if !app.cfg.render_pipeline_enabled {
+        crate::chunks::composite_placement(&app, aabb, rot, derivative_bytes).await?;
+        crate::metrics::chunk_composited();
+    }
 
     let duplicate_count: (i64,) = crate::dbq::timed(
         "place",
@@ -456,12 +467,23 @@ pub async fn place(
     .await?;
 
     // The chunk version rollup advances with the placement (same tx): the
-    // tile read path reads chunk_seqs, never placement rows.
-    crate::chunks::bump_chunk_seqs(
-        &mut tx,
-        &[(seq, aabb.x, aabb.y, aabb.w as i32, aabb.h as i32)],
-    )
-    .await?;
+    // tile read path reads chunk_seqs, never placement rows. Pipeline-on:
+    // the ordering-aware variant flags out-of-order commits, and the
+    // chunk jobs are queued here (the worker paints).
+    if app.cfg.render_pipeline_enabled {
+        crate::chunks::bump_chunk_seqs_pipeline(
+            &mut tx,
+            &[(seq, aabb.x, aabb.y, aabb.w as i32, aabb.h as i32)],
+        )
+        .await?;
+        crate::render_jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
+    } else {
+        crate::chunks::bump_chunk_seqs(
+            &mut tx,
+            &[(seq, aabb.x, aabb.y, aabb.w as i32, aabb.h as i32)],
+        )
+        .await?;
+    }
 
     let event = json!({
         "type": "place",
@@ -549,31 +571,45 @@ pub async fn admin_delete(
             .execute(&mut *tx),
     )
     .await?;
-    crate::chunks::replay_chunks(&app, &mut tx, &chunk_keys).await?;
-    // The replay rewrites the rasters without the removed art; give the
-    // chunks a FRESH version (a raw sequence draw, no row inserted) so the
-    // rollup moves forward and stale tiles re-render exactly once.
-    let bump: (i64,) = crate::dbq::timed(
-        "place",
-        sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
-    )
-    .await?;
-    crate::chunks::bump_chunk_seqs(
-        &mut tx,
-        &chunk_keys
-            .iter()
-            .map(|&(cx, cy)| {
-                (
-                    bump.0,
-                    cx * crate::world::CHUNK_PX,
-                    cy * crate::world::CHUNK_PX,
-                    1,
-                    1,
-                )
-            })
-            .collect::<Vec<_>>(),
-    )
-    .await?;
+    if app.cfg.render_pipeline_enabled {
+        // Phase 3 removal (docs "Removal"): set removed_at, advance the
+        // chunk's version, set needs_rebuild, queue — and return. The
+        // from-blank rebuild (~80 ms per remaining image) runs in the
+        // worker.
+        let bump: (i64,) = crate::dbq::timed(
+            "place",
+            sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
+        )
+        .await?;
+        crate::chunks::bump_chunk_seqs_removal(&mut tx, bump.0, &chunk_keys).await?;
+        crate::render_jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
+    } else {
+        crate::chunks::replay_chunks(&app, &mut tx, &chunk_keys).await?;
+        // The replay rewrites the rasters without the removed art; give the
+        // chunks a FRESH version (a raw sequence draw, no row inserted) so the
+        // rollup moves forward and stale tiles re-render exactly once.
+        let bump: (i64,) = crate::dbq::timed(
+            "place",
+            sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
+        )
+        .await?;
+        crate::chunks::bump_chunk_seqs(
+            &mut tx,
+            &chunk_keys
+                .iter()
+                .map(|&(cx, cy)| {
+                    (
+                        bump.0,
+                        cx * crate::world::CHUNK_PX,
+                        cy * crate::world::CHUNK_PX,
+                        1,
+                        1,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+    }
     let event = json!({
         "type": "remove",
         "id": id,

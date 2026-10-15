@@ -16,6 +16,7 @@ pub mod import;
 pub mod metrics;
 pub mod place;
 pub mod rate;
+pub mod render_jobs;
 pub mod router;
 
 pub mod state;
@@ -78,6 +79,15 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         events_tx.clone(),
     ));
     tiles::spawn_render_worker(&state);
+    // Phase 3 pipeline (docs/scaling-architecture.md): DARK by default —
+    // workers only run when RENDER_PIPELINE_WORKERS > 0 (default 0), and
+    // the queue-only place/remove paths additionally require
+    // RENDER_PIPELINE_ENABLED=true. The split lets workers burn a
+    // pre-seeded queue while the request path still composites (staged
+    // cutover, docs/backend.md).
+    for _ in 0..state.cfg.render_pipeline_workers {
+        render_jobs::spawn_worker(&state);
+    }
 
     Ok((state.clone(), router::router(state)))
 }

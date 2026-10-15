@@ -80,6 +80,7 @@ async fn stale_burst_coalesces_into_one_render() {
             max_delay_secs: 60,
             cap: 512,
         },
+        Default::default(),
     )
     .await;
     let placer = make_placer(&server, "bursty").await;
@@ -156,6 +157,7 @@ async fn max_delay_fires_under_continuous_bumps() {
             max_delay_secs: 1,
             cap: 512,
         },
+        Default::default(),
     )
     .await;
     let placer = make_placer(&server, "soaker").await;
@@ -223,6 +225,7 @@ async fn seq_bump_during_render_converges_once() {
             max_delay_secs: 60,
             cap: 512,
         },
+        Default::default(),
     )
     .await;
     let placer = make_placer(&server, "racer").await;
@@ -303,6 +306,7 @@ async fn placement_latency_unaffected_by_saturated_queue() {
             max_delay_secs: 60,
             cap: 512,
         },
+        Default::default(),
     )
     .await;
     let placer = make_placer(&server, "poster").await;
@@ -396,6 +400,7 @@ async fn cold_flood_sheds_202_while_hot_stays_stale() {
             max_delay_secs: 3600,
             cap: 64,
         },
+        Default::default(),
     )
     .await;
     let placer = make_placer(&server, "flooder").await;
@@ -537,6 +542,7 @@ async fn pyramid_gate_sheds_and_keeps_placements_live() {
             max_delay_secs: 60,
             cap: 512,
         },
+        Default::default(),
     )
     .await;
     let placer = make_placer(&server, "pyramider").await;

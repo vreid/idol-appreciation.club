@@ -6,5 +6,9 @@
   "web": {
     "digest": "sha256:23314dc05c0b8ef141364f5442a5f451e0bfca52051329ab90e684d9133d13b0",
     "mergeSha": "a78d715312c531a5760754ff2031b08e92d704ac"
+  },
+  "caddy": {
+    "digest": "sha256:b175b142c2275b05f0e1a0a47058a646a32624dc9e5874ccd023a230cb6d9f27",
+    "mergeSha": "baf857393ee49a8c1832098b959b1cc9f4a65a13"
   }
 }

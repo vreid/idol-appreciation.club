@@ -38,7 +38,7 @@ jobs:
   s3-probes:
     name: object storage conditional-write probes
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     environment: production
     env:
       CLUSTER: idol-canvas
@@ -98,12 +98,23 @@ jobs:
           count="$(jq -r '.count // .node_groups[0].count // empty' /tmp/group.json)"
           echo "live count: ${count:-unknown}" | tee -a "$GITHUB_STEP_SUMMARY"
           if [ -n "$count" ] && [ "$count" -lt 3 ]; then
-            code="$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
-              -H "Authorization: Bearer $UPCLOUD_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d '{"count": 3}' \
-              "https://api.upcloud.com/1.3/kubernetes/$uuid/node-groups/default")"
-            echo "PATCH count->3: HTTP $code" | tee -a "$GITHUB_STEP_SUMMARY"
+            # The PATCH 500s while the group is mid-operation (nodes
+            # terminating => state "pending"): retry until it settles.
+            code=000
+            for attempt in 1 2 3 4 5 6; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
+                -H "Authorization: Bearer $UPCLOUD_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d '{"count": 3}' \
+                "https://api.upcloud.com/1.3/kubernetes/$uuid/node-groups/default")"
+              echo "PATCH count->3 attempt $attempt: HTTP $code" | tee -a "$GITHUB_STEP_SUMMARY"
+              case "$code" in 2??) break;; esac
+              sleep 60
+            done
+            case "$code" in
+              2??) ;;
+              *) echo "node-group count restore FAILED (last HTTP $code); refusing to probe a nodeless cluster" >&2; exit 1;;
+            esac
           fi
       - name: kubeconfig + in-cluster probes
         env:
@@ -119,6 +130,18 @@ jobs:
             | jq -r '.kubeconfig' > /tmp/kubeconfig
           chmod 600 /tmp/kubeconfig
           export KUBECONFIG=/tmp/kubeconfig
+          # New nodes take minutes to register after the count restore;
+          # the probe job cannot schedule onto an empty cluster.
+          nodes_ready=0
+          for attempt in $(seq 1 20); do
+            nodes_ready="$(kubectl get nodes 2>/dev/null | grep -c ' Ready' || true)"
+            [ "${nodes_ready:-0}" -ge 1 ] && break
+            echo "no Ready node yet (attempt $attempt)"
+            sleep 30
+          done
+          [ "${nodes_ready:-0}" -ge 1 ] \
+            || { echo "no Ready node after 10m; probes need a node — check the count restore above" >&2; exit 1; }
+          kubectl get nodes | head -6
           # Probe runner: uses the LIVE app-env S3 creds (same ones caddy
           # would use). curl --aws-sigv4, exactly like the deploy probe.
           # The whole script is single-quoted ON PURPOSE: it must expand
@@ -128,7 +151,7 @@ jobs:
           # envFrom must be on the pod template AT creation: a Job's
           # template is immutable after create (kubectl set env fails).
           kubectl -n idol create job s3-vet --image=curlimages/curl:8.16.0 \
-            --dry-run=client -o yaml \
+            --dry-run=client -o json \
             -- /bin/sh -xc '
             P="https://$S3_ENDPOINT/$S3_BUCKET/caddy-vet-probe"
             code() { curl -s -o /tmp/body -w "%{http_code}" "$@"; }

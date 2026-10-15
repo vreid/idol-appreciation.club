@@ -134,3 +134,16 @@ cnpg:
     limits:
       cpu: "2"
       memory: 3Gi
+
+# OpenTelemetry Collector (contrib) as a DaemonSet — the doc's Phase 1
+# observability piece. Off by default (config-gated like the app's
+# OTEL_EXPORTER_OTLP_ENDPOINT: unset collector = zero behavior change).
+# Exports to stdout only until a telemetry backend is chosen (the doc's
+# open question); receipts come from the receiver paths working.
+telemetry:
+  collector:
+    enabled: false
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.116.0
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 192Mi }

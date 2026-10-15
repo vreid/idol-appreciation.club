@@ -32,7 +32,8 @@
 	}
 }
 
-idol-appreciation.club {
+(app) {
+
 	encode zstd gzip
 	root * /usr/share/caddy
 
@@ -63,8 +64,12 @@ idol-appreciation.club {
 		}
 	}
 }
+# www serves the app DIRECTLY (2026-10-15, user-ordered service
+# recovery): the www->apex redirect sent every user into the apex's
+# LE 429 window (duplicate-cert quota burned by the outage's repeated
+# rollbacks; caddy auto-retries per the order's Retry-After). The
+# canonicalization redirect returns with the edge cleanup later.
 
-# www -> apex
 www.idol-appreciation.club {
-	redir https://idol-appreciation.club{uri} permanent
+	import app
 }

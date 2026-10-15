@@ -189,7 +189,10 @@ jobs:
           fi
           sak="$(jq -r .access_key_id /tmp/mint.json)"
           ssk="$(jq -r .secret_access_key /tmp/mint.json)"
-          oshost="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' 2>/dev/null | base64 -d | sed 's#https://##')"
+          # Stripped host: the probe script composes P="https://$S3_ENDPOINT/…"
+          # itself, so the env must NOT carry the scheme (a full-URL value
+          # yields https://https://… and every probe 000s — 38773497724).
+          oshost="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_ENDPOINT}' 2>/dev/null | base64 -d | sed 's#https\?://##')"
           bucket="$(kubectl -n idol get secret app-env -o jsonpath='{.data.S3_BUCKET}' 2>/dev/null | base64 -d)"
           vcode="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
             --aws-sigv4 'aws:amz:us-east-1:s3' -u "$sak:$ssk" \
@@ -231,7 +234,7 @@ jobs:
               echo "PROBE cleanup $k: $(code -X DELETE --aws-sigv4 "aws:amz:us-east-1:s3" -u "$S3_ACCESS_KEY_ID:$S3_SECRET_ACCESS_KEY" "$P/$k")"
             done
           ' \
-            | jq --arg sak "$sak" --arg ssk "$ssk" --arg pep "https://$oshost" --arg bucket "${bucket:-idol-canvas}" \
+            | jq --arg sak "$sak" --arg ssk "$ssk" --arg pep "$oshost" --arg bucket "${bucket:-idol-canvas}" \
               '.spec.template.spec.containers[0].env = [
                 {name: "S3_ACCESS_KEY_ID", value: $sak},
                 {name: "S3_SECRET_ACCESS_KEY", value: $ssk},

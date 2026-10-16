@@ -27,22 +27,24 @@ domain: idol-appreciation.club
 
 backend:
   registrationApprovalRequired: true
-  # Phase 3 render pipeline (docs/scaling-architecture.md): dark by
-  # default. Staged cutover (docs/backend.md): set renderPipelineWorkers
-  # > 0 FIRST so workers burn the pre-seeded queue while the request
-  # path still composites; flip renderPipelineEnabled last (place/remove
-  # go queue-only). Workers spawn per pod: 2/pod x 2 pods = 4 claims.
+  # Phase 3 render pipeline (docs/scaling-architecture.md). Cutover
+  # stage 3 LIVE since 2026-10-16 02:10Z: place/remove enqueue only;
+  # painting happens in worker claim loops. Stage 4 (this release)
+  # moves the loops OFF the api pods onto the backend-worker Deployment
+  # (backend.worker.replicaCount) in ONE release, so claimers swap but
+  # never double.
   renderPipelineEnabled: true
-  # Cutover stage 2 (2026-10-15): workers burn the pre-seeded chunk
-  # backlog (30.7k repaints) while the request path still composites.
-  # Stage 3 flips renderPipelineEnabled last.
-  renderPipelineWorkers: 2
+  # In-process claim loops per api pod. 0 since stage 4: the api is
+  # HTTP-only; painting belongs to the worker pods.
+  renderPipelineWorkers: 0
   # Phase 4 ingest pipeline (docs/scaling-architecture.md "Upload
-  # flow"): 202 quarantine placements + the in-process ingest consumer
-  # (docs/backend.md "The ingest pipeline"). Ships dark; the consumer
-  # queues render jobs, so this flips LAST — after the render pipeline
-  # is verified end-to-end.
-  ingestPipelineEnabled: false
+  # flow"): 202 quarantine placements + the ingest consumer. Gate 3 of
+  # the 2026-10-16 cutover: flipped LAST, after the worker pods proved
+  # paint flow (gate 1) and queue-only place verified (gate 2). The
+  # worker pods consume via the mirror below; the api pods keep their
+  # transitional in-process consumer until the distroless step removes
+  # it (claims are SKIP LOCKED, so doubling is safe, just redundant).
+  ingestPipelineEnabled: true
   # Two replicas: zero-blip rolls (surge pod ready before the old one
   # drains) and half the blast radius per pod. Multi-writer safety rides
   # the session-level PG advisory chunk locks (chunks.rs), not the replica
@@ -75,7 +77,13 @@ backend:
   # (docs/scaling-architecture.md "Cluster layout") is a later step; the
   # replica count is hand-turned until then.
   worker:
-    replicaCount: 0
+    replicaCount: 2
+    # Toleration plumbing for the future tainted worker pool (docs
+    # scaling-architecture.md "Cluster layout"). The cluster currently
+    # runs a single untainted baseline-new node group, so this stays
+    # empty and worker pods schedule on the baseline nodes; when the
+    # pool lands, add its taint here (and a nodeSelector if pinning).
+    tolerations: []
     resources:
       requests:
         cpu: 500m

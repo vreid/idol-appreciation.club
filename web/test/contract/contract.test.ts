@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, it } from "vite-plus/test";
+import http from "node:http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -97,7 +98,7 @@ async function placeAt(index: number): Promise<void> {
       // outcome (429 → Retry-After → retry). Parallelizing would just
       // spam the cooldown.
       // eslint-disable-next-line no-await-in-loop
-      await api.place({
+      const outcome = await api.place({
         image: new Blob([IMAGE_BYTES], { type: "image/png" }),
         fileName: `contract-${index}.png`,
         x,
@@ -105,6 +106,15 @@ async function placeAt(index: number): Promise<void> {
         size: 64,
         rot: index * 15,
       });
+      // Era handling (docs "Upload flow"): a 202 parks the upload with
+      // the worker; assertions on placed rows must await the commit the
+      // same way the UI does — the upload-status poll.
+      if (outcome.era === "quarantine") {
+        // Sequential by necessity: each poll depends on the previous
+        // (terminal state ends the wait).
+        // eslint-disable-next-line no-await-in-loop
+        await awaitSettled(outcome.accepted.id);
+      }
       return;
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
@@ -119,24 +129,43 @@ async function placeAt(index: number): Promise<void> {
 }
 
 /**
- * Minimal SSE reader over fetch streaming (no EventSource global needed
- * under node): yields the `data:` payload of every complete frame.
+ * Minimal SSE reader over node:http (fetch-based readers stall under
+ * the vitest worker — its fetch wrapper never yields streamed chunks;
+ * the raw socket client always does): yields the `data:` payload of
+ * every complete frame.
  */
 async function* sseDataPayloads(
   url: string,
   signal: AbortSignal,
 ): AsyncGenerator<string> {
-  const response = await fetch(url, {
-    signal,
-    headers: { accept: "text/event-stream" },
+  const target = new URL(url);
+  const req = http.request(
+    {
+      hostname: target.hostname,
+      port: Number(target.port),
+      path: `${target.pathname}${target.search}`,
+      method: "GET",
+      headers: { accept: "text/event-stream" },
+    },
+    (res) => {
+      if ((res.statusCode ?? 0) >= 300) {
+        res.resume();
+        throw new Error(`SSE stream failed: HTTP ${res.statusCode}`);
+      }
+    },
+  );
+  signal.addEventListener("abort", () => {
+    req.destroy();
   });
-  if (!response.ok || response.body === null) {
-    throw new Error(`SSE stream failed: HTTP ${response.status}`);
-  }
-  const decoder = new TextDecoder();
+  const res = await new Promise<http.IncomingMessage>((resolve, reject) => {
+    req.on("response", resolve);
+    req.on("error", reject);
+    req.end();
+  });
   let buffer = "";
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
+  res.setEncoding("utf8");
+  for await (const chunk of res) {
+    buffer += String(chunk);
     let split = buffer.indexOf("\n\n");
     while (split >= 0) {
       for (const line of buffer.slice(0, split).split("\n")) {
@@ -145,6 +174,59 @@ async function* sseDataPayloads(
       buffer = buffer.slice(split + 2);
       split = buffer.indexOf("\n\n");
     }
+  }
+}
+
+/** Awaits one 202-accepted upload reaching a terminal state via the
+ * status poll (the same resolution the UI falls back to when the event
+ * stream is down). */
+async function awaitSettled(id: string): Promise<void> {
+  for (let poll = 0; poll < 100; poll += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const status = await api.uploadStatus(id);
+    if (status?.state === "placed") return;
+    if (status?.state === "failed") throw new Error(`upload ${id} failed`);
+    // eslint-disable-next-line no-await-in-loop
+    await delay(100);
+  }
+  throw new Error(`upload ${id} never settled`);
+}
+
+/** Consumes the SSE stream into `events`/`malformed` until one placed
+ * frame plus three events arrive, the stream ends, or the signal aborts
+ * (the expected end when the caller's assertions resolve first). */
+async function consumeWorldEvents(
+  url: string,
+  signal: AbortSignal,
+  events: WorldEvent[],
+  malformed: string[],
+): Promise<void> {
+  try {
+    for await (const raw of sseDataPayloads(url, signal)) {
+      let parsedJson: unknown;
+      try {
+        parsedJson = JSON.parse(raw) as unknown;
+      } catch {
+        malformed.push(raw);
+        continue;
+      }
+      const parsed = worldEventSchema.safeParse(parsedJson);
+      if (parsed.success) {
+        events.push(parsed.data);
+        // The ingest worker batches per area per second (the coarse
+        // event contract), so same-area placements may coalesce into
+        // fewer place frames — require one place plus three events
+        // overall, not three place frames.
+        const placeEvents = events.filter((e) => e.type === "placed").length;
+        if (placeEvents >= 1 && events.length >= 3) return;
+      } else {
+        malformed.push(raw);
+      }
+    }
+  } catch (err) {
+    // AbortError is the expected end when the assertions resolve first
+    // and the caller aborts the stream mid-read.
+    if (!(err instanceof Error && err.name === "AbortError")) throw err;
   }
 }
 
@@ -190,32 +272,18 @@ describe("contract: real backend parses clean against contract/zod", () => {
 
     // The consumer awaits the real stream; vitest's per-test timeout is
     // the only clock involved.
-    const consuming = (async () => {
-      for await (const raw of sseDataPayloads(
-        `${BASE_URL}/api/events`,
-        controller.signal,
-      )) {
-        let parsedJson: unknown;
-        try {
-          parsedJson = JSON.parse(raw) as unknown;
-        } catch {
-          malformed.push(raw);
-          continue;
-        }
-        const parsed = worldEventSchema.safeParse(parsedJson);
-        if (parsed.success) {
-          events.push(parsed.data);
-          if (events.length >= 3) return;
-        } else {
-          malformed.push(raw);
-        }
-      }
-    })();
+    const consuming = consumeWorldEvents(
+      `${BASE_URL}/api/events`,
+      controller.signal,
+      events,
+      malformed,
+    );
 
     try {
-      // Three disjoint placements while subscribed: three place events.
-      // (Spots are disjoint; the empty-space cooldown is 1s and placeAt
-      // honors the server's Retry-After.)
+      // Three placements while subscribed (spots disjoint enough to
+      // avoid the paint cooldown; placeAt honors the server's
+      // Retry-After). The worker batches per area per second, so the
+      // assertions below require place ≥1 among ≥3 events.
       await placeAt(1);
       await placeAt(2);
       await placeAt(3);
@@ -226,11 +294,11 @@ describe("contract: real backend parses clean against contract/zod", () => {
 
     expect(malformed).toEqual([]);
     expect(events.length).toBeGreaterThanOrEqual(3);
-    expect(events.some((event) => event.type === "place")).toBe(true);
+    expect(events.some((event) => event.type === "placed")).toBe(true);
     for (const event of events) {
       expect(worldEventSchema.safeParse(event).success).toBe(true);
     }
-  });
+  }, 60_000);
 
   it("negative: tampered payloads are rejected by the schemas", async () => {
     // A place event whose seq is a string must not parse.

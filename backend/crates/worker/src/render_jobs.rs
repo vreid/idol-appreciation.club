@@ -44,7 +44,6 @@ use iac_core::error::{internal, AppResult};
 use iac_core::world::{
     chunk_key, tile_key, tile_native_size, tile_offset_in_chunk, BASE_Z, CHUNK_PX, MAX_Z,
 };
-use sqlx::{Postgres, Transaction};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A chunk job is always immediately claimable; only parent jobs wait.
@@ -55,28 +54,15 @@ const BASE_Z_I: i16 = BASE_Z as i16;
 /// loop"). Spec-fixed, not configurable.
 pub const MAX_JOB_ATTEMPTS: i16 = 5;
 
-/// Transaction-scoped advisory key serializing seq draws to commits (the
-/// "single sequencer row lock", docs § Ordering). Own class, disjoint
-/// from the chunk locks in `chunks.rs`.
-const SEQUENCER_LOCK_KEY: i64 = 0x10F02 << 40;
+// Transaction-scoped advisory key serializing seq draws to commits (the
+// "single sequencer row lock", docs § Ordering). Own class, disjoint
+// from the chunk locks in `chunks.rs`; the key itself lives in core (the
+// API holds the same lock).
 
 /// Decoded-overlay byte budget per composite_group call (same order as
 /// the import engine's; one chunk per job, so this bounds the decoded
 /// working set of one job).
 const CHUNK_DECODE_BUDGET: u64 = 256 << 20;
-
-/// Hold from the `nextval('placement_seq')` draw to commit in every
-/// pipeline-on place transaction. Released automatically at commit.
-pub async fn lock_sequencer(tx: &mut Transaction<'_, Postgres>) -> AppResult<()> {
-    iac_core::dbq::timed(
-        "render_jobs",
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(SEQUENCER_LOCK_KEY)
-            .execute(&mut **tx),
-    )
-    .await?;
-    Ok(())
-}
 
 /// `not_before` delay in ms for a dirty job at (z, x, y): chunk jobs are
 /// immediate; z 11–17 wait out a short quiet window; z ≤ 10 fire at most
@@ -91,71 +77,6 @@ fn job_delay_ms(low_ms: u64, spread_ms: u64, quiet_ms: u64, z: i64, x: i64, y: i
     } else {
         quiet_ms as i64
     }
-}
-
-/// Mark tiles dirty: one upsert per (z, x, y), burst-coalescing. A pending
-/// row keeps its (earliest) `not_before`; a running row gets `rerun`
-/// (never aborted); a failed row is revived — a fresh change is a fresh
-/// job. Runs inside the caller's transaction, AFTER its `chunk_seqs`
-/// writes (shared lock order with the job finish path).
-pub async fn mark_dirty(
-    tx: &mut Transaction<'_, Postgres>,
-    jobs: &[(i64, i64, i64, i64)], // (z, x, y, delay_ms)
-) -> AppResult<()> {
-    if jobs.is_empty() {
-        return Ok(());
-    }
-    let mut zs = Vec::with_capacity(jobs.len());
-    let mut xs = Vec::with_capacity(jobs.len());
-    let mut ys = Vec::with_capacity(jobs.len());
-    let mut delays = Vec::with_capacity(jobs.len());
-    for (z, x, y, delay_ms) in jobs {
-        zs.push(*z as i16);
-        xs.push(*x as i32);
-        ys.push(*y as i32);
-        delays.push(*delay_ms as f64 / 1000.0);
-    }
-    iac_core::dbq::timed(
-        "render_jobs",
-        sqlx::query(
-            "INSERT INTO render_jobs (z, x, y, not_before)
-             SELECT z, x, y, now() + make_interval(secs => delay_ms)
-             FROM unnest($1::int2[], $2::int4[], $3::int4[], $4::float8[])
-                  AS j(z, x, y, delay_ms)
-             ON CONFLICT (z, x, y) DO UPDATE SET
-               state = CASE WHEN render_jobs.state = 'failed'
-                            THEN 'pending' ELSE render_jobs.state END,
-               attempts = CASE WHEN render_jobs.state = 'failed'
-                               THEN 0 ELSE render_jobs.attempts END,
-               claimed_at = CASE WHEN render_jobs.state = 'failed'
-                                 THEN NULL ELSE render_jobs.claimed_at END,
-               rerun = render_jobs.rerun OR render_jobs.state = 'running',
-               not_before = CASE WHEN render_jobs.state = 'running'
-                                 THEN render_jobs.not_before
-                                 ELSE LEAST(render_jobs.not_before,
-                                            EXCLUDED.not_before) END",
-        )
-        .bind(&zs)
-        .bind(&xs)
-        .bind(&ys)
-        .bind(&delays)
-        .execute(&mut **tx),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Queue chunk jobs (z = 18) for `chunks` — the place/remove write paths'
-/// single entry point. Chunk jobs never wait.
-pub async fn enqueue_chunks(
-    tx: &mut Transaction<'_, Postgres>,
-    chunks: &[(i64, i64)],
-) -> AppResult<()> {
-    let jobs = chunks
-        .iter()
-        .map(|&(cx, cy)| (BASE_Z, cx, cy, 0i64))
-        .collect::<Vec<_>>();
-    mark_dirty(tx, &jobs).await
 }
 
 /// Claim the next due job: pending past its `not_before`, plus running
@@ -240,8 +161,8 @@ async fn pause_for_tests() {
     }
 }
 
-/// Spawn the pipeline worker. Called once from `build_app`, only when the
-/// pipeline is enabled. One task per process: at most one job at a time,
+/// Spawn the pipeline worker loop. Called by the worker binary once per
+/// configured loop (RENDER_PIPELINE_WORKERS); the API never spawns one. One task per process: at most one job at a time,
 /// mirroring the request path's libvips serialization; horizontal scale
 /// comes from more worker processes (claims are SKIP LOCKED).
 pub fn spawn_worker(ctx: &WorkerCtx) {
@@ -662,7 +583,7 @@ pub async fn finish_chunk(
     }
     // 5. Bubble the version up (zoom 17 parent waits out its quiet
     // window; chunk rows are immediate).
-    mark_dirty(
+    iac_core::jobs::mark_dirty(
         &mut tx,
         &[(
             BASE_Z - 1,
@@ -820,7 +741,7 @@ pub async fn finish_parent(ctx: &WorkerCtx, z: i64, x: i64, y: i64, v: i64) -> A
         }
     }
     if z > 0 {
-        mark_dirty(
+        iac_core::jobs::mark_dirty(
             &mut tx,
             &[(z - 1, x.div_euclid(2), y.div_euclid(2), parent_delay)],
         )

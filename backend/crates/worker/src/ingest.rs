@@ -20,7 +20,7 @@ use crate::ctx::WorkerCtx;
 use iac_core::error::{internal, AppError, AppResult};
 use object_store::ObjectStoreExt;
 use serde_json::json;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::Row;
 use uuid::Uuid;
 
 /// Failed-attempt ceiling (mirrors render_jobs MAX_JOB_ATTEMPTS).
@@ -42,82 +42,6 @@ pub struct IngestJob {
     pub rot: f32,
     pub size: Option<i64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
-}
-
-/// Everything the 202 path records about an accepted upload.
-pub struct PlaceJobSpec {
-    pub job_id: Uuid,
-    pub account_id: Uuid,
-    pub quarantine_key: String,
-    pub x: i64,
-    pub y: i64,
-    pub w: i64,
-    pub h: i64,
-    pub rot: f32,
-    pub size: i64,
-}
-
-/// Queue a quarantine placement job (the 202 path's tx).
-pub async fn enqueue_place(
-    tx: &mut Transaction<'_, Postgres>,
-    spec: &PlaceJobSpec,
-) -> AppResult<()> {
-    sqlx::query(
-        "INSERT INTO ingest_jobs
-         (id, kind, account_id, quarantine_key, x, y, w, h, rot, size)
-         VALUES ($1, 'place', $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(spec.job_id)
-    .bind(spec.account_id)
-    .bind(&spec.quarantine_key)
-    .bind(spec.x)
-    .bind(spec.y)
-    .bind(spec.w as i32)
-    .bind(spec.h as i32)
-    .bind(spec.rot)
-    .bind(spec.size as i32)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal)?;
-    Ok(())
-}
-
-/// Everything the 202 removal path records about the target.
-pub struct RemovalJobSpec {
-    pub job_id: Uuid,
-    pub account_id: Uuid,
-    pub placement_id: Uuid,
-    pub x: i64,
-    pub y: i64,
-    pub w: i64,
-    pub h: i64,
-    pub rot: f32,
-}
-
-/// Queue an admin removal job (the 202 path's tx). The consumer locks
-/// the placement row before applying, so a delete racing the placement's
-/// own ingest applies strictly after it lands.
-pub async fn enqueue_removal(
-    tx: &mut Transaction<'_, Postgres>,
-    spec: &RemovalJobSpec,
-) -> AppResult<()> {
-    sqlx::query(
-        "INSERT INTO ingest_jobs
-         (id, kind, account_id, placement_id, x, y, w, h, rot)
-         VALUES ($1, 'removal', $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(spec.job_id)
-    .bind(spec.account_id)
-    .bind(spec.placement_id)
-    .bind(spec.x)
-    .bind(spec.y)
-    .bind(spec.w as i32)
-    .bind(spec.h as i32)
-    .bind(spec.rot)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal)?;
-    Ok(())
 }
 
 /// Claim the oldest due job (`FOR UPDATE SKIP LOCKED`, render_jobs
@@ -323,7 +247,7 @@ async fn run_place_job(ctx: &WorkerCtx, job: &IngestJob) -> AppResult<()> {
     // from the seq draw to commit, so commit order equals sequence order
     // and the render workers' incremental painting sees a consistent
     // world.
-    crate::render_jobs::lock_sequencer(&mut tx).await?;
+    iac_core::jobs::lock_sequencer(&mut tx).await?;
     let seq: (i64,) = iac_core::dbq::timed(
         "ingest",
         sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
@@ -372,7 +296,7 @@ async fn run_place_job(ctx: &WorkerCtx, job: &IngestJob) -> AppResult<()> {
         &[(seq.0, aabb.x, aabb.y, aabb.w as i32, aabb.h as i32)],
     )
     .await?;
-    crate::render_jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
+    iac_core::jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
     sqlx::query(
         "UPDATE ingest_jobs
          SET state = 'placed', placement_id = $2, seq = $3,
@@ -456,7 +380,7 @@ async fn run_removal_job(ctx: &WorkerCtx, job: &IngestJob) -> AppResult<()> {
             )
             .await?;
             iac_core::chunk_seqs::bump_chunk_seqs_removal(&mut tx, bump.0, &chunk_keys).await?;
-            crate::render_jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
+            iac_core::jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
             sqlx::query("SELECT pg_notify('events', $1)")
                 .bind(
                     json!({
@@ -500,47 +424,6 @@ async fn run_removal_job(ctx: &WorkerCtx, job: &IngestJob) -> AppResult<()> {
     .map_err(internal)?;
     tx.commit().await?;
     Ok(())
-}
-
-/// GET /api/uploads/{id} body: exactly contract/zod's
-/// `uploadStatusSchema`. `Some(json)` → 200, `None` → 404.
-pub async fn status_json(pool: &sqlx::PgPool, id: Uuid) -> AppResult<Option<serde_json::Value>> {
-    let row = sqlx::query(
-        "SELECT state, attempts, placement_id, seq,
-                aabb_x, aabb_y, aabb_w, aabb_h, error
-         FROM ingest_jobs WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-    .map_err(internal)?;
-    let Some(row) = row else { return Ok(None) };
-    let state: String = row.get("state");
-    let body = match state.as_str() {
-        "placed" => {
-            let placement_id: Uuid = row.get("placement_id");
-            let seq: i64 = row.get("seq");
-            json!({
-                "state": "placed",
-                "id": placement_id,
-                "seq": seq,
-                "bbox": [
-                    row.get::<i64, _>("aabb_x"),
-                    row.get::<i64, _>("aabb_y"),
-                    row.get::<i64, _>("aabb_w"),
-                    row.get::<i64, _>("aabb_h"),
-                ],
-            })
-        }
-        "failed" => json!({
-            "state": "failed",
-            "attempts": i64::from(row.get::<i16, _>("attempts")),
-            "permanent": true,
-            "error": row.get::<Option<String>, _>("error").unwrap_or_default(),
-        }),
-        _ => json!({ "state": "pending" }),
-    };
-    Ok(Some(body))
 }
 
 /// Spawn the in-process ingest consumer. Called once from `build_app`,

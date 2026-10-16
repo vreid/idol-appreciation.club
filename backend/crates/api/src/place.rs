@@ -1,8 +1,7 @@
 //! POST /api/place — the placement pipeline, and DELETE admin removal.
 
 use crate::auth::Authed;
-use crate::error::{internal, AppError, AppResult};
-use crate::img;
+use crate::error::{AppError, AppResult};
 use crate::state::App;
 use crate::world::{derive_w_h, Rect, WORLD_PX};
 use axum::extract::{Multipart, State};
@@ -122,9 +121,19 @@ async fn cooldown_gate(
 async fn cooldown_precheck(app: &App, account_id: Uuid, aabb: &Rect) -> AppResult<()> {
     let acct: (bool, Option<chrono::DateTime<Utc>>) = crate::dbq::timed(
         "place",
-        sqlx::query_as("SELECT cooldown_exempt, last_placement_at FROM accounts WHERE id = $1")
-            .bind(account_id)
-            .fetch_one(&app.pool),
+        sqlx::query_as(
+            "SELECT cooldown_exempt, GREATEST(accounts.last_placement_at, sub.last_job)
+             FROM accounts
+             CROSS JOIN LATERAL (
+                 SELECT max(created_at) AS last_job
+                 FROM ingest_jobs
+                 WHERE ingest_jobs.account_id = accounts.id
+                   AND ingest_jobs.state IN ('pending', 'running')
+             ) AS sub
+             WHERE accounts.id = $1",
+        )
+        .bind(account_id)
+        .fetch_one(&app.pool),
     )
     .await?;
     if acct.0 {
@@ -152,8 +161,8 @@ async fn cooldown_precheck(app: &App, account_id: Uuid, aabb: &Rect) -> AppResul
         app.cfg.cooldown_empty_secs
     };
     let elapsed = match acct.1 {
-        // Never placed: the transaction's `last_placement_at IS NULL OR`
-        // arm admits unconditionally.
+        // Never placed and nothing in flight: the transaction's
+        // `last_placement_at IS NULL OR` arm admits unconditionally.
         None => return Ok(()),
         Some(t) => (Utc::now() - t).num_milliseconds() as f64 / 1000.0,
     };
@@ -249,7 +258,6 @@ pub async fn place(
     Authed(account_id): Authed,
     mp: Multipart,
 ) -> AppResult<Response> {
-    let t0 = std::time::Instant::now();
     let (image_bytes, x, y, size, rot) = read_multipart(&app, mp).await?;
     if image_bytes.is_empty() {
         return Err(AppError::BadRequest("empty image"));
@@ -259,19 +267,18 @@ pub async fn place(
             "size must be within the configured bounds",
         ));
     }
-    // Everything cheap is decided BEFORE any pixel work: header probe,
-    // decoded-pixel budget, world bounds, cooldown. An oversizing or
-    // cooled-down request never reaches the (process-wide serialized)
-    // libvips stage, so neither a decompression bomb nor a cooldown retry
-    // loop can monopolize it.
-    let (probe_w, probe_h) = img::probe(&image_bytes)?;
-    let declared = i64::from(probe_w) * i64::from(probe_h);
+    // Everything cheap is decided BEFORE the quarantine: header read
+    // (pure Rust — the API never links libvips; libvips re-probes in the
+    // worker and a disagreement fails the job with a cooldown refund),
+    // decoded-pixel budget, world bounds, cooldown.
+    let (probe_w, probe_h) = iac_core::imgprobe::dimensions(&image_bytes)?;
+    let declared = probe_w * probe_h;
     if declared > 0 && u64::try_from(declared).unwrap_or(u64::MAX) > app.cfg.max_decode_pixels {
         return Err(AppError::TooLarge);
     }
     // The strip/resave stage preserves dimensions, so the probed header
     // determines the placement rect exactly.
-    let (w, h) = derive_w_h(i64::from(probe_w), i64::from(probe_h), size);
+    let (w, h) = derive_w_h(probe_w, probe_h, size);
     // Bounds are checked on the AABB of the rotated rect: it contains the
     // unrotated rect, and the painted bitmap is the AABB.
     let aabb = crate::world::rotated_aabb(x, y, w, h, rot);
@@ -280,13 +287,13 @@ pub async fn place(
     }
     cooldown_precheck(&app, account_id, &aabb).await?;
 
-    // Phase 4 quarantine path (docs "Upload flow", INGEST_PIPELINE_ENABLED):
-    // the cheap validation above is all the request pays. Stash the bytes
-    // and queue the ingest job; the pixel stage, content-addressed S3
-    // writes, the placement row, chunk versions and render jobs all move
-    // to the consumer. The client follows the `placed`/`place_failed`
-    // events or polls GET /api/uploads/{id}.
-    if app.cfg.ingest_pipeline_enabled {
+    // Phase 4 upload flow (docs/scaling-architecture.md): the cheap
+    // validation above is all the request pays. Stash the bytes and queue
+    // the ingest job; the pixel stage, content-addressed S3 writes, the
+    // placement row, chunk versions and render jobs all belong to the
+    // consumer. The client follows the `placed`/`place_failed` events or
+    // polls GET /api/uploads/{id}.
+    {
         let job_id = Uuid::now_v7();
         let quarantine_key = format!("quarantine/{job_id}");
         // The object write is not transactional; a crash between PUT and
@@ -295,9 +302,9 @@ pub async fn place(
         crate::store::put(&app.store, &quarantine_key, image_bytes).await?;
         let mut tx = app.pool.begin().await?;
         cooldown_gate(&app, &mut tx, account_id, &aabb).await?;
-        crate::ingest::enqueue_place(
+        iac_core::jobs::enqueue_place(
             &mut tx,
-            &crate::ingest::PlaceJobSpec {
+            &iac_core::jobs::PlaceJobSpec {
                 job_id,
                 account_id,
                 quarantine_key,
@@ -311,7 +318,7 @@ pub async fn place(
         )
         .await?;
         tx.commit().await?;
-        return Ok((
+        Ok((
             axum::http::StatusCode::ACCEPTED,
             Json(json!({
                 "id": job_id,
@@ -323,176 +330,13 @@ pub async fn place(
                 "rot": rot,
             })),
         )
-            .into_response());
+            .into_response())
     }
-
-    // Sync pixel stage (libvips is !Send): decode, strip metadata,
-    // re-save in the source codec, hash; then build the deterministic
-    // webp derivative from the stripped raster.
-    let max_pixels = app.cfg.max_decode_pixels;
-    let pipeline = crate::telemetry::blocking(move || -> AppResult<_> {
-        let (src, format) = img::decode(&image_bytes, max_pixels)?;
-        let (w, h) = derive_w_h(
-            i64::from(src.get_width()),
-            i64::from(src.get_height()),
-            size,
-        );
-        // Strip ALL metadata (EXIF/XMP/ICC) and re-save in the source
-        // codec; sha256 of these bytes is the content address. No GPS or
-        // EXIF data ever leaves the process.
-        let stripped = img::strip_resave(&src, format)?;
-        let (derivative_src, _) = img::decode(&stripped, max_pixels)?;
-        let dw = i32::try_from(w).map_err(|_| internal("width overflow"))?;
-        let dh = i32::try_from(h).map_err(|_| internal("height overflow"))?;
-        let derivative = img::resize_exact(&derivative_src, dw, dh)?;
-        let derivative_bytes = img::webp_bytes(&derivative, 85)?;
-        Ok((stripped, format, (w, h), derivative_bytes))
-    })
-    .await
-    .map_err(internal)??;
-    let (stripped, format, (w, h), derivative_bytes) = pipeline;
-    let rect = Rect::new(x, y, w, h);
-    let original_sha = img::sha256_hex(&stripped);
-    let original_key = format!("originals/{original_sha}.{}", format.ext());
-    let derivative_sha = img::sha256_hex(&derivative_bytes);
-    let image_key = format!("derivatives/{derivative_sha}.webp");
-
-    // Upload derivative first (dedup); original second.
-    crate::store::put_if_absent(&app.store, &image_key, derivative_bytes.clone()).await?;
-    crate::store::put_if_absent(&app.store, &original_key, stripped).await?;
-
-    let id = Uuid::now_v7();
-    let chunk_keys = aabb.chunk_keys();
-    let lock_keys: Vec<String> = chunk_keys
-        .iter()
-        .map(|(cx, cy)| crate::world::chunk_key(*cx, *cy))
-        .collect();
-    let _guards = app.chunk_locks.lock_sorted(&lock_keys).await;
-
-    let mut tx = app.pool.begin().await?;
-    // Cooldown exemption (admin-granted): skip both cooldowns entirely —
-    // no 429 path. Everyone else: paints (overlapping existing art) wait
-    // 300 s, empty space 1 s.
-    cooldown_gate(&app, &mut tx, account_id, &aabb).await?;
-
-    // Pipeline-on ordering doctrine (docs/scaling-architecture.md
-    // "Ordering"): hold the single sequencer row lock from the seq draw
-    // to commit so commit order equals sequence order — the worker's
-    // incremental painting depends on it. Off (the default): today's
-    // path, unchanged.
-    if app.cfg.render_pipeline_enabled {
-        crate::render_jobs::lock_sequencer(&mut tx).await?;
-    }
-    let seq: (i64,) = crate::dbq::timed(
-        "place",
-        sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
-    )
-    .await?;
-    let seq = seq.0;
-
-    // Paint chunks before the row commits: tiles/ETags advance only when
-    // the rasters already show the placement. Pipeline-on: the worker
-    // paints — this transaction only records and queues.
-    if !app.cfg.render_pipeline_enabled {
-        crate::chunks::composite_placement(&app, aabb, rot, derivative_bytes).await?;
-        crate::metrics::chunk_composited();
-    }
-
-    let duplicate_count: (i64,) = crate::dbq::timed(
-        "place",
-        sqlx::query_as(
-            "SELECT count(*) FROM placements
-         WHERE original_sha = $1 AND removed_at IS NULL",
-        )
-        .bind(&original_sha)
-        .fetch_one(&mut *tx),
-    )
-    .await?;
-
-    // bbox column = AABB of the rotated rect (GiST-indexed); x/y/w/h stay
-    // the unrotated rect top-left and size.
-    crate::dbq::timed(
-        "place",
-        sqlx::query(
-            "INSERT INTO placements
-             (id, account_id, image_key, x, y, w, h, seq, rot,
-              bbox, original_sha, derivative_sha)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                 box(point($10::float8, $11::float8),
-                     point($12::float8, $13::float8)), $14, $15)",
-        )
-        .bind(id)
-        .bind(account_id)
-        .bind(&image_key)
-        .bind(rect.x)
-        .bind(rect.y)
-        .bind(rect.w as i32)
-        .bind(rect.h as i32)
-        .bind(seq)
-        .bind(rot)
-        .bind(aabb.x as f64)
-        .bind(aabb.y as f64)
-        .bind((aabb.x + aabb.w - 1) as f64)
-        .bind((aabb.y + aabb.h - 1) as f64)
-        .bind(&original_sha)
-        .bind(&derivative_sha)
-        .execute(&mut *tx),
-    )
-    .await?;
-
-    // The chunk version rollup advances with the placement (same tx): the
-    // tile read path reads chunk_seqs, never placement rows. Pipeline-on:
-    // the ordering-aware variant flags out-of-order commits, and the
-    // chunk jobs are queued here (the worker paints).
-    if app.cfg.render_pipeline_enabled {
-        crate::chunks::bump_chunk_seqs_pipeline(
-            &mut tx,
-            &[(seq, aabb.x, aabb.y, aabb.w as i32, aabb.h as i32)],
-        )
-        .await?;
-        crate::render_jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
-    } else {
-        crate::chunks::bump_chunk_seqs(
-            &mut tx,
-            &[(seq, aabb.x, aabb.y, aabb.w as i32, aabb.h as i32)],
-        )
-        .await?;
-    }
-
-    let event = json!({
-        "type": "place",
-        "seq": seq,
-        "bbox": [aabb.x, aabb.y, aabb.w, aabb.h]
-    })
-    .to_string();
-    let _: ((),) = crate::dbq::timed(
-        "place",
-        sqlx::query_as("SELECT pg_notify('events', $1)")
-            .bind(&event)
-            .fetch_one(&mut *tx),
-    )
-    .await?;
-    tx.commit().await?;
-
-    crate::metrics::place_done(t0.elapsed());
-    let resp = (
-        axum::http::StatusCode::CREATED,
-        Json(json!({
-            "id": id,
-            "x": rect.x,
-            "y": rect.y,
-            "w": rect.w,
-            "h": rect.h,
-            "rot": rot,
-            "seq": seq,
-            "duplicate_count": duplicate_count.0,
-        })),
-    )
-        .into_response();
-    Ok(resp)
 }
 
-/// DELETE /api/admin/placements/{id} — soft delete + chunk replay + NOTIFY.
+/// DELETE /api/admin/placements/{id} — soft delete, queued the same way
+/// the placement went in (the worker applies removed_at, bumps the
+/// chunks, queues the rebuilds).
 pub async fn admin_delete(
     State(app): State<App>,
     Authed(admin_id): Authed,
@@ -513,19 +357,12 @@ pub async fn admin_delete(
     let Some((x, y, w, h, rot)) = peeked else {
         return Err(AppError::NotFound);
     };
-    // Replay/notify scope = the AABB of the rotated rect (the painted
-    // bitmap), matching the placement pipeline.
-    let aabb = crate::world::rotated_aabb(x, y, w, h, rot);
-    // Phase 4 quarantine path: queue the removal instead of applying it
-    // inline. The consumer locks the placement row — which also orders a
-    // delete of a still-quarantined upload after its placement lands —
-    // then applies removed_at + the version bump + render job enqueue.
-    if app.cfg.ingest_pipeline_enabled {
+    {
         let job_id = Uuid::now_v7();
         let mut tx = app.pool.begin().await?;
-        crate::ingest::enqueue_removal(
+        iac_core::jobs::enqueue_removal(
             &mut tx,
-            &crate::ingest::RemovalJobSpec {
+            &iac_core::jobs::RemovalJobSpec {
                 job_id,
                 account_id: admin_id,
                 placement_id: id,
@@ -538,7 +375,7 @@ pub async fn admin_delete(
         )
         .await?;
         tx.commit().await?;
-        return Ok((
+        Ok((
             axum::http::StatusCode::ACCEPTED,
             Json(json!({
                 "id": job_id,
@@ -550,91 +387,8 @@ pub async fn admin_delete(
                 "rot": rot,
             })),
         )
-            .into_response());
+            .into_response())
     }
-    let chunk_keys = aabb.chunk_keys();
-    let lock_keys: Vec<String> = chunk_keys
-        .iter()
-        .map(|(cx, cy)| crate::world::chunk_key(*cx, *cy))
-        .collect();
-    let _guards = app.chunk_locks.lock_sorted(&lock_keys).await;
-
-    let mut tx = app.pool.begin().await?;
-    let still_there: Option<(i64,)> = crate::dbq::timed(
-        "place",
-        sqlx::query_as(
-            "SELECT 1::bigint FROM placements WHERE id = $1 AND removed_at IS NULL FOR UPDATE",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx),
-    )
-    .await?;
-    if still_there.is_none() {
-        tx.rollback().await.map_err(internal)?;
-        return Err(AppError::NotFound);
-    }
-
-    crate::dbq::timed(
-        "place",
-        sqlx::query("UPDATE placements SET removed_at = now() WHERE id = $1")
-            .bind(id)
-            .execute(&mut *tx),
-    )
-    .await?;
-    if app.cfg.render_pipeline_enabled {
-        // Phase 3 removal (docs "Removal"): set removed_at, advance the
-        // chunk's version, set needs_rebuild, queue — and return. The
-        // from-blank rebuild (~80 ms per remaining image) runs in the
-        // worker.
-        let bump: (i64,) = crate::dbq::timed(
-            "place",
-            sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
-        )
-        .await?;
-        crate::chunks::bump_chunk_seqs_removal(&mut tx, bump.0, &chunk_keys).await?;
-        crate::render_jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
-    } else {
-        crate::chunks::replay_chunks(&app, &mut tx, &chunk_keys).await?;
-        // The replay rewrites the rasters without the removed art; give the
-        // chunks a FRESH version (a raw sequence draw, no row inserted) so the
-        // rollup moves forward and stale tiles re-render exactly once.
-        let bump: (i64,) = crate::dbq::timed(
-            "place",
-            sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
-        )
-        .await?;
-        crate::chunks::bump_chunk_seqs(
-            &mut tx,
-            &chunk_keys
-                .iter()
-                .map(|&(cx, cy)| {
-                    (
-                        bump.0,
-                        cx * crate::world::CHUNK_PX,
-                        cy * crate::world::CHUNK_PX,
-                        1,
-                        1,
-                    )
-                })
-                .collect::<Vec<_>>(),
-        )
-        .await?;
-    }
-    let event = json!({
-        "type": "remove",
-        "id": id,
-        "bbox": [aabb.x, aabb.y, aabb.w, aabb.h]
-    })
-    .to_string();
-    let _: ((),) = crate::dbq::timed(
-        "place",
-        sqlx::query_as("SELECT pg_notify('events', $1)")
-            .bind(&event)
-            .fetch_one(&mut *tx),
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 /// GET /api/uploads/{id} — the upload-status contract (docs "Upload
@@ -667,7 +421,7 @@ pub async fn upload_status(
         }
         None => return Err(AppError::NotFound),
     }
-    match crate::ingest::status_json(&app.pool, id).await? {
+    match iac_core::jobs::ingest_status_json(&app.pool, id).await? {
         Some(body) => Ok(Json(body).into_response()),
         None => Err(AppError::NotFound),
     }

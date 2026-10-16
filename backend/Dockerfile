@@ -9,7 +9,11 @@
 # cross-version byte determinism.
 #
 # NOTE: the builder needs libvips-dev (the `libvips` crate links against
-# it); the runtime only needs libvips42.
+# it). Two runtimes ship from one build: the API is DISTROLESS
+# (gcr.io/distroless, no libvips, no shell — the API never links libvips
+# since the pixel work moved to the worker crate) and the worker runtime
+# is a minimal debian-slim with libvips42 for the worker binary (render
+# loops, ingest consumer, admin import subcommands).
 
 # Dependency caching (cargo-chef): `planner` reduces the crate to a recipe
 # (manifests + target layout), `builder` compiles the dependencies from that
@@ -46,7 +50,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build --release -p iac-api --bin backend -p iac-worker --bin backend-worker
 
-FROM debian:trixie-slim AS runtime
+FROM gcr.io/distroless/cc-debian13:nonroot AS runtime-api
+COPY --from=builder /app/target/release/backend /usr/local/bin/backend
+ENV LISTEN_ADDR=0.0.0.0:8080
+# STATIC_DIR is optional (dev convenience); when unset or missing the
+# server serves a tiny JSON at / instead of the SPA.
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/backend"]
+
+FROM debian:trixie-slim AS runtime-worker
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libvips42=8.16.1-1+deb13u2 \
@@ -54,11 +66,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --shell /usr/sbin/nologin idol
 WORKDIR /app
-COPY --from=builder /app/target/release/backend /usr/local/bin/backend
 COPY --from=builder /app/target/release/backend-worker /usr/local/bin/backend-worker
-ENV LISTEN_ADDR=0.0.0.0:8080
-# STATIC_DIR is optional (dev convenience); when unset or missing the
-# server serves a tiny JSON at / instead of the SPA.
 USER idol
-EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/backend"]
+ENTRYPOINT ["/usr/local/bin/backend-worker"]

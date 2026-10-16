@@ -136,9 +136,13 @@ const IMPORT_BUCKETS: &[f64] = &[
 pub const TILE_OUTCOMES: [&str; 6] = [
     "hit_mem",
     "hit_s3",
-    "render",
+    // The serving-only GET never renders; the paint quiet window's
+    // no-stored-bytes case reports "miss" (the worker owns renders).
+    "miss",
     "empty",
     "stale_served",
+    // Kept for series stability: the shed outcome died with the
+    // render-on-GET path and stays a permanent zero.
     "shed",
 ];
 
@@ -312,7 +316,7 @@ pub fn ingest_done(elapsed: Duration) {
 
 /// Exposition of all series. `pool` supplies the sqlx connection gauges;
 /// the render-queue stats come straight from the live queue.
-pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> String {
+pub fn render(pool: &sqlx::PgPool) -> String {
     let m = &*METRICS;
     let mut out = String::with_capacity(4096);
 
@@ -396,17 +400,6 @@ pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> Stri
         &m.background_render_duration
             .render("tile_background_render_duration_seconds", ""),
     );
-
-    out.push_str(
-        "# HELP tile_render_queue_depth Background re-render queue length (coords waiting).\n# TYPE tile_render_queue_depth gauge\n",
-    );
-    out.push_str(&format!("tile_render_queue_depth {queue_depth}\n"));
-    out.push_str(
-        "# HELP tile_render_queue_dropped_total Enqueue attempts shed by the queue cap (retried by the next stale GET).\n# TYPE tile_render_queue_dropped_total counter\n",
-    );
-    out.push_str(&format!(
-        "tile_render_queue_dropped_total {queue_dropped}\n"
-    ));
 
     out.push_str(
         "# HELP import_batches_total Completed admin import batches.\n# TYPE import_batches_total counter\n",
@@ -538,7 +531,7 @@ mod tests {
         m.tile_duration[0].observe(Duration::from_millis(480));
         m.s3_ops[1][1].store(9, Ordering::Relaxed);
 
-        let text = render(&render_pool_stub(), 3, 1);
+        let text = render(&render_pool_stub());
 
         let mut histogram_inf = std::collections::HashMap::new();
         let mut histogram_count = std::collections::HashMap::new();
@@ -588,8 +581,6 @@ mod tests {
         assert!(text.contains("tile_requests_total{outcome=\"empty\"} 0"));
         assert!(text.contains("tile_requests_total{outcome=\"stale_served\"} 0"));
         assert!(text.contains("tile_requests_total{outcome=\"shed\"} 0"));
-        assert!(text.contains("tile_render_queue_depth 3"));
-        assert!(text.contains("tile_render_queue_dropped_total 1"));
         assert!(text.contains("# TYPE tile_background_renders_total counter"));
         // The two observed samples must appear in the +Inf bucket, which
         // must equal _count for every series.
@@ -649,7 +640,7 @@ mod tests {
 
         import_done(300, 202, Duration::from_millis(17_352));
 
-        let text = render(&render_pool_stub(), 0, 0);
+        let text = render(&render_pool_stub());
         assert_eq!(series_value(&text, "import_batches_total "), 1.0);
         assert_eq!(series_value(&text, "import_images_total "), 300.0);
         let writes = series_value(&text, "import_chunk_writes_total ");
@@ -687,7 +678,7 @@ mod tests {
         .await;
         assert_eq!(out, 7, "timed passes the future's output through");
 
-        let text = render(&render_pool_stub(), 0, 0);
+        let text = render(&render_pool_stub());
         assert_eq!(
             series_value(&text, "db_query_total{query=\"dig\"} "),
             1.0,

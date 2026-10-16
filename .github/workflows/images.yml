@@ -48,6 +48,7 @@ jobs:
       packages: write
     outputs:
       backend: ${{ steps.backend.outputs.digest || steps.reuse.outputs.backend_digest }}
+      backend-worker: ${{ steps.backend-worker.outputs.digest || steps.reuse.outputs.backendWorker_digest }}
       web: ${{ steps.web.outputs.digest || steps.reuse.outputs.web_digest }}
       caddy: ${{ steps.caddy.outputs.digest || steps.reuse.outputs.caddy_digest }}
     steps:
@@ -72,13 +73,18 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           b_sha="$(jq -r '.backend.mergeSha // empty' images.lock.json)"
+          bw_sha="$(jq -r '.backendWorker.mergeSha // empty' images.lock.json)"
           w_sha="$(jq -r '.web.mergeSha // empty' images.lock.json)"
           c_sha="$(jq -r '.caddy.mergeSha // empty' images.lock.json)"
           backend=false
+          backendWorker=false
           web=false
           caddy=false
           if [ -z "$b_sha" ] || [ -n "$(git diff --name-only "$b_sha" HEAD -- backend)" ]; then
             backend=true
+          fi
+          if [ -z "$bw_sha" ] || [ -n "$(git diff --name-only "$bw_sha" HEAD -- backend)" ]; then
+            backendWorker=true
           fi
           if [ -z "$w_sha" ] || [ -n "$(git diff --name-only "$w_sha" HEAD -- web)" ]; then
             web=true
@@ -88,9 +94,10 @@ jobs:
           fi
           # shellcheck disable=SC2129
           echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "backendWorker=$backendWorker" >> "$GITHUB_OUTPUT"
           echo "web=$web" >> "$GITHUB_OUTPUT"
           echo "caddy=$caddy" >> "$GITHUB_OUTPUT"
-          echo "mode tag=$tag backend changed: $backend; web changed: $web; caddy changed: $caddy"
+          echo "mode tag=$tag backend changed: $backend; backendWorker changed: $backendWorker; web changed: $web; caddy changed: $caddy"
 
       - name: docker login ghcr.io
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
@@ -107,7 +114,7 @@ jobs:
       # Ordering by run id means no two runs ever wait on each other.
       # Best effort: an API error or the 15 min cap just stops waiting.
       - name: wait for earlier images runs of this commit
-        if: steps.mode.outputs.backend == 'true' || steps.mode.outputs.web == 'true' || steps.mode.outputs.caddy == 'true'
+        if: steps.mode.outputs.backend == 'true' || steps.mode.outputs.backendWorker == 'true' || steps.mode.outputs.web == 'true' || steps.mode.outputs.caddy == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -130,19 +137,32 @@ jobs:
         env:
           TAG: ${{ steps.mode.outputs.tag }}
           WANT_BACKEND: ${{ steps.mode.outputs.backend }}
+          WANT_BACKEND_WORKER: ${{ steps.mode.outputs.backendWorker }}
           WANT_WEB: ${{ steps.mode.outputs.web }}
           WANT_CADDY: ${{ steps.mode.outputs.caddy }}
         run: |
           set -euo pipefail
           backend_tree="$(git rev-parse HEAD:backend)"
+          # Same build tree as the API image but a DIFFERENT runtime stage:
+          # the -worker suffix keeps the reuse label from matching the API
+          # image (find_reusable compares the tree label verbatim).
+          backend_worker_tree="$(git rev-parse HEAD:backend)-worker"
           web_tree="$(git rev-parse HEAD:web)-$(git rev-parse HEAD:contract)"
           caddy_tree="$(git rev-parse HEAD:caddy)"
           # shellcheck disable=SC2129
           echo "backend_tree=$backend_tree" >> "$GITHUB_OUTPUT"
+          echo "backend_worker_tree=$backend_worker_tree" >> "$GITHUB_OUTPUT"
           echo "web_tree=$web_tree" >> "$GITHUB_OUTPUT"
           echo "caddy_tree=$caddy_tree" >> "$GITHUB_OUTPUT"
-          find_reusable() { # $1 = package, $2 = tree; prints a matching digest
-            local repo="ghcr.io/vreid/idol-appreciation.club-$1" pin ref d label
+          repo_of() { # $1 = lock key; prints the GHCR repo suffix
+            case "$1" in
+              backendWorker) echo backend-worker ;;
+              *) echo "$1" ;;
+            esac
+          }
+          find_reusable() { # $1 = lock key, $2 = tree; prints a matching digest
+            local repo pin ref d label
+            repo="ghcr.io/vreid/idol-appreciation.club-$(repo_of "$1")"
             pin="$(jq -r ".$1.digest // empty" images.lock.json)"
             for ref in "$repo:main" ${pin:+"$repo@$pin"}; do
               d="$(crane digest "$ref" 2>/dev/null)" || continue
@@ -151,9 +171,10 @@ jobs:
               if [ -n "$label" ] && [ "$label" = "$2" ]; then echo "$d"; return 0; fi
             done
           }
-          for pkg in backend web caddy; do
+          for pkg in backend backendWorker web caddy; do
             case "$pkg" in
               backend) want="$WANT_BACKEND" tree="$backend_tree" ;;
+              backendWorker) want="$WANT_BACKEND_WORKER" tree="$backend_worker_tree" ;;
               web) want="$WANT_WEB" tree="$web_tree" ;;
               caddy) want="$WANT_CADDY" tree="$caddy_tree" ;;
             esac
@@ -178,6 +199,15 @@ jobs:
           BACKEND_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend:${{ steps.mode.outputs.tag }}
           BUILD_CACHE_REF: ghcr.io/vreid/idol-appreciation.club-backend:buildcache
           BUILD_TREE: ${{ steps.reuse.outputs.backend_tree }}
+
+      - name: build and push backend-worker image
+        id: backend-worker
+        if: steps.reuse.outputs.backendWorker_build == 'true'
+        run: echo "digest=$(task image:backend-worker | tail -1)" >> "$GITHUB_OUTPUT"
+        env:
+          BACKEND_WORKER_IMAGE: ghcr.io/vreid/idol-appreciation.club-backend-worker:${{ steps.mode.outputs.tag }}
+          BUILD_CACHE_REF: ghcr.io/vreid/idol-appreciation.club-backend-worker:buildcache
+          BUILD_TREE: ${{ steps.reuse.outputs.backend_worker_tree }}
 
       - name: build and push web image
         id: web
@@ -204,17 +234,22 @@ jobs:
         if: >-
           startsWith(github.ref, 'refs/tags/') &&
           steps.mode.outputs.backend == 'false' &&
+          steps.mode.outputs.backendWorker == 'false' &&
           steps.mode.outputs.web == 'false' &&
           steps.mode.outputs.caddy == 'false'
         run: |
           set -euo pipefail
           tag="${{ steps.mode.outputs.tag }}"
-          for pkg in backend web caddy; do
+          for pkg in backend backendWorker web caddy; do
             # A component without a lock entry yet (e.g. a tag cut before
             # its first build) has nothing to alias.
             d="$(jq -r ".${pkg}.digest // empty" images.lock.json)"
             [ -n "$d" ] || { echo "$pkg: no lock digest yet, skipping alias"; continue; }
-            crane tag "ghcr.io/vreid/idol-appreciation.club-$pkg@$d" "$tag"
+            case "$pkg" in
+              backendWorker) repo_suffix="backend-worker" ;;
+              *) repo_suffix="$pkg" ;;
+            esac
+            crane tag "ghcr.io/vreid/idol-appreciation.club-$repo_suffix@$d" "$tag"
             echo "$pkg: aliased $tag -> $d"
           done
 
@@ -244,8 +279,8 @@ jobs:
     needs: [images]
     if: >-
       always() && !failure() && !cancelled() &&
-      (needs.images.outputs.backend != '' || needs.images.outputs.web != '' ||
-       needs.images.outputs.caddy != '')
+      (needs.images.outputs.backend != '' || needs.images.outputs['backend-worker'] != '' ||
+       needs.images.outputs.web != '' || needs.images.outputs.caddy != '')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -261,17 +296,20 @@ jobs:
         run: |
           set -euo pipefail
           b="${{ needs.images.outputs.backend }}"
+          bw="${{ needs.images.outputs['backend-worker'] }}"
           w="${{ needs.images.outputs.web }}"
           c="${{ needs.images.outputs.caddy }}"
           sha="${{ github.sha }}"
           tmp="$(mktemp)"
-          jq --arg b "$b" --arg w "$w" --arg c "$c" --arg sha "$sha" '
+          jq --arg b "$b" --arg bw "$bw" --arg w "$w" --arg c "$c" --arg sha "$sha" '
             if $b != "" then (.backend |= (. + {digest: $b, mergeSha: $sha})) else . end
+            | if $bw != "" then (.backendWorker |= ((. // {}) + {digest: $bw, mergeSha: $sha})) else . end
             | if $w != "" then (.web |= (. + {digest: $w, mergeSha: $sha})) else . end
             | if $c != "" then (.caddy |= ((. // {}) + {digest: $c, mergeSha: $sha})) else . end
           ' images.lock.json > "$tmp"
           # never write a lock missing a digest the chart consumes
           jq -e '(.backend.digest | type == "string" and startswith("sha256:")) and
+                 (.backendWorker.digest | type == "string" and startswith("sha256:")) and
                  (.web.digest | type == "string" and startswith("sha256:")) and
                  (.caddy.digest | type == "string" and startswith("sha256:"))' "$tmp" > /dev/null
           mv "$tmp" images.lock.json
@@ -307,7 +345,7 @@ jobs:
             echo "Automated image digest update from run ${{ github.run_id }} (ref ${{ github.ref }})."
             echo
             echo '```'
-            jq -r '"backend  \(.backend.digest)  \(.backend.mergeSha[0:7])", "web      \(.web.digest)  \(.web.mergeSha[0:7])", "caddy    \(.caddy.digest)  \(.caddy.mergeSha[0:7])"' images.lock.json
+            jq -r '"backend  \(.backend.digest)  \(.backend.mergeSha[0:7])", "worker   \(.backendWorker.digest)  \(.backendWorker.mergeSha[0:7])", "web      \(.web.digest)  \(.web.mergeSha[0:7])", "caddy    \(.caddy.digest)  \(.caddy.mergeSha[0:7])"' images.lock.json
             echo '```'
             echo
             echo "Squash-merges automatically once checks are green; the merge triggers deploy (images.lock.json consumer)."

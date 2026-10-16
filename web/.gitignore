@@ -4,6 +4,7 @@ coverage/
 *.local
 .vite/
 e2e-results/
+e2e-results-quarantine/
 e2e-report/
 test-results/
 playwright-report/

@@ -36,7 +36,21 @@ function makeClient(): ApiClient {
     login: vi.fn(() => Promise.resolve()),
     logout: vi.fn(() => Promise.resolve()),
     me: vi.fn(() => Promise.resolve(null)),
-    place: vi.fn(() => Promise.resolve({ ...PLACEMENT, seq: 1 })),
+    place: vi.fn(() =>
+      Promise.resolve({
+        era: "quarantine" as const,
+        accepted: {
+          id: "job-1",
+          state: "pending" as const,
+          x: 0,
+          y: 0,
+          w: 1,
+          h: 1,
+          rot: 0,
+        },
+      }),
+    ),
+    uploadStatus: vi.fn(() => Promise.resolve(null)),
     near: vi.fn(() => Promise.resolve([])),
     center: vi.fn(() => Promise.resolve({ current: null, all_time: [] })),
     report: vi.fn(() => Promise.resolve()),

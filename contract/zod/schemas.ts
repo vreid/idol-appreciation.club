@@ -43,6 +43,8 @@ export const bboxSchema = z.tuple([
 ]);
 export type BBox = z.infer<typeof bboxSchema>;
 
+/** Legacy synchronous era (pre-pipeline backends): the placement is
+ * recorded synchronously and announced with just seq + bbox. */
 export const placeEventSchema = z.object({
   type: z.literal("place"),
   seq: z.number(),
@@ -91,17 +93,8 @@ export const versionsEventSchema = z.object({
   type: z.literal("versions"),
   tiles: z.array(tileVersionEntrySchema),
 });
-
-export const worldEventSchema = z.discriminatedUnion("type", [
-  placeEventSchema,
-  removeEventSchema,
-  versionsEventSchema,
-]);
-
-export type PlaceEvent = z.infer<typeof placeEventSchema>;
-export type RemoveEvent = z.infer<typeof removeEventSchema>;
 export type VersionsEvent = z.infer<typeof versionsEventSchema>;
-export type WorldEvent = z.infer<typeof worldEventSchema>;
+export type RemoveEvent = z.infer<typeof removeEventSchema>;
 
 /**
  * Viewport snapshot query for versioned tile URLs:
@@ -220,7 +213,85 @@ export const hotSchema = z.object({
   cells: z.array(hotCellSchema),
 });
 
-/** 201 response of POST /api/place. */
+/** 202 response of POST /api/place (the quarantine flow, docs
+ * scaling-architecture.md "Upload flow"): the upload id later arrives as
+ * the `placed`/`place_failed` event's `job`; the bbox is the AABB the
+ * art will occupy (client-side jump/pulse target before the seq lands). */
+export const placeAcceptedSchema = z.object({
+  id: z.string(),
+  state: z.literal("pending"),
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+  rot: z.number(),
+});
+
+export type PlaceAccepted = z.infer<typeof placeAcceptedSchema>;
+
+/** Emitted by the ingest worker when the placement is recorded: mirrors
+ * the old 201 body plus the job id the client holds from the 202. */
+export const placedEventSchema = z.object({
+  type: z.literal("placed"),
+  id: z.string(),
+  job: z.string(),
+  seq: z.number(),
+  bbox: bboxSchema,
+  duplicate_count: z.number(),
+});
+
+export type PlacedEvent = z.infer<typeof placedEventSchema>;
+
+/** Emitted when the ingest job fails permanently or exhausts its
+ * attempts: the client's placement did NOT land. */
+export const placeFailedEventSchema = z.object({
+  type: z.literal("place_failed"),
+  job: z.string(),
+  attempts: z.number(),
+  permanent: z.boolean(),
+  error: z.string(),
+});
+
+export type PlaceFailedEvent = z.infer<typeof placeFailedEventSchema>;
+
+/** GET /api/uploads/{id} — poll fallback for the 202 flow (docs
+ * scaling-architecture.md "Upload flow" step 5): the same resolution the
+ * `placed`/`place_failed` events carry, for clients whose event stream
+ * is down (or as a belt-and-braces race). `id` echoes the upload id the
+ * client holds from the 202. */
+export const uploadStatusSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("pending") }),
+  z.object({
+    state: z.literal("placed"),
+    id: z.string(),
+    seq: z.number(),
+    bbox: bboxSchema,
+  }),
+  z.object({
+    state: z.literal("failed"),
+    attempts: z.number(),
+    permanent: z.boolean(),
+    error: z.string(),
+  }),
+]);
+
+export type UploadStatus = z.infer<typeof uploadStatusSchema>;
+
+export const worldEventSchema = z.discriminatedUnion("type", [
+  placedEventSchema,
+  placeFailedEventSchema,
+  removeEventSchema,
+  versionsEventSchema,
+  // Legacy synchronous era (pre-pipeline backends): the `place` event
+  // rides the same stream; the client ignores it outside the 201 flow.
+  placeEventSchema,
+]);
+
+export type WorldEvent = z.infer<typeof worldEventSchema>;
+
+/** 201 response of POST /api/place. Kept for the read-side placement
+ * payloads (feed/near); the place POST itself now returns 202
+ * (placeAcceptedSchema). */
 export const placedPlacementSchema = z.object({
   id: z.string(),
   x: z.number(),

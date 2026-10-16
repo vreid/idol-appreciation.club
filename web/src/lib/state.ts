@@ -6,10 +6,11 @@ import type {
   PendingAccount,
   Placement,
 } from "./api";
-import { ApiError, MAX_UPLOAD_BYTES } from "./api";
+import { MAX_UPLOAD_BYTES } from "./api";
 import { describeApiError, isAuthStatus } from "./apiErrors";
 import { createPileState } from "./pile";
 import { confirmAt, type PlaceConfirmDeps } from "./placeConfirm";
+import { createPendingUploads } from "./pendingUploads";
 import {
   clampLongEdge,
   DEFAULT_LONG_EDGE,
@@ -19,7 +20,7 @@ import {
 import { clampToWorldPoint } from "./world";
 import { createToastHub } from "./toasts";
 import { createTagsEditor } from "./tagsEdit";
-import { createSessionRefresher } from "./session";
+import { createAuthFlow, createSessionRefresher } from "./session";
 import { createAdminAccounts } from "./adminAccounts";
 import type {
   AppStore,
@@ -93,11 +94,20 @@ export function createAppStore(
     return false;
   }
 
-  function releasePrepared(): void {
+  function releasePrepared(keepUrl?: string): void {
     const image = prepared();
-    if (image !== null) revokeObjectUrl(image.previewUrl);
+    if (image !== null && image.previewUrl !== keepUrl) {
+      revokeObjectUrl(image.previewUrl);
+    }
     setPrepared(null);
   }
+
+  const pending = createPendingUploads({
+    poll: (jobId) => client.uploadStatus(jobId),
+    revokeObjectUrl,
+    pushToast,
+    onResolved: (jobId, placed) => deps.onUploadResolved?.(jobId, placed),
+  });
 
   const placeDeps = (): PlaceConfirmDeps => ({
     prepared: () => prepared(),
@@ -105,6 +115,24 @@ export function createAppStore(
     longEdge: () => longEdge(),
     rot: () => rotation(),
     place: client.place,
+    onAccepted: (a) => {
+      // Ownership of previewUrl moves to the pending marker; the flow
+      // reset must not revoke it.
+      pending.track({
+        jobId: a.jobId,
+        x: a.x,
+        y: a.y,
+        w: a.w,
+        h: a.h,
+        rot: a.rot,
+        previewUrl: a.previewUrl,
+      });
+      releasePrepared(a.previewUrl);
+      setRotationSignal(0);
+      setPlaceMode("idle");
+      setSubmittingPlace(false);
+      setPendingSpot(null);
+    },
     pushToast,
     requireAuth: () => void requireAuth(),
     onPlaced: doCancelPlace,
@@ -131,42 +159,16 @@ export function createAppStore(
     },
   });
 
-  async function authenticate(
-    action: "login" | "register",
-    username: string,
-    password: string,
-  ): Promise<boolean> {
-    setRegistrationPending(false);
-    setAuthError("");
-    try {
-      if (action === "login") {
-        await client.login(username, password);
-      } else {
-        const created = await client.register(username, password);
-        if (created.pending) {
-          // External approval gate: no session yet, account awaits an admin.
-          setRegistrationPending(true);
-          pushToast("info", "Account created — awaiting admin approval");
-          return false;
-        }
-      }
-    } catch (err) {
-      // While authenticating, an error status IS the answer: surface the
-      // server's words inline (e.g. 403 "account pending approval").
-      const message =
-        err instanceof ApiError ? err.message : describeApiError(err);
-      setAuthError(message);
-      pushToast("error", message);
-      return false;
-    }
-    await session.refreshMe();
-    setAuthPrompt(false);
-    const who = me()?.username ?? username;
-    const verb =
-      action === "login" ? "Welcome back" : "Account created, welcome";
-    pushToast("success", `${verb}, ${who}!`);
-    return true;
-  }
+  const auth = createAuthFlow({
+    client,
+    setMe: (next) => void setMe(next),
+    setRegistrationPending: (p) => void setRegistrationPending(p),
+    setAuthError: (m) => void setAuthError(m),
+    setAuthPrompt: (open) => void setAuthPrompt(open),
+    pushToast,
+    refreshMe: () => session.refreshMe(),
+    username: () => me()?.username ?? null,
+  });
 
   const adminAccounts = createAdminAccounts({
     client,
@@ -243,6 +245,9 @@ export function createAppStore(
     get submittingPlace() {
       return submittingPlace();
     },
+    get pendingUploads() {
+      return pending.list();
+    },
     get authPrompt() {
       return authPrompt();
     },
@@ -253,6 +258,7 @@ export function createAppStore(
       pushToast("info", message);
     },
 
+    resolvePlacementEvent: pending.resolveEvent,
     notifyError: (message: string) => {
       pushToast("error", message);
     },
@@ -260,9 +266,10 @@ export function createAppStore(
     refreshMe: () => session.refreshMe(),
     refreshCenter: () => session.refreshCenter(),
 
-    login: (username, password) => authenticate("login", username, password),
+    login: (username, password) =>
+      auth.authenticate("login", username, password),
     register: (username, password) =>
-      authenticate("register", username, password),
+      auth.authenticate("register", username, password),
     get registrationPending() {
       return registrationPending();
     },

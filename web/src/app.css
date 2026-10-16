@@ -197,6 +197,44 @@ body {
   transform: translate(-50%, -50%) rotate(0deg);
 }
 
+/* ---------- pending upload markers (202 quarantine flow) ---------- */
+
+/* The anchor divIcon Leaflet positions at the accepted centre; the
+   children size themselves in screen px (re-rendered per zoom). */
+.pending-anchor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+
+.pending-img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  opacity: 0.55;
+  image-rendering: pixelated;
+  animation: pending-breathe 2.4s ease-in-out infinite;
+}
+
+.pending-aabb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 1.5px dashed var(--accent-2);
+  animation: pending-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes pending-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
 /* ---------- top bar ---------- */
 
 .topbar {

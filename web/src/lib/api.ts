@@ -9,6 +9,7 @@
  * that into toasts, never a crash.
  */
 
+import { createPlaceApi } from "./placeApi";
 import type {
   CenterInfo,
   DigStack,
@@ -17,9 +18,9 @@ import type {
   Me,
   PendingAccount,
   Placement,
-  PlacedPlacement,
   RegisterResult,
   TagList,
+  UploadStatus,
 } from "@contract";
 import {
   centerInfoSchema,
@@ -29,7 +30,6 @@ import {
   meSchema,
   pendingAccountsSchema,
   placementsNearSchema,
-  placedPlacementSchema,
   registerResultSchema,
   tagsSchema,
 } from "@contract";
@@ -46,9 +46,11 @@ export type {
   Me,
   PendingAccount,
   Placement,
+  PlaceAccepted,
   PlacedPlacement,
   RegisterResult,
   TagList,
+  UploadStatus,
 } from "@contract";
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -70,17 +72,8 @@ export class ApiError extends Error {
   }
 }
 
-export interface PlaceRequest {
-  image: Blob;
-  fileName: string;
-  /** Top-left corner of the unrotated rect in native world px. */
-  x: number;
-  y: number;
-  /** Long edge in px, 16..4096. */
-  size: number;
-  /** Clockwise rotation in degrees (free angle, default 0). */
-  rot: number;
-}
+import type { PlaceOutcome, PlaceRequest } from "./placeApi";
+export type { PlaceOutcome, PlaceRequest };
 
 export interface ApiClient {
   register: (username: string, password: string) => Promise<RegisterResult>;
@@ -88,7 +81,14 @@ export interface ApiClient {
   logout: () => Promise<void>;
   /** null when not signed in (401/403). */
   me: () => Promise<Me | null>;
-  place: (req: PlaceRequest) => Promise<PlacedPlacement>;
+  /** POST /api/place — resolves with the era-tagged outcome; the caller
+   * branches on `era` (the client works on both sides of the pipeline
+   * flip). */
+  place: (req: PlaceRequest) => Promise<PlaceOutcome>;
+  /** GET /api/uploads/{id} — poll fallback for a 202-accepted upload;
+   * null on 404 (unknown id, or a pre-flip backend without the route —
+   * callers keep waiting on events in that case). */
+  uploadStatus: (id: string) => Promise<UploadStatus | null>;
   near: (x: number, y: number, r: number) => Promise<Placement[]>;
   /** All placements whose rotated pixels contain the world point,
    * newest-first with 1-based depths. */
@@ -160,7 +160,7 @@ interface Parses<T> {
 }
 
 /** Contract-boundary parse: schema or ApiError(0), with a loud warning. */
-function parseOk<T>(schema: Parses<T>, body: unknown, label: string): T {
+export function parseOk<T>(schema: Parses<T>, body: unknown, label: string): T {
   const parsed = schema.safeParse(body);
   if (parsed.success) return parsed.data;
   console.warn(`[api] malformed ${label} payload`, parsed.error);
@@ -257,39 +257,77 @@ async function fetchFeed(
   );
 }
 
+/** A response the era-splitting callers inspect themselves: status
+ * line, parsed body and the Retry-After hint, with NO throw on error
+ * statuses. */
+interface RawResponse {
+  ok: boolean;
+  status: number;
+  body: unknown;
+  retryAfterSeconds: number | null;
+}
+
+/** fetch + parse WITHOUT the error throw: era-splitting callers (the
+ * place flow) inspect the status line themselves. */
+async function rawRequest(
+  doFetch: ApiClientDeps["fetch"],
+  base: string,
+  url: string,
+  options: RequestOptions = {},
+): Promise<RawResponse> {
+  const init: RequestInit = {
+    method: options.method ?? "GET",
+    credentials: "same-origin",
+  };
+  if (options.json === true) {
+    init.headers = { "Content-Type": "application/json" };
+  }
+  if (options.body !== undefined) {
+    init.body = options.body;
+  }
+  let response: Response;
+  try {
+    response = await (doFetch ?? fetch)(base + url, init);
+  } catch (cause) {
+    throw new ApiError(0, `network error: ${String(cause)}`);
+  }
+  const parsed = await parseBody(response);
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: parsed,
+    retryAfterSeconds: retryAfterOf(response),
+  };
+}
+
+/** Throws ApiError for a non-2xx RawResponse (shared message and
+ * Retry-After mapping). */
+function ensureOk(raw: RawResponse): void {
+  if (!raw.ok) {
+    throw new ApiError(
+      raw.status,
+      messageOf(raw.body, raw.status),
+      raw.retryAfterSeconds,
+    );
+  }
+}
+
 export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
   const doFetch = deps.fetch ?? fetch;
   const base = deps.base ?? "";
+
+  const requestRaw = (
+    url: string,
+    options: RequestOptions = {},
+  ): Promise<RawResponse> => rawRequest(doFetch, base, url, options);
 
   async function request(
     url: string,
     options: RequestOptions = {},
   ): Promise<unknown> {
-    const init: RequestInit = {
-      method: options.method ?? "GET",
-      credentials: "same-origin",
-    };
-    if (options.json === true) {
-      init.headers = { "Content-Type": "application/json" };
-    }
-    if (options.body !== undefined) {
-      init.body = options.body;
-    }
-    let response: Response;
-    try {
-      response = await doFetch(base + url, init);
-    } catch (cause) {
-      throw new ApiError(0, `network error: ${String(cause)}`);
-    }
-    const parsed = await parseBody(response);
-    if (!response.ok) {
-      throw new ApiError(
-        response.status,
-        messageOf(parsed, response.status),
-        retryAfterOf(response),
-      );
-    }
-    return parsed;
+    const raw = await requestRaw(url, options);
+    ensureOk(raw);
+    return raw.body;
   }
 
   async function postJson(url: string, payload: unknown): Promise<void> {
@@ -315,19 +353,8 @@ export function createApiClient(deps: ApiClientDeps = {}): ApiClient {
       postJson("/api/auth/login", { username, password }),
     logout: () => postJson("/api/auth/logout", {}),
     me: () => fetchMe(request),
-    place: async (req) => {
-      const form = new FormData();
-      form.append("image", req.image, req.fileName);
-      form.append("x", String(req.x));
-      form.append("y", String(req.y));
-      form.append("size", String(req.size));
-      form.append("rot", String(req.rot));
-      return parseOk(
-        placedPlacementSchema,
-        await request("/api/place", { method: "POST", body: form }),
-        "place",
-      );
-    },
+    ...createPlaceApi({ requestRaw, ensureOk }),
+
     near: async (x, y, r) => {
       const query = new URLSearchParams({
         x: String(x),

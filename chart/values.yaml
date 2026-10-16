@@ -165,7 +165,11 @@ edgeStorage:
 # TCP health checks: the LB must NOT terminate TLS (Caddy owns ACME) and
 # must not use the CCM's broken-by-default HTTP checks.
 edgeLoadBalancer:
-  plan: essentials
+  # production-small = 2 nodes x 50,000 sessions/server (essentials was
+  # 1 x 1,000 and capped SSE at ~999). This value is what every helm
+  # upgrade re-asserts: an out-of-band plan change gets reverted by the
+  # next deploy (2026-10-15 console upgrade reverted by the 16:05Z roll).
+  plan: production-small
   healthCheck:
     type: tcp
     interval: 10

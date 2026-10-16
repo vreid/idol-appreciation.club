@@ -459,6 +459,9 @@ tasks:
     cmds:
       - |
         set -euo pipefail
+        # Cross-cmd defer marker (each cmd is its own shell): set below
+        # when the digests are pending, checked by every later stage.
+        rm -f /tmp/deploy-deferred
         # Deploy is a pure images.lock.json consumer (images.yml maintains
         # the file): an un-built image cannot be deployed by construction.
         # The empty-digest guard stays as a loud second defense
@@ -480,6 +483,7 @@ tasks:
         # lands in the lock file").
         if [ -z "$CADDY_DIGEST" ] || [ -z "$BACKEND_WORKER_DIGEST" ]; then
           echo "caddy/backend-worker digest not in $IMAGES_LOCK yet; deferring this deploy to the images.lock.json run (images.yml is building it)"
+          touch /tmp/deploy-deferred
           exit 0
         fi
         # task runs each cmd in its own shell — hand the digests to the
@@ -500,6 +504,10 @@ tasks:
         chmod 600 "$KUBECONFIG"
       - |
         set -euo pipefail
+        if [ -f /tmp/deploy-deferred ]; then
+          echo "deploy deferred (digests pending); skipping this stage"
+          exit 0
+        fi
         cd tofu
         # Quiet on purpose: this repo's Actions logs are public, and the
         # refresh lists every resource id (including the S3 access key id).
@@ -509,6 +517,10 @@ tasks:
           || { echo "tofu refresh-only failed (non-fatal):" >&2; grep -E '^(│ )?Error' /tmp/tofu-refresh.log >&2 || true; }
       - |
         set -euo pipefail
+        if [ -f /tmp/deploy-deferred ]; then
+          echo "deploy deferred (digests pending); skipping this stage"
+          exit 0
+        fi
         cd tofu
         # s3_endpoint can lag service creation; refresh until it shows.
         ep=""
@@ -734,6 +746,10 @@ tasks:
         fi
       - |
         set -euo pipefail
+        if [ -f /tmp/deploy-deferred ]; then
+          echo "deploy deferred (digests pending); skipping this stage"
+          exit 0
+        fi
         # chart/caddy/Caddyfile is the source of truth for the edge and
         # helm-templated (object-storage coordinates); web/Caddyfile
         # only covers stock-caddy local dev. No sync step anymore.
@@ -787,6 +803,10 @@ tasks:
         fi
       - |
         set -euo pipefail
+        if [ -f /tmp/deploy-deferred ]; then
+          echo "deploy deferred (digests pending); skipping this stage"
+          exit 0
+        fi
         ips=""
         n=0
         while [ -z "$ips" ] && [ "$n" -lt 30 ]; do

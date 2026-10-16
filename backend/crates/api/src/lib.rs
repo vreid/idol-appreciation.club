@@ -5,10 +5,8 @@
 
 pub mod api;
 pub mod auth;
-pub mod chunks;
 pub mod events;
 pub mod handlers;
-pub mod import;
 pub mod place;
 pub mod rate;
 pub mod router;
@@ -23,18 +21,13 @@ pub mod versions;
 // `crate::config`, `crate::img` and every existing
 // `idol_appreciation_club_backend::*` path keeps resolving unchanged.
 pub use iac_core::{config, dbq, error, metrics, store, telemetry, world};
-// TRANSITIONAL: the API still hosts the dark 201 path and the Phase-2
-// tile fallback, so it links the pixel crate. Both leave the API at the
-// distroless step (docs/backend.md "Workspace layout").
-pub use iac_worker::{img, ingest, render_jobs};
 
-use crate::state::{AppState, KeyLocks};
+use crate::state::AppState;
 use std::sync::Arc;
 
-/// Bootstrap everything (libvips, pool + migrations, object store, events
-/// bus) and return the app state plus the fully wired router.
+/// Bootstrap everything (pool + migrations, object store, events bus) and
+/// return the app state plus the fully wired router.
 pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum::Router)> {
-    img::init()?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(cfg.database_pool_max)
         .acquire_timeout(std::time::Duration::from_secs(10))
@@ -56,49 +49,20 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         None => None,
     };
 
-    let render_queue = tiles::RenderQueue::new(pool.clone(), cfg.tile_render_queue_cap);
-    // Two concurrent full-pyramid renders max: each is minutes of work;
-    // with the connection-free walk (#120) they hold no pool connections,
-    // but CPU/S3 bandwidth still argues for a bound.
-    let pyramid_gate = tiles::PyramidGate::new(2);
     let state = Arc::new(AppState {
         tile_cache: tiles::TileCache::new(cfg.tile_cache_entries),
         pool,
         pool_ro,
         store,
-        chunk_locks: KeyLocks::new(),
         events_tx: events_tx.clone(),
-        tile_locks: KeyLocks::new(),
-        render_queue,
-        pyramid_gate,
         login_limiter: rate::LoginLimiter::new(),
         cfg,
     });
-
-    // The worker loops invalidate the API's in-process version caches
-    // through this hook; the standalone worker binary leaves it unset.
-    iac_core::versions_note::register(versions::note);
 
     tokio::spawn(events::spawn_listener(
         state.pool.clone(),
         events_tx.clone(),
     ));
-    tiles::spawn_render_worker(&state);
-    // Phase 3 pipeline (docs/scaling-architecture.md): DARK by default —
-    // workers only run when RENDER_PIPELINE_WORKERS > 0 (default 0), and
-    // the queue-only place/remove paths additionally require
-    // RENDER_PIPELINE_ENABLED=true. The split lets workers burn a
-    // pre-seeded queue while the request path still composites (staged
-    // cutover, docs/backend.md).
-    for _ in 0..state.cfg.render_pipeline_workers {
-        render_jobs::spawn_worker(&state.worker_ctx());
-    }
-    // Phase 4 ingest consumer (docs "Upload flow"): dark unless
-    // INGEST_PIPELINE_ENABLED=true — the 202 quarantine path only runs
-    // when the consumer is alive to drain the queue.
-    if state.cfg.ingest_pipeline_enabled {
-        ingest::spawn_consumer(&state.worker_ctx());
-    }
 
     Ok((state.clone(), router::router(state)))
 }

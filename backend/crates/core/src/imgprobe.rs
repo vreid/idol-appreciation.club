@@ -20,9 +20,13 @@ pub fn dimensions(bytes: &[u8]) -> Result<(i64, i64), AppError> {
     match bytes {
         [0x89, b'P', b'N', b'G', ..] => png(bytes),
         [0xFF, 0xD8, ..] => jpeg(bytes),
-        [b'R', b'I', b'F', b'F', .., b'W', b'E', b'B', b'P'] => webp(bytes),
+        // RIFF container: "WEBP" is the form type at bytes 8..12 (chunks
+        // follow, so the tail is arbitrary — never pattern-match it).
+        [b'R', b'I', b'F', b'F', rest @ ..] if rest.len() >= 8 && &rest[4..8] == b"WEBP" => {
+            webp(bytes)
+        }
         [b'G', b'I', b'F', b'8', ..] => gif(bytes),
-        _ if &bytes[4..8] == b"ftyp" => avif(bytes),
+        _ if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" => avif(bytes),
         _ => Err(AppError::BadRequest("undecodable image")),
     }
 }
@@ -49,9 +53,7 @@ fn jpeg(b: &[u8]) -> Result<(i64, i64), AppError> {
             return Err(AppError::BadRequest("undecodable image"));
         }
         let marker = b[i + 1];
-        if (0xC0..=0xCF).contains(&marker)
-            && ![0xC4, 0xC8, 0xCC].contains(&marker)
-        {
+        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
             if i + 9 > b.len() {
                 return Err(AppError::BadRequest("undecodable image"));
             }
@@ -74,7 +76,7 @@ fn jpeg(b: &[u8]) -> Result<(i64, i64), AppError> {
 }
 
 fn webp(b: &[u8]) -> Result<(i64, i64), AppError> {
-    if b.len() < 30 {
+    if b.len() < 16 {
         return Err(AppError::BadRequest("undecodable image"));
     }
     match &b[12..16] {
@@ -84,14 +86,8 @@ fn webp(b: &[u8]) -> Result<(i64, i64), AppError> {
             if b.len() < frame + 10 || &b[frame + 3..frame + 6] != b"\x9d\x01\x2a" {
                 return Err(AppError::BadRequest("undecodable image"));
             }
-            let w = i64::from(u16::from_le_bytes([
-                b[frame + 6],
-                b[frame + 7],
-            ])) & 0x3FFF;
-            let h = i64::from(u16::from_le_bytes([
-                b[frame + 8],
-                b[frame + 9],
-            ])) & 0x3FFF;
+            let w = i64::from(u16::from_le_bytes([b[frame + 6], b[frame + 7]])) & 0x3FFF;
+            let h = i64::from(u16::from_le_bytes([b[frame + 8], b[frame + 9]])) & 0x3FFF;
             ok_nonzero(w, h)
         }
         b"VP8L" => {
@@ -109,14 +105,8 @@ fn webp(b: &[u8]) -> Result<(i64, i64), AppError> {
             if b.len() < 30 {
                 return Err(AppError::BadRequest("undecodable image"));
             }
-            let w = (i64::from(b[24])
-                | i64::from(b[25]) << 8
-                | i64::from(b[26]) << 16)
-                + 1;
-            let h = (i64::from(b[27])
-                | i64::from(b[28]) << 8
-                | i64::from(b[29]) << 16)
-                + 1;
+            let w = (i64::from(b[24]) | i64::from(b[25]) << 8 | i64::from(b[26]) << 16) + 1;
+            let h = (i64::from(b[27]) | i64::from(b[28]) << 8 | i64::from(b[29]) << 16) + 1;
             ok_nonzero(w, h)
         }
         _ => Err(AppError::BadRequest("undecodable image")),
@@ -175,29 +165,22 @@ fn avif(b: &[u8]) -> Result<(i64, i64), AppError> {
                         return Some(d);
                     }
                 }
-                b"ispe" => {
-                    if end >= i + head + 12 {
-                        let at = i + head + 4;
-                        let w = i64::from(u32::from_be_bytes([
-                            b[at],
-                            b[at + 1],
-                            b[at + 2],
-                            b[at + 3],
-                        ]));
-                        let h = i64::from(u32::from_be_bytes([
-                            b[at + 4],
-                            b[at + 5],
-                            b[at + 6],
-                            b[at + 7],
-                        ]));
-                        if w > 0 && h > 0 {
-                            return Some((w, h));
-                        }
+                b"ispe" if end >= i + head + 12 => {
+                    let at = i + head + 4;
+                    let w = i64::from(u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]));
+                    let h = i64::from(u32::from_be_bytes([
+                        b[at + 4],
+                        b[at + 5],
+                        b[at + 6],
+                        b[at + 7],
+                    ]));
+                    if w > 0 && h > 0 {
+                        return Some((w, h));
                     }
                 }
                 _ => {}
             }
-            if end <= i + head.min(1).max(0) || size == 0 && end == i {
+            if end <= i + head.clamp(0, 1) || size == 0 && end == i {
                 break;
             }
             i = end;
@@ -205,10 +188,7 @@ fn avif(b: &[u8]) -> Result<(i64, i64), AppError> {
         None
     }
     // Skip ftyp, then scan the remaining top-level boxes.
-    let first = usize::try_from(u32::from_be_bytes([
-        b[0], b[1], b[2], b[3],
-    ]))
-    .unwrap_or(0);
+    let first = usize::try_from(u32::from_be_bytes([b[0], b[1], b[2], b[3]])).unwrap_or(0);
     walk(b, first.min(b.len()), b.len(), 0).ok_or(AppError::BadRequest("undecodable image"))
 }
 
@@ -227,9 +207,7 @@ mod tests {
     /// A minimal valid 3×2 PNG (magic + IHDR only is enough here).
     #[test]
     fn png_header() {
-        let mut b = vec![
-            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13,
-        ];
+        let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13];
         b.extend_from_slice(b"IHDR");
         b.extend_from_slice(&3u32.to_be_bytes());
         b.extend_from_slice(&2u32.to_be_bytes());
@@ -246,9 +224,8 @@ mod tests {
     #[test]
     fn webp_headers() {
         let mut b = b"RIFF\x24\x00\x00\x00WEBPVP8L".to_vec();
-        b.extend_from_slice(&[0x0A, 0x00, 0x00]); // chunk size
-        b.extend_from_slice(&[0x00]); // flags
-        // VP8L payload: signature byte then 14-bit w-1 / h-1.
+        b.extend_from_slice(&[0x0A, 0x00, 0x00, 0x00]); // chunk size
+                                                        // VP8L payload: signature byte then 14-bit w-1 / h-1.
         b.push(0x2F);
         let (w, h) = (5u16, 7u16);
         let bits: u32 = u32::from(w - 1) | (u32::from(h - 1) << 14);
@@ -256,8 +233,8 @@ mod tests {
         assert_eq!(dimensions(&b).unwrap(), (5, 7));
 
         let mut x = b"RIFF\x2A\x00\x00\x00WEBPVP8X".to_vec();
-        x.extend_from_slice(&[0x0A, 0x00, 0x00]); // chunk size
-        x.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // flags/reserved
+        x.extend_from_slice(&[0x0A, 0x00, 0x00, 0x00]); // chunk size
+        x.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // flags + reserved
         x.extend_from_slice(&[4u8, 0, 0]); // canvas w-1 (24-bit LE)
         x.extend_from_slice(&[9u8, 0, 0]); // canvas h-1
         assert_eq!(dimensions(&x).unwrap(), (5, 10));

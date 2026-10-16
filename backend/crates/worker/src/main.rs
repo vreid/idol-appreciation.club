@@ -25,6 +25,32 @@ async fn main() -> anyhow::Result<()> {
     let store = store::from_config(&cfg)?;
     let ctx = WorkerCtx::new(cfg, pool, store);
 
+    // Admin import subcommands (the former /api/admin/import* HTTP
+    // routes): file-in, JSON-out, exit. Never start the loops.
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("import-originals") => {
+            let mut images = Vec::new();
+            for path in args {
+                images.push(std::fs::read(&path)?);
+            }
+            let infos = iac_worker::import::import_originals_run(&ctx, images).await?;
+            println!("{}", serde_json::to_string(&infos)?);
+            return Ok(());
+        }
+        Some("import-batch") => {
+            let manifest = std::fs::read_to_string(
+                args.next()
+                    .expect("usage: backend-worker import-batch <manifest.json>"),
+            )?;
+            let req: iac_worker::import::ImportReq = serde_json::from_str(&manifest)?;
+            let summary = iac_worker::import::import_run(&ctx, req).await?;
+            println!("{}", serde_json::to_string(&summary)?);
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let loops = ctx.cfg.render_pipeline_workers;
     let ingest_on = ctx.cfg.ingest_pipeline_enabled;
     if loops == 0 && !ingest_on {

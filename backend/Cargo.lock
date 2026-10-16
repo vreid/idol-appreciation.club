@@ -1274,8 +1274,6 @@ dependencies = [
  "futures",
  "hmac",
  "iac-core",
- "iac-worker",
- "libvips",
  "lru",
  "object_store",
  "opentelemetry",
@@ -1306,6 +1304,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "futures",
@@ -1335,9 +1334,11 @@ name = "iac-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "bytes",
  "chrono",
  "futures",
+ "iac-api",
  "iac-core",
  "libvips",
  "lru",
@@ -1348,6 +1349,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "testcontainers-modules",
  "thiserror",
  "tokio",
  "tracing",

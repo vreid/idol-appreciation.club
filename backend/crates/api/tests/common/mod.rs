@@ -1,6 +1,6 @@
 //! Shared HTTP test harness: real router against testcontainers Postgres +
 //! filesystem store. Skipped (with a loud message) when Docker is
-//! unavailable. Used by `integration.rs` and `tile_queue.rs`.
+//! unavailable. Used by `integration.rs`.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -10,9 +10,7 @@ use std::time::Duration;
 
 use idol_appreciation_club_backend::build_app;
 use idol_appreciation_club_backend::config::Config;
-use idol_appreciation_club_backend::img;
 use idol_appreciation_club_backend::state::App;
-use idol_appreciation_club_backend::tiles;
 use testcontainers_modules::postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::ImageExt;
@@ -22,41 +20,17 @@ use tokio::net::TcpListener;
 pub const WORLD: i64 = 268_435_456;
 pub const CENTER: i64 = 134_217_728;
 
-/// Background render queue knobs for a test server. Defaults match the
-/// production spec values; queue-behavior tests shrink them for speed.
-#[derive(Clone, Copy)]
-pub struct TileRenderCfg {
-    pub quiet_secs: u64,
-    pub max_delay_secs: u64,
-    pub cap: usize,
-}
-
-impl Default for TileRenderCfg {
-    fn default() -> Self {
-        Self {
-            quiet_secs: 4,
-            max_delay_secs: 12,
-            cap: 512,
-        }
-    }
-}
-
-/// Phase 3 render pipeline knobs (migration 0008 worker). Defaults
-/// match production: DISABLED (dark ship), doc delay bounds.
+/// Phase 3 pipeline knobs for a test server. The api integration suite
+/// runs everything dark: `fast()` would spawn worker loops, which the
+/// HTTP tests never want (the worker suites own those).
 #[derive(Clone, Copy)]
 pub struct PipelineCfg {
     pub enabled: bool,
-    /// Phase 4 quarantine flow: 202 placement path + in-process ingest
-    /// consumer (INGEST_PIPELINE_ENABLED).
     pub ingest: bool,
-    /// Worker loops spawned per server (0 = none; tests drive claims
-    /// manually with 0).
     pub workers: u32,
     pub poll_ms: u64,
     pub lease_secs: i64,
-    /// z 11–17 quiet window.
     pub parent_quiet_ms: u64,
-    /// z ≤ 10 base + coordinate spread (doc: 10–30 s).
     pub parent_low_ms: u64,
     pub parent_spread_ms: u64,
 }
@@ -67,28 +41,26 @@ impl Default for PipelineCfg {
             enabled: false,
             ingest: false,
             workers: 0,
-            poll_ms: 1000,
+            poll_ms: 60_000,
             lease_secs: 120,
-            parent_quiet_ms: 3000,
+            parent_quiet_ms: 3_000,
             parent_low_ms: 10_000,
             parent_spread_ms: 20_000,
         }
     }
 }
 
-/// Immediate-drain knobs for pipeline tests (worker polls fast, parents
-/// fire at once).
 impl PipelineCfg {
     pub fn fast() -> Self {
         Self {
             enabled: true,
-            ingest: false,
+            ingest: true,
             workers: 1,
             poll_ms: 10,
-            lease_secs: 120,
-            parent_quiet_ms: 0,
-            parent_low_ms: 0,
-            parent_spread_ms: 0,
+            lease_secs: 5,
+            parent_quiet_ms: 50,
+            parent_low_ms: 100,
+            parent_spread_ms: 100,
         }
     }
 }
@@ -98,8 +70,7 @@ pub struct Server {
     pub _store_dir: PathBuf,
     /// Direct SQL access for queue/pipeline assertions.
     pub db_url: String,
-    /// The app state (worker seams, pool) for tests that drive the
-    /// pipeline directly.
+    /// The app state (pool) for tests that drive the pipeline directly.
     pub state: App,
     /// None when CI presets DATABASE_URL (job service container): there
     /// is nothing to stop — the service outlives the test.
@@ -145,7 +116,6 @@ pub async fn start_server_gated(
         empty_secs,
         max_upload,
         Default::default(),
-        Default::default(),
     )
     .await
 }
@@ -159,42 +129,25 @@ pub async fn start_server_gated(
 /// one shared database. Databases accumulate for the job's lifetime —
 /// the service is disposable.
 pub async fn provision_isolated_db(preset: &str) -> String {
-    // Strip any query string; the admin connection targets /postgres.
-    let (base, query) = match preset.split_once('?') {
-        Some((b, q)) => (b, Some(q)),
-        None => (preset, None),
-    };
-    let origin = base
-        .rsplit_once('/')
-        .map(|(o, _)| o)
-        .expect("DATABASE_URL with a database path");
-    let db = format!("t_{}", uuid::Uuid::now_v7().simple());
-    let admin = format!("{origin}/postgres");
-    let admin_pool = sqlx::PgPool::connect(&admin)
+    let mut conn = <sqlx::postgres::PgConnection as sqlx::Connection>::connect(preset)
         .await
-        .expect("connect admin database for per-server provisioning");
-    // The name is uuid-generated: the identifier interpolation is safe.
-    sqlx::query(&format!(r#"CREATE DATABASE "{db}""#))
-        .execute(&admin_pool)
+        .expect("connect CI service postgres");
+    let db = format!("test_{}", uuid::Uuid::now_v7().simple());
+    sqlx::query(&format!("CREATE DATABASE {db}"))
+        .execute(&mut conn)
         .await
-        .expect("create per-server database");
-    admin_pool.close().await;
-    let mut url = format!("{origin}/{db}");
-    if let Some(q) = query {
-        url.push('?');
-        url.push_str(q);
-    }
-    url
+        .expect("create per-test database");
+    let cut = preset
+        .rfind('/')
+        .expect("DATABASE_URL carries a db segment");
+    format!("{}/{}", &preset[..cut], db)
 }
 
-/// Full-knob boot: queue behavior tests override the render-queue config;
-/// pipeline tests enable the Phase 3 worker via `pipeline`.
 pub async fn start_server_full(
     approval_required: bool,
     paint_secs: i64,
     empty_secs: i64,
     max_upload: usize,
-    tiles_cfg: TileRenderCfg,
     pipeline: PipelineCfg,
 ) -> Server {
     // Pin a modern postgres: the module default is 11-alpine, too old for
@@ -206,23 +159,7 @@ pub async fn start_server_full(
     // and re-run migrations over each other. Local runs keep one
     // container per test instead.
     let (database_url, container) = match std::env::var("DATABASE_URL") {
-        Ok(base) => {
-            // CREATE DATABASE cannot run inside a transaction; a plain
-            // connection autocommits. Dropped before the app pool starts.
-            let mut conn = <sqlx::postgres::PgConnection as sqlx::Connection>::connect(&base)
-                .await
-                .expect("connect CI service postgres");
-            let db = format!("test_{}", uuid::Uuid::now_v7().simple());
-            sqlx::query(&format!("CREATE DATABASE {db}"))
-                .execute(&mut conn)
-                .await
-                .expect("create per-test database");
-            drop(conn);
-            // Boring suffix swap: postgres URLs carry the db as the last
-            // path segment (no query string in the CI preset).
-            let cut = base.rfind('/').expect("DATABASE_URL carries a db segment");
-            (format!("{}/{}", &base[..cut], db), None)
-        }
+        Ok(base) => (provision_isolated_db(&base).await, None),
         Err(_) => {
             let container = postgres::Postgres::default()
                 .with_tag("16-alpine")
@@ -261,9 +198,6 @@ pub async fn start_server_full(
         min_size: 16,
         max_size: 4096,
         tile_cache_entries: 256,
-        tile_render_quiet_secs: tiles_cfg.quiet_secs,
-        tile_render_max_delay_secs: tiles_cfg.max_delay_secs,
-        tile_render_queue_cap: tiles_cfg.cap,
         registration_approval_required: approval_required,
         import_block_entries: 500,
         import_group_concurrency: 2,
@@ -309,7 +243,7 @@ pub async fn request(
     .await
 }
 
-/// Long-budget variant for slow batch endpoints (multi-block imports).
+/// Long-budget variant for slow endpoints.
 pub async fn request_long(
     server: &Server,
     method: &str,
@@ -411,7 +345,7 @@ pub fn place_body(image: &[u8], x: i64, y: i64, size: i64) -> (String, Vec<u8>) 
 
 pub async fn place(server: &Server, cookie: &str, image: &[u8], x: i64, y: i64, size: i64) -> Resp {
     let (boundary, body) = place_body(image, x, y, size);
-    let resp = request(
+    request(
         server,
         "POST",
         "/api/place",
@@ -424,8 +358,7 @@ pub async fn place(server: &Server, cookie: &str, image: &[u8], x: i64, y: i64, 
         ],
         body,
     )
-    .await;
-    resp
+    .await
 }
 
 pub async fn register(server: &Server, username: &str) -> String {
@@ -441,9 +374,93 @@ pub async fn register(server: &Server, username: &str) -> String {
     resp.cookie().expect("session cookie")
 }
 
-/// A valid small PNG via the image pipeline (opaque red square).
+// ----------------------------------------------------- pure-Rust PNG ---
+// The API no longer links libvips, so test images are encoded here: a
+// minimal deterministic PNG (8-bit RGBA, solid color, zlib "stored"
+// blocks) with hand-rolled CRC32/Adler32. Enough for the header probe,
+// the worker's decode, and pixel sampling.
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut table = [0u32; 256];
+    for (i, t) in table.iter_mut().enumerate() {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+        *t = c;
+    }
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc = table[((crc ^ u32::from(b)) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for &byte in data {
+        a = (a + u32::from(byte)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    (b << 16) | a
+}
+
+fn png_chunk(chunk_type: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + data.len());
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(chunk_type);
+    out.extend_from_slice(data);
+    let mut crc_input = Vec::with_capacity(4 + data.len());
+    crc_input.extend_from_slice(chunk_type);
+    crc_input.extend_from_slice(data);
+    out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    out
+}
+
+/// A valid small PNG (opaque red square), built without libvips.
 pub fn png(width: u32, height: u32) -> Vec<u8> {
-    img::test_png(width, height)
+    png_color(width, height, [220, 40, 40, 255])
+}
+
+pub fn png_color(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+    let row = width as usize * 4;
+    let mut raw = vec![0u8; height as usize * (1 + row)];
+    for line in raw.chunks_mut(1 + row) {
+        // line[0] is the filter byte, already 0 (none).
+        for px in line[1..].as_chunks_mut::<4>().0 {
+            px.copy_from_slice(&rgba);
+        }
+    }
+    // zlib stream: 2-byte header, stored blocks (max 65535 bytes), adler32.
+    let mut zlib = vec![0x78, 0x01];
+    for (i, block) in raw.chunks(65_535).enumerate() {
+        let last = if i == raw.chunks(65_535).count() - 1 {
+            1u8
+        } else {
+            0
+        };
+        zlib.push(last);
+        zlib.extend_from_slice(&(block.len() as u16).to_le_bytes());
+        zlib.extend_from_slice(&(!(block.len() as u16)).to_le_bytes());
+        zlib.extend_from_slice(block);
+    }
+    zlib.extend_from_slice(&adler32(&raw).to_be_bytes());
+
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit, RGBA
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    out.extend_from_slice(&png_chunk(b"IHDR", &ihdr));
+    out.extend_from_slice(&png_chunk(b"IDAT", &zlib));
+    out.extend_from_slice(&png_chunk(b"IEND", &[]));
+    out
 }
 
 /// A PNG whose IHDR DECLARES (width, height) but whose pixel data encodes
@@ -460,7 +477,7 @@ pub fn png_with_declared_dims(width: u32, height: u32) -> Vec<u8> {
     png[IHDR_DATA + 4..IHDR_DATA + 8].copy_from_slice(&height.to_be_bytes());
     let chunk_len = u32::from_be_bytes(png[8..12].try_into().expect("chunk len")) as usize;
     let crc_offset = 12 + 4 + chunk_len;
-    let crc = img::crc32(&png[12..crc_offset]);
+    let crc = crc32(&png[12..crc_offset]);
     png[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_be_bytes());
     png
 }
@@ -482,26 +499,72 @@ pub async fn metrics_map(server: &Server) -> HashMap<String, String> {
     map
 }
 
-/// Poll a tile until it is FRESH at `etag` (no X-Tile-Stale). Every
-/// intermediate GET also re-bumps the queued render's quiet window — which
-/// is exactly what a polling client does — so `interval` MUST exceed the
-/// server's quiet window, or the poller itself starves the re-render (the
-/// max-delay cap is the only thing that would eventually fire).
-pub async fn tile_fresh(server: &Server, path: &str, etag: &str, interval: Duration) -> Resp {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let resp = request(server, "GET", path, &[], vec![]).await;
-        if resp.header("etag") == Some(etag) && resp.header("x-tile-stale").is_none() {
-            return resp;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "tile {path} never became fresh at etag {etag} (last etag {:?}, stale {:?})",
-            resp.header("etag"),
-            resp.header("x-tile-stale")
-        );
-        tokio::time::sleep(interval).await;
-    }
+/// Seed a committed placement row directly (the api binary cannot run
+/// the ingest pixel stage, so data-seeding goes through SQL): returns
+/// (placement id, seq). Synthetic shas are fine — nothing on the
+/// api-only paths these tests exercise decodes the bytes.
+pub async fn seed_placement(
+    server: &Server,
+    username: &str,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    rot: f32,
+) -> (String, i64) {
+    let pool = sqlx::postgres::PgPool::connect(&server.db_url)
+        .await
+        .expect("connect test db");
+    let sha = format!("{:064x}", uuid::Uuid::now_v7().as_u128());
+    // bbox is a regular column since 0004 (the rotated AABB, computed in
+    // Rust by the write paths) — compute it with the same world math.
+    let aabb = idol_appreciation_club_backend::world::rotated_aabb(x, y, w, h, rot);
+    let bbox = format!(
+        "({},{}),({},{})",
+        aabb.x,
+        aabb.y,
+        aabb.x + aabb.w - 1,
+        aabb.y + aabb.h - 1
+    );
+    let (id, seq): (uuid::Uuid, i64) = sqlx::query_as(
+        "INSERT INTO placements (id, account_id, image_key, x, y, w, h, rot, seq, original_sha, derivative_sha, bbox)          VALUES ($1, (SELECT id FROM accounts WHERE username = $2), 'seed.png', $3, $4, $5, $6, $7, nextval('placement_seq'), $8, $8, $9::box)          RETURNING id, seq",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(username)
+    .bind(x)
+    .bind(y)
+    .bind(w as i32)
+    .bind(h as i32)
+    .bind(rot)
+    .bind(&sha)
+    .bind(&bbox)
+    .fetch_one(&pool)
+    .await
+    .expect("seed placement row");
+    pool.close().await;
+    (id.to_string(), seq)
+}
+
+/// Soft-remove a seeded placement row directly (removed_at + a fresh
+/// seq draw for the chunk version, exactly what the ingest consumer's
+/// removal path writes).
+pub async fn seed_remove(server: &Server, placement_id: impl Into<String>) {
+    let pool = sqlx::postgres::PgPool::connect(&server.db_url)
+        .await
+        .expect("connect test db");
+    sqlx::query(
+        "UPDATE placements SET removed_at = now(), seq = nextval('placement_seq') WHERE id = $1",
+    )
+    .bind(
+        placement_id
+            .into()
+            .parse::<uuid::Uuid>()
+            .expect("placement uuid"),
+    )
+    .execute(&pool)
+    .await
+    .expect("remove placement row");
+    pool.close().await;
 }
 
 /// First-account-is-admin: grant the admin cooldown exemption so tests can
@@ -518,152 +581,4 @@ pub async fn make_placer(server: &Server, username: &str) -> String {
     .await;
     assert_eq!(resp.status, 204);
     cookie
-}
-
-/// Serial lock for tests that read the global metrics atomics
-/// (`/api/metrics` is process-wide; two parallel import tests race the
-/// counters). Take it at the top of the test and hold it for the run.
-pub async fn metrics_serial_lock() -> tokio::sync::OwnedMutexGuard<()> {
-    std::sync::Arc::clone(&*METRICS_LOCK).lock_owned().await
-}
-
-static METRICS_LOCK: std::sync::LazyLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Mutex::new(())));
-
-/// Render-worker pause seam for deterministic queue-behavior tests. The
-/// guard resets to 0 on drop; tests in one binary also take this mutex so
-/// the global seam never overlaps.
-pub struct PauseGuard {
-    _perm: tokio::sync::OwnedMutexGuard<()>,
-}
-
-static PAUSE_LOCK: std::sync::LazyLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Mutex::new(())));
-
-pub async fn set_render_pause_ms(ms: u64) -> PauseGuard {
-    let perm = std::sync::Arc::clone(&*PAUSE_LOCK).lock_owned().await;
-    tiles::set_render_pause_for_tests(ms);
-    PauseGuard { _perm: perm }
-}
-
-/// Hold every Phase 3 pipeline job before its pixel stage — deterministic
-/// running windows for the rerun test. Shares the tiles pause lock: at
-/// most one pause seam (or one worker-driven pipeline test) is active at
-/// a time in this binary, so a global pause never bleeds into a
-/// concurrent test's worker. The drop resets THE PAINT seam (the shared
-/// `PauseGuard` resets the tiles seam).
-pub struct PaintPauseGuard {
-    _perm: tokio::sync::OwnedMutexGuard<()>,
-}
-
-impl Drop for PaintPauseGuard {
-    fn drop(&mut self) {
-        idol_appreciation_club_backend::render_jobs::set_paint_pause_for_tests(0);
-    }
-}
-
-pub async fn set_paint_pause_ms(ms: u64) -> PaintPauseGuard {
-    let perm = std::sync::Arc::clone(&*PAUSE_LOCK).lock_owned().await;
-    idol_appreciation_club_backend::render_jobs::set_paint_pause_for_tests(ms);
-    PaintPauseGuard { _perm: perm }
-}
-
-/// Serialize worker-driven pipeline tests (they share the process-global
-/// paint-pause seam via the same lock).
-pub async fn pipeline_serial() -> PauseGuard {
-    let perm = std::sync::Arc::clone(&*PAUSE_LOCK).lock_owned().await;
-    PauseGuard { _perm: perm }
-}
-
-/// Hold every pyramid (z < BASE_Z) render for `ms` — deterministic
-/// gate/shed windows without touching leaf-render or worker timing.
-/// Callers already hold the serial pause lock (set_render_pause_ms).
-pub fn set_pyramid_pause_ms(ms: u64) {
-    idol_appreciation_club_backend::tiles::set_pyramid_pause_for_tests(ms);
-}
-
-impl Drop for PauseGuard {
-    fn drop(&mut self) {
-        tiles::set_render_pause_for_tests(0);
-    }
-}
-
-// ---------------------------------------------------- batch import ----
-
-/// Multi-image multipart body for the originals preupload endpoint.
-pub fn multipart_images(images: &[Vec<u8>]) -> (String, Vec<u8>) {
-    let boundary = format!("b{}", uuid::Uuid::now_v7().simple());
-    let mut body = Vec::new();
-    for image in images {
-        body.extend_from_slice(
-            format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"i.png\"\r\nContent-Type: image/png\r\n\r\n"
-            )
-            .as_bytes(),
-        );
-        body.extend_from_slice(image);
-        body.extend_from_slice(b"\r\n");
-    }
-    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-    (boundary, body)
-}
-
-/// Preupload `images`; returns the response JSON array of mappings.
-pub async fn preupload(server: &Server, cookie: &str, images: &[Vec<u8>]) -> serde_json::Value {
-    let (boundary, body) = multipart_images(images);
-    let resp = request(
-        server,
-        "POST",
-        "/api/admin/import/originals",
-        &[
-            ("Cookie", cookie),
-            (
-                "Content-Type",
-                &format!("multipart/form-data; boundary={boundary}"),
-            ),
-        ],
-        body,
-    )
-    .await;
-    assert_eq!(
-        resp.status,
-        200,
-        "preupload: {}",
-        String::from_utf8_lossy(&resp.body)
-    );
-    resp.json()
-}
-
-pub async fn import_manifest(server: &Server, cookie: &str, manifest: serde_json::Value) -> Resp {
-    request_long(
-        server,
-        "POST",
-        "/api/admin/import",
-        &[("Cookie", cookie), ("Content-Type", "application/json")],
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .await
-}
-
-pub fn entry(
-    map: &serde_json::Value,
-    idx: usize,
-    x: i64,
-    y: i64,
-    rot: f32,
-    override_w: Option<i64>,
-) -> serde_json::Value {
-    let mut e = serde_json::json!({
-        "source_sha": map[idx]["source_sha"],
-        "derivative_sha": map[idx]["derivative_sha"],
-        "x": x,
-        "y": y,
-        "w": map[idx]["w"],
-        "h": map[idx]["h"],
-        "rot": rot,
-    });
-    if let Some(w) = override_w {
-        e["w"] = serde_json::json!(w);
-    }
-    e
 }

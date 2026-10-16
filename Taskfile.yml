@@ -188,7 +188,7 @@ tasks:
         # (prints bare "--"), so build the flags as a plain string.
         all() {
           local out="" pkg
-          for pkg in backend web caddy; do
+          for pkg in backend backendWorker web caddy; do
             out="$out --set-string images.$pkg.digest=$1 --set-string images.$pkg.tag=$2"
           done
           printf '%s' "$out"
@@ -196,9 +196,9 @@ tasks:
         [ "$(img $(all "$d" v9.9.9) | grep -vc "^ghcr.io/[^@]*@$d$")" = 0 ] \
           || { echo "digest set: every ref must be exactly repository@digest" >&2; exit 1; }
         # digest empty, tag defaulting: every ref must fall back to :main
-        [ "$(img --set-string images.backend.digest= --set-string images.web.digest= --set-string images.caddy.digest= | grep -vc ':main$')" = 0 ] \
+        [ "$(img --set-string images.backend.digest= --set-string images.backendWorker.digest= --set-string images.web.digest= --set-string images.caddy.digest= | grep -vc ':main$')" = 0 ] \
           || { echo "digest empty: refs must fall back to repository:tag" >&2; exit 1; }
-        if helm template chart --set-string images.backend.digest= --set-string images.backend.tag= --set-string images.web.digest= --set-string images.web.tag= --set-string images.caddy.digest= --set-string images.caddy.tag= >/dev/null 2>/tmp/helm-img.err; then
+        if helm template chart --set-string images.backend.digest= --set-string images.backend.tag= --set-string images.backendWorker.digest= --set-string images.backendWorker.tag= --set-string images.web.digest= --set-string images.web.tag= --set-string images.caddy.digest= --set-string images.caddy.tag= >/dev/null 2>/tmp/helm-img.err; then
           echo "neither digest nor tag: expected loud render failure, got success" >&2
           exit 1
         fi
@@ -358,7 +358,7 @@ tasks:
   # ---------------- container images (deploy.yml; docker + buildx) -------
 
   image:backend:
-    desc: build + push backend image, print digest (deploy.yml backend-build)
+    desc: build + push the DISTROLESS api image, print digest (deploy.yml backend-build)
     dir: backend
     # Requires a prior registry login and docker buildx (both provided by
     # the deploy.yml job). Prints the pushed image digest on the last line.
@@ -380,9 +380,28 @@ tasks:
         fi
         if [ -n "${BUILD_TREE:-}" ]; then args+=(--label "club.idol.build.tree=$BUILD_TREE"); fi
         if [ -n "${GITHUB_SHA:-}" ]; then args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA"); fi
-        docker buildx build --platform linux/amd64 --push "${args[@]}" \
+        docker buildx build --platform linux/amd64 --push --target runtime-api "${args[@]}" \
           --metadata-file /tmp/backend-image-metadata.json .
         jq -r '."containerimage.digest"' /tmp/backend-image-metadata.json
+
+  image:backend-worker:
+    desc: build + push the worker image (libvips runtime), print digest (deploy.yml backend-worker-build)
+    dir: backend
+    cmds:
+      - |
+        tags=("$BACKEND_WORKER_IMAGE")
+        if [ -n "${SEMVER:-}" ]; then tags+=("${BACKEND_WORKER_IMAGE%:*}:$SEMVER"); fi
+        args=()
+        for t in "${tags[@]}"; do args+=(-t "$t"); done
+        if [ -n "${BUILD_CACHE_REF:-}" ]; then
+          args+=(--cache-from "type=registry,ref=$BUILD_CACHE_REF" \
+                 --cache-to "type=registry,ref=$BUILD_CACHE_REF,mode=max")
+        fi
+        if [ -n "${BUILD_TREE:-}" ]; then args+=(--label "club.idol.build.tree=$BUILD_TREE"); fi
+        if [ -n "${GITHUB_SHA:-}" ]; then args+=(--label "org.opencontainers.image.revision=$GITHUB_SHA"); fi
+        docker buildx build --platform linux/amd64 --push --target runtime-worker "${args[@]}" \
+          --metadata-file /tmp/backend-worker-image-metadata.json .
+        jq -r '."containerimage.digest"' /tmp/backend-worker-image-metadata.json
 
   image:web:
     desc: build + push web image, print digest (deploy.yml web-build)
@@ -445,6 +464,7 @@ tasks:
         # The empty-digest guard stays as a loud second defense
         # (2026-10-13 InvalidImageName incident).
         BACKEND_DIGEST="$(jq -r '.backend.digest // empty' "$IMAGES_LOCK")"
+        BACKEND_WORKER_DIGEST="$(jq -r '.backendWorker.digest // empty' "$IMAGES_LOCK")"
         WEB_DIGEST="$(jq -r '.web.digest // empty' "$IMAGES_LOCK")"
         CADDY_DIGEST="$(jq -r '.caddy.digest // empty' "$IMAGES_LOCK")"
         [ -n "$BACKEND_DIGEST" ] \
@@ -458,13 +478,14 @@ tasks:
         # re-fires this workflow — defer, never roll a half-deployable
         # edge ("code merges reach the cluster only when their image
         # lands in the lock file").
-        if [ -z "$CADDY_DIGEST" ]; then
-          echo "caddy digest not in $IMAGES_LOCK yet; deferring this deploy to the images.lock.json run (images.yml is building it)"
+        if [ -z "$CADDY_DIGEST" ] || [ -z "$BACKEND_WORKER_DIGEST" ]; then
+          echo "caddy/backend-worker digest not in $IMAGES_LOCK yet; deferring this deploy to the images.lock.json run (images.yml is building it)"
           exit 0
         fi
         # task runs each cmd in its own shell — hand the digests to the
         # helm cmd via state files (same pattern as the rotation flag).
         printf '%s\n' "$BACKEND_DIGEST" > /tmp/deploy-backend-digest
+        printf '%s\n' "$BACKEND_WORKER_DIGEST" > /tmp/deploy-backend-worker-digest
         printf '%s\n' "$WEB_DIGEST" > /tmp/deploy-web-digest
         printf '%s\n' "$CADDY_DIGEST" > /tmp/deploy-caddy-digest
         # Semver GHCR tags are applied at BUILD time by images.yml (tag
@@ -719,6 +740,7 @@ tasks:
         # Digests were derived and guarded in the first cmd; each task
         # cmd is its own shell, so read them back from the state files.
         BACKEND_DIGEST="$(cat /tmp/deploy-backend-digest)"
+        BACKEND_WORKER_DIGEST="$(cat /tmp/deploy-backend-worker-digest)"
         WEB_DIGEST="$(cat /tmp/deploy-web-digest)"
         CADDY_DIGEST="$(cat /tmp/deploy-caddy-digest)"
         # Cluster Autoscaler credential — the chart reads it only when
@@ -732,6 +754,7 @@ tasks:
         # the digest stays the actual image pin — GHCR tags are mutable).
         if [ -n "$RELEASE_TAG" ]; then
           ARGS+=(--set-string images.backend.tag="$RELEASE_TAG" \
+                 --set-string images.backendWorker.tag="$RELEASE_TAG" \
                  --set-string images.web.tag="$RELEASE_TAG" \
                  --set-string images.caddy.tag="$RELEASE_TAG")
         fi
@@ -751,6 +774,7 @@ tasks:
           --namespace idol --create-namespace --atomic --wait --timeout 15m \
           --take-ownership \
           --set-string images.backend.digest="$BACKEND_DIGEST" \
+          --set-string images.backendWorker.digest="$BACKEND_WORKER_DIGEST" \
           --set-string images.web.digest="$WEB_DIGEST" \
           --set-string images.caddy.digest="$CADDY_DIGEST" \
           "${ARGS[@]}"

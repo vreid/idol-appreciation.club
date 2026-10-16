@@ -919,6 +919,28 @@ pub fn render_leaf_tile(
 }
 
 /// The constant empty tile: pure paper, 256×256 webp.
+#[cfg(test)]
+mod empty_tile_const {
+    use super::*;
+    /// The core const must stay byte-identical to what vips generates:
+    /// the API serves it for maxSeq-0 tiles without linking libvips.
+    #[test]
+    fn empty_tile_const_decodes() {
+        let bytes = iac_core::empty_tile::decode();
+        let img = VipsImage::new_from_buffer(&bytes, "").expect("const decodes");
+        assert_eq!(img.get_width(), TILE_EDGE as i32);
+        assert_eq!(img.get_height(), TILE_EDGE as i32);
+        let fresh = empty_tile_256().unwrap();
+        assert_eq!(
+            bytes, fresh,
+            "regenerate the core const when the encoder changes"
+        );
+    }
+}
+
+#[test]
+fn dump_guard() {}
+
 pub fn empty_tile_256() -> iac_core::error::AppResult<Vec<u8>> {
     let _vips = VIPS.lock();
     let blank = blank_chunk(TILE_EDGE as i32)?;

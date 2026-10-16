@@ -44,7 +44,6 @@ use iac_core::error::{internal, AppResult};
 use iac_core::world::{
     chunk_key, tile_key, tile_native_size, tile_offset_in_chunk, BASE_Z, CHUNK_PX, MAX_Z,
 };
-use sqlx::{Postgres, Transaction};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A chunk job is always immediately claimable; only parent jobs wait.
@@ -55,16 +54,15 @@ const BASE_Z_I: i16 = BASE_Z as i16;
 /// loop"). Spec-fixed, not configurable.
 pub const MAX_JOB_ATTEMPTS: i16 = 5;
 
-/// Transaction-scoped advisory key serializing seq draws to commits (the
-/// "single sequencer row lock", docs § Ordering). Own class, disjoint
-/// from the chunk locks in `chunks.rs`.
-// The advisory key lives in core (the API holds the same lock).
+// Transaction-scoped advisory key serializing seq draws to commits (the
+// "single sequencer row lock", docs § Ordering). Own class, disjoint
+// from the chunk locks in `chunks.rs`; the key itself lives in core (the
+// API holds the same lock).
 
 /// Decoded-overlay byte budget per composite_group call (same order as
 /// the import engine's; one chunk per job, so this bounds the decoded
 /// working set of one job).
 const CHUNK_DECODE_BUDGET: u64 = 256 << 20;
-
 
 /// `not_before` delay in ms for a dirty job at (z, x, y): chunk jobs are
 /// immediate; z 11–17 wait out a short quiet window; z ≤ 10 fire at most
@@ -80,8 +78,6 @@ fn job_delay_ms(low_ms: u64, spread_ms: u64, quiet_ms: u64, z: i64, x: i64, y: i
         quiet_ms as i64
     }
 }
-
-
 
 /// Claim the next due job: pending past its `not_before`, plus running
 /// rows past the crash lease (a worker died mid-job — the claim is the
@@ -165,8 +161,8 @@ async fn pause_for_tests() {
     }
 }
 
-/// Spawn the pipeline worker. Called once from `build_app`, only when the
-/// pipeline is enabled. One task per process: at most one job at a time,
+/// Spawn the pipeline worker loop. Called by the worker binary once per
+/// configured loop (RENDER_PIPELINE_WORKERS); the API never spawns one. One task per process: at most one job at a time,
 /// mirroring the request path's libvips serialization; horizontal scale
 /// comes from more worker processes (claims are SKIP LOCKED).
 pub fn spawn_worker(ctx: &WorkerCtx) {
@@ -587,7 +583,7 @@ pub async fn finish_chunk(
     }
     // 5. Bubble the version up (zoom 17 parent waits out its quiet
     // window; chunk rows are immediate).
-    mark_dirty(
+    iac_core::jobs::mark_dirty(
         &mut tx,
         &[(
             BASE_Z - 1,
@@ -745,7 +741,7 @@ pub async fn finish_parent(ctx: &WorkerCtx, z: i64, x: i64, y: i64, v: i64) -> A
         }
     }
     if z > 0 {
-        mark_dirty(
+        iac_core::jobs::mark_dirty(
             &mut tx,
             &[(z - 1, x.div_euclid(2), y.div_euclid(2), parent_delay)],
         )

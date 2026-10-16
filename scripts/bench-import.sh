@@ -2,17 +2,20 @@
 # SLO gate for the batch import engine (docs/backend.md "Batch import"):
 # ≥ 10 images/second sustained on ONE 4-vCPU node.
 #
-# Boots a THROWAWAY stack inside one node budget — backend constrained to
-# --cpus=4 --memory=6g, postgres to --cpus=1 --memory=2g (≤ 5 cpu-seconds/s
-# combined, vs the 4-vCPU/8GB node; PG idles well below its cap during
-# import), file:// object store on tmpfs, fresh DB — then drives
-# scripts/import-bulk.sh against it and prints the import metrics (rate,
-# chunk writes, amplification) at the end.
+# Boots a THROWAWAY stack inside one node budget — the worker constrained
+# to --cpus=4 --memory=6g per invocation, postgres to --cpus=1
+# --memory=2g (≤ 5 cpu-seconds/s combined, vs the 4-vCPU/8GB node; PG
+# idles well below its cap during import), file:// object store on tmpfs,
+# fresh DB — then drives scripts/import-bulk.sh against it and prints the
+# per-chunk engine summaries (rate, chunk writes, amplification) at the
+# end. The import_* Prometheus series live in the worker process, so the
+# summaries (same counters) are the bench's evidence.
 #
 # Usage: bench-import.sh COUNT RADIUS CHUNK [TAG]
 #   e.g. bench-import.sh 10000 12000 2500 dense10k
 #
-# The backend image must exist: podman build -t idol-backend:bench backend/
+# The worker image must exist:
+#   podman build --target runtime-worker -t idol-backend-worker:bench backend/
 set -euo pipefail
 
 COUNT=${1:?usage: bench-import.sh COUNT RADIUS CHUNK [TAG]}
@@ -20,11 +23,9 @@ RADIUS=${2:?missing RADIUS}
 CHUNK=${3:?missing CHUNK}
 TAG=${4:-bench}
 NET="bench-$TAG"
-PW="bench-$TAG-admin-pw" # throwaway stack credential, not a secret
-PORT=18080
 
 cleanup() {
-  podman rm -f -i "bench-backend-$TAG" "bench-pg-$TAG" >/dev/null 2>&1 || true
+  podman rm -f -i "bench-pg-$TAG" >/dev/null 2>&1 || true
   podman network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -42,27 +43,58 @@ for i in $(seq 1 60); do
   sleep 0.5
 done
 
-podman run -d --name "bench-backend-$TAG" --network "$NET" \
+# Every worker invocation gets the full node budget (the engine is
+# sequential across blocks, so one constrained container at a time).
+worker_in_bench() {
+  podman run --rm --network "$NET" \
+    --cpus=4 --memory=6g \
+    --user 0:0 \
+    -v "$PWD/test-assets/idols":/srv/idols:ro \
+    --tmpfs /data:size=8g \
+    -e DATABASE_URL=postgres://bench:bench@bench-pg-$TAG:5432/bench \
+    -e S3_ENDPOINT=file:///data \
+    -e S3_BUCKET=bench \
+    -e SESSION_SECRET=bench-secret-0123456789abcdef0123456789abcdef \
+    idol-backend-worker:bench \
+    "$@"
+}
+
+echo "==> migrations (one throwaway worker run)"
+worker_in_bench import-originals >/dev/null
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Simplest honest flow: run the two subcommands from dedicated containers.
+echo "==> preupload"
+worker_in_bench import-originals /srv/idols/*.jpg > /tmp/bench-preupload-$TAG.json
+
+echo "==> generating manifest (import-manifest.py)"
+BATCH=$(python3 -c "import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, 'import-bench:$TAG'))")
+"$SCRIPT_DIR/import-manifest.py" \
+  --map /tmp/bench-preupload-$TAG.json \
+  --offset 0 --count "$COUNT" --batch-id "$BATCH" \
+  --radius "$RADIUS" --sigma 7.5 \
+  --out /tmp/bench-manifest-$TAG.json
+
+echo "==> import-batch ($COUNT entries)"
+# Mount the manifest; the container writes the summary to stdout.
+podman run --rm --network "$NET" \
   --cpus=4 --memory=6g \
   --user 0:0 \
-  -p "$PORT":8080 \
+  -v /tmp/bench-manifest-$TAG.json:/srv/manifest.json:ro \
+  --tmpfs /data:size=8g \
   -e DATABASE_URL=postgres://bench:bench@bench-pg-$TAG:5432/bench \
   -e S3_ENDPOINT=file:///data \
   -e S3_BUCKET=bench \
   -e SESSION_SECRET=bench-secret-0123456789abcdef0123456789abcdef \
-  -e STATIC_DIR=/nonexistent \
-  --tmpfs /data:size=8g \
-  idol-backend:bench >/dev/null
-echo "==> waiting for backend (migrations + listen)"
-for i in $(seq 1 120); do
-  curl -sf -m 2 "http://localhost:$PORT/api/health" >/dev/null 2>&1 && break
-  [ "$i" = 120 ] && { echo "backend never became healthy" >&2; podman logs "bench-backend-$TAG" | tail -20 >&2; exit 1; }
-  sleep 0.5
-done
+  idol-backend-worker:bench \
+  import-batch /srv/manifest.json > /tmp/bench-summary-$TAG.json
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-"$SCRIPT_DIR/import-bulk.sh" "http://localhost:$PORT" "$PW" "$PW" \
-  --count "$COUNT" --radius "$RADIUS" --chunk "$CHUNK" --tag "$TAG"
-
-echo "==> import metrics"
-curl -s "http://localhost:$PORT/api/metrics" | grep -E '^import_|^chunk_write_amplification|^s3_ops_total'
+python3 - <<'PYEOF'
+import json
+s = json.load(open("/tmp/bench-summary-$TAG.json"))
+secs = max(s["duration_ms"] / 1000, 0.001)
+print(f"imported={s['imported']} duplicates={s['duplicates']} chunk_writes={s['chunk_writes']}")
+print(f"blocks={s['blocks']} components={s['components']} amp={s['chunk_write_amplification']}")
+print(f"==> sustained: {round(s['imported'] / secs, 2)} img/s over {round(secs, 1)}s (SLO >= 10/s)")
+PYEOF

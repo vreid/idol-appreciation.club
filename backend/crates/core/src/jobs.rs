@@ -4,8 +4,10 @@
 //! lock, so the API can depend on them without touching libvips.
 
 use crate::error::{internal, AppResult};
-use uuid::Uuid;
+use serde_json::json;
+use sqlx::Row;
 use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
 
 /// Advisory key the place path holds across the seq draw (the worker
 /// inherits the constant so the lock identity matches).
@@ -163,4 +165,48 @@ pub async fn mark_dirty(
     )
     .await?;
     Ok(())
+}
+
+/// GET /api/uploads/{id} body: exactly contract/zod's
+/// `uploadStatusSchema`. `Some(json)` → 200, `None` → 404.
+pub async fn ingest_status_json(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+) -> AppResult<Option<serde_json::Value>> {
+    let row = sqlx::query(
+        "SELECT state, attempts, placement_id, seq,
+                aabb_x, aabb_y, aabb_w, aabb_h, error
+         FROM ingest_jobs WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal)?;
+    let Some(row) = row else { return Ok(None) };
+    let state: String = row.get("state");
+    let body = match state.as_str() {
+        "placed" => {
+            let placement_id: Uuid = row.get("placement_id");
+            let seq: i64 = row.get("seq");
+            json!({
+                "state": "placed",
+                "id": placement_id,
+                "seq": seq,
+                "bbox": [
+                    row.get::<i64, _>("aabb_x"),
+                    row.get::<i64, _>("aabb_y"),
+                    row.get::<i64, _>("aabb_w"),
+                    row.get::<i64, _>("aabb_h"),
+                ],
+            })
+        }
+        "failed" => json!({
+            "state": "failed",
+            "attempts": i64::from(row.get::<i16, _>("attempts")),
+            "permanent": true,
+            "error": row.get::<Option<String>, _>("error").unwrap_or_default(),
+        }),
+        _ => json!({ "state": "pending" }),
+    };
+    Ok(Some(body))
 }

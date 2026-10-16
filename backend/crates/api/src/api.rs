@@ -4,6 +4,7 @@ use crate::auth::Authed;
 use crate::error::{AppError, AppResult};
 use crate::state::App;
 use crate::world;
+use iac_core::tags::{normalize_tags, valid_tag};
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
@@ -27,11 +28,7 @@ pub async fn metrics(State(state): State<App>) -> impl IntoResponse {
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        crate::metrics::render(
-            &state.pool,
-            state.render_queue.depth().await,
-            state.render_queue.dropped(),
-        ),
+        crate::metrics::render(&state.pool),
     )
 }
 
@@ -60,37 +57,6 @@ pub struct NearPlacement {
     /// seq, or hit-testing.
     #[sqlx(default)]
     pub tags: Vec<String>,
-}
-
-/// Tag rules: 1..=32 chars of `[a-z0-9_-]` after trim+lowercase, at most
-/// 8 per placement, duplicates dropped. Returns the message of the first
-/// violation so both the PUT handler and the import manifest map it to a
-/// 400.
-/// One normalized label: 1..=32 chars of [a-z0-9_-] (already lowercased).
-fn valid_tag(t: &str) -> bool {
-    t.len() <= 32
-        && t.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-}
-
-pub(crate) fn normalize_tags(raw: Vec<String>) -> Result<Vec<String>, &'static str> {
-    let mut out: Vec<String> = Vec::with_capacity(raw.len().min(8));
-    for t in raw {
-        let t = t.trim().to_ascii_lowercase();
-        if t.is_empty() {
-            continue;
-        }
-        if !valid_tag(&t) {
-            return Err("tags must be 1..=32 chars of [a-z0-9_-]");
-        }
-        if !out.contains(&t) {
-            out.push(t);
-        }
-    }
-    if out.len() > 8 {
-        return Err("at most 8 tags per placement");
-    }
-    Ok(out)
 }
 
 /// Max entries a dig stack returns; a deeper stack reports `truncated`.

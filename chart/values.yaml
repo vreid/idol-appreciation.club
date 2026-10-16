@@ -10,6 +10,13 @@ images:
     repository: ghcr.io/vreid/idol-appreciation.club-backend
     tag: main
     digest: ""
+  # The worker image (render loops, ingest consumer, admin import
+  # subcommands): debian-slim + libvips42. The API image is distroless
+  # and carries no libvips — pixel work lives only in worker pods.
+  backendWorker:
+    repository: ghcr.io/vreid/idol-appreciation.club-backend-worker
+    tag: main
+    digest: ""
   web:
     repository: ghcr.io/vreid/idol-appreciation.club-web
     tag: main

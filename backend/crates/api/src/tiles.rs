@@ -1,37 +1,26 @@
-//! Tile pyramid: lazy rendering from chunks, maxSeq staleness, caching.
+//! Tile serving: maxSeq staleness, caching, versioned read path.
 //!
-//! Render admission control (the pile-wedge fix): a tile GET never renders
-//! when stored bytes exist — stale bytes are served immediately and a
-//! re-render is queued on a single background worker. First-ever renders
-//! (no stored tile at all) stay inline so a cold tile always produces
-//! bytes, except under render-storm floods, where the queue depth doubles
-//! as a congestion signal and cold requests are shed with `202`.
-//!
-//! Per-render logging: one log unit == one render entry — a background
-//! queue job, an inline GET render, or a prewarm tile — never a recursion
-//! node. Queue transitions log at info (`tile render queued|claimed`,
-//! `tile render done` with `dur_ms`/`outcome`/`bytes`); any single render
-//! over [`SLOW_RENDER`] additionally WARNs (`slow tile render`) with the
-//! tile coords, duration, and the covering snapshot's row count.
+//! Post-pipeline (docs/scaling-architecture.md "Chunk and tile pipeline")
+//! this module RENDERs nothing: pixels are cut by the worker's claim
+//! loops, which also own the tiles-table write and the `versions` NOTIFY.
+//! A GET resolves memory → object storage → the constant empty tile
+//! (maxSeq 0) → 404. The 404s exist only inside the worker's paint quiet
+//! window for a tile nobody ever fetched (or on storage loss); the
+//! versioned client refetches on the SSE `versions` event. The
+//! `tile_requests_total{outcome="render"}` doctrine is enforced by
+//! construction — the render outcome no longer exists on this path.
 
-use crate::error::{internal, AppError, AppResult};
-use crate::img;
+use crate::error::{AppError, AppResult};
 use crate::state::App;
-use crate::world::{
-    is_valid_tile, tile_bounds, tile_chunk, tile_key, tile_native_size, tile_offset_in_chunk,
-    BASE_Z, CHUNK_PX, MAX_Z, TILE_PX,
-};
+use crate::world::{is_valid_tile, tile_bounds, tile_chunk, tile_key, BASE_Z, CHUNK_PX};
 use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use lru::LruCache;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
-use std::time::{Duration, Instant};
 
 /// (z, x, y, seq) → encoded webp bytes.
 type CacheKey = (i64, i64, i64, i64);
@@ -45,15 +34,15 @@ type LowZoomEntry = (i64, Bytes);
 
 pub struct TileCache {
     /// z ≤ 4 tiles: at most 341 coordinates exist.
-    low_zoom: StdMutex<HashMap<(i64, i64, i64), LowZoomEntry>>,
-    lru: StdMutex<LruCache<CacheKey, Bytes>>,
+    low_zoom: Mutex<HashMap<(i64, i64, i64), LowZoomEntry>>,
+    lru: Mutex<LruCache<CacheKey, Bytes>>,
 }
 
 impl TileCache {
     pub fn new(entries: usize) -> Self {
         Self {
-            low_zoom: StdMutex::new(HashMap::new()),
-            lru: StdMutex::new(LruCache::new(
+            low_zoom: Mutex::new(HashMap::new()),
+            lru: Mutex::new(LruCache::new(
                 NonZeroUsize::new(entries.max(1)).unwrap_or(NonZeroUsize::MIN),
             )),
         }
@@ -64,7 +53,6 @@ impl TileCache {
             let hit = self
                 .low_zoom
                 .lock()
-                .expect("low zoom cache")
                 .get(&(key.0, key.1, key.2))
                 .map(|(seq, bytes)| (*seq, bytes.clone()));
             match hit {
@@ -72,7 +60,7 @@ impl TileCache {
                 _ => None,
             }
         } else {
-            self.lru.lock().expect("tile lru").get(&key).cloned()
+            self.lru.lock().get(&key).cloned()
         }
     }
 
@@ -80,356 +68,72 @@ impl TileCache {
         if z <= 4 {
             self.low_zoom
                 .lock()
-                .expect("low zoom cache")
                 .insert((key.0, key.1, key.2), (key.3, bytes));
         } else {
-            self.lru.lock().expect("tile lru").put(key, bytes);
+            self.lru.lock().put(key, bytes);
         }
     }
 }
 
-/// Lease after which a `rendering` row is reclaimable (a worker died
-/// mid-render). Generous: a cold z0 pyramid render takes seconds, not
-/// minutes, so a reclaim never races a live render.
-const RENDER_LEASE_SECS: f64 = 60.0;
-
-/// Bounded, coalescing background re-render queue, persisted in the
-/// `tile_render_jobs` table (migration 0005) and drained by a single
-/// in-process worker (`spawn_render_worker`). One worker means at most one
-/// background render runs at a time, so renders can never monopolize vips
-/// / `spawn_blocking` and starve the placement path.
-///
-/// Firing rule per coord: `min(quiet_window, max_delay)` —
-/// - quiet window: no stale GET re-requested the tile for
-///   `TILE_RENDER_QUIET_SECS`, so a placement burst in one window folds
-///   into ONE render at the latest seq;
-/// - max delay: `TILE_RENDER_MAX_DELAY_SECS` since first enqueue — the
-///   hard cap that keeps continuously-bumped tiles (a soak writing into
-///   one area forever) rendering at a bounded rate instead of starving.
-///
-/// Overflow policy: enqueue attempts beyond `cap` pending rows are dropped
-/// (the next stale GET re-enqueues); the depth doubles as the congestion
-/// signal for shedding first-ever renders with `202`.
-///
-/// The table IS the queue on purpose: a future dedicated render node group
-/// (out-of-process worker Deployment, same image, render role) consumes
-/// the identical claim query — state + `FOR UPDATE SKIP LOCKED` is the
-/// entire coordination protocol, no advisory locks.
-pub struct RenderQueue {
-    cap: usize,
-    pool: sqlx::PgPool,
-    dropped: AtomicU64,
+/// Live (covering) content version for one tile: the max chunk seq over
+/// its bbox — a single grouped `chunk_seqs` query at z ≥ BASE_Z, the
+/// bottom-up collapse for the zoomed-out levels. This is the doctrine
+/// read path (issue #120): placement rows are never consulted, so the
+/// cost is pile-depth-independent.
+async fn live_seq(app: &App, z: i64, x: i64, y: i64) -> AppResult<i64> {
+    let rect = tile_bounds(z, x, y);
+    let rows: Vec<(i64, i64, i64)> = crate::dbq::timed(
+        "tile_seq",
+        sqlx::query_as(
+            "SELECT cx, cy, max_seq FROM chunk_seqs
+             WHERE cx >= $1 AND cx <= $2 AND cy >= $3 AND cy <= $4",
+        )
+        .bind(rect.x.div_euclid(CHUNK_PX))
+        .bind((rect.x + rect.w - 1).div_euclid(CHUNK_PX))
+        .bind(rect.y.div_euclid(CHUNK_PX))
+        .bind((rect.y + rect.h - 1).div_euclid(CHUNK_PX))
+        .fetch_all(&app.pool),
+    )
+    .await?;
+    if z >= BASE_Z {
+        let (cx, cy) = tile_chunk(z, x, y);
+        return Ok(rows
+            .iter()
+            .find(|(a, b, _)| (*a, *b) == (cx, cy))
+            .map(|&(_, _, s)| s)
+            .unwrap_or(0));
+    }
+    // Collapse chunk rows into per-level maxima, bottom-up, then read the
+    // node's level (same math the pipeline's parent jobs use).
+    let mut cur: HashMap<(i64, i64), i64> =
+        rows.into_iter().map(|(cx, cy, s)| ((cx, cy), s)).collect();
+    let target_level = (BASE_Z - z) as usize;
+    for _ in 0..target_level {
+        let mut next: HashMap<(i64, i64), i64> = HashMap::new();
+        for (&(cx, cy), &seq) in &cur {
+            let slot = next.entry((cx / 2, cy / 2)).or_default();
+            if seq > *slot {
+                *slot = seq;
+            }
+        }
+        cur = next;
+    }
+    Ok(cur.get(&(x, y)).copied().unwrap_or(0))
 }
 
-impl RenderQueue {
-    pub fn new(pool: sqlx::PgPool, cap: usize) -> Self {
-        Self {
-            cap: cap.max(1),
-            pool,
-            dropped: AtomicU64::new(0),
-        }
-    }
-
-    /// Record demand for a re-render of (z, x, y) — one roundtrip that
-    /// coalesces, bumps, and applies the cap:
-    /// - row pending: quiet window resets (`last_bump_at = now()`), cap
-    ///   anchor (`enqueued_at`) preserved;
-    /// - row done (or absent): re-enqueued fresh;
-    /// - row rendering (in-flight): no-op — the render in progress covers
-    ///   everything committed before it started rendering, and the next
-    ///   stale GET after it completes re-enqueues;
-    /// - at cap with no row: dropped (caller served stale bytes anyway).
-    pub async fn enqueue(&self, z: i64, x: i64, y: i64) {
-        let recorded: Result<(bool, bool), _> = crate::dbq::timed(
-            "tile_queue",
-            sqlx::query_as(
-                "WITH bump AS (
-                 UPDATE tile_render_jobs SET last_bump_at = now()
-                 WHERE z = $1 AND x = $2 AND y = $3 AND state = 'pending'
-                 RETURNING 1
-             ), ins AS (
-                 INSERT INTO tile_render_jobs (z, x, y)
-                 SELECT $1, $2, $3
-                 WHERE NOT EXISTS (SELECT 1 FROM bump)
-                   AND (SELECT count(*) FROM tile_render_jobs
-                        WHERE state = 'pending') < $4
-                 ON CONFLICT (z, x, y) DO UPDATE
-                 SET state = 'pending', claimed_at = NULL,
-                     enqueued_at = now(), last_bump_at = now()
-                 WHERE tile_render_jobs.state = 'done'
-                 RETURNING 1
-             )
-             SELECT EXISTS(SELECT 1 FROM bump), EXISTS(SELECT 1 FROM ins)",
-            )
+/// Stored staleness row for the tile (the seq its stored bytes were cut
+/// at), straight from the tiles table.
+async fn stored_seq(app: &App, z: i64, x: i64, y: i64) -> AppResult<Option<i64>> {
+    let row: Option<(i64,)> = crate::dbq::timed(
+        "tiles_meta",
+        sqlx::query_as("SELECT seq FROM tiles WHERE z = $1 AND x = $2 AND y = $3")
             .bind(z as i16)
             .bind(x as i32)
             .bind(y as i32)
-            .bind(self.cap as i64)
-            .fetch_one(&self.pool),
-        )
-        .await;
-        match recorded {
-            Ok((bumped, inserted)) if bumped || inserted => {
-                if inserted {
-                    // Queue-transition log: only a fresh (or done→refired)
-                    // enqueue is a transition. Quiet-window bumps of an
-                    // already-pending row fire per stale GET and stay
-                    // unlogged — this line is bounded by the coalescing,
-                    // at most one per coord per render cycle.
-                    let depth = self.depth().await;
-                    tracing::info!(z, x, y, depth, "tile render queued");
-                }
-            }
-            // Dropped by the cap, raced with an in-flight render, or the
-            // query failed — in every case the next stale GET retries.
-            _ => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    /// Pending coords — the queue-depth gauge.
-    pub async fn depth(&self) -> u64 {
-        let (n,): (i64,) = crate::dbq::timed(
-            "tile_queue",
-            sqlx::query_as("SELECT count(*) FROM tile_render_jobs WHERE state = 'pending'")
-                .fetch_one(&self.pool),
-        )
-        .await
-        .unwrap_or((0,));
-        n.max(0) as u64
-    }
-
-    /// Total enqueue attempts not recorded (cap shed, or raced with an
-    /// in-flight render) since boot. Retried by the next stale GET.
-    pub fn dropped(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
-    }
-
-    /// Congestion signal for first-ever renders: at capacity, shed.
-    pub async fn congested(&self) -> bool {
-        self.depth().await >= self.cap as u64
-    }
-
-    /// Claim the next due job: pending rows past their quiet window or
-    /// max-delay cap, plus `rendering` rows past the crash lease (a worker
-    /// died mid-render). FIFO by enqueue time; SKIP LOCKED makes concurrent
-    /// claimers (today: none — one in-process worker; tomorrow: a render
-    /// node group) safe.
-    async fn claim_due(
-        &self,
-        quiet_secs: f64,
-        max_delay_secs: f64,
-    ) -> AppResult<Option<(i64, i64, i64)>> {
-        let row: Option<(i16, i32, i32)> = crate::dbq::timed(
-            "tile_queue",
-            sqlx::query_as(
-                "WITH picked AS (
-                 SELECT z, x, y FROM tile_render_jobs
-                 WHERE (state = 'pending' AND (
-                            last_bump_at <= now() - ($1::float8 * interval '1 second')
-                         OR enqueued_at <= now() - ($2::float8 * interval '1 second')))
-                     OR (state = 'rendering'
-                         AND claimed_at <= now() - ($3::float8 * interval '1 second'))
-                 ORDER BY (state = 'rendering') DESC, enqueued_at, z, x, y
-                 LIMIT 1
-                 FOR UPDATE SKIP LOCKED
-             )
-             UPDATE tile_render_jobs j
-             SET state = 'rendering', claimed_at = now()
-             FROM picked
-             WHERE j.z = picked.z AND j.x = picked.x AND j.y = picked.y
-             RETURNING j.z, j.x, j.y",
-            )
-            .bind(quiet_secs)
-            .bind(max_delay_secs)
-            .bind(RENDER_LEASE_SECS)
-            .fetch_optional(&self.pool),
-        )
-        .await?;
-        Ok(row.map(|(z, x, y)| (i64::from(z), i64::from(x), i64::from(y))))
-    }
-
-    /// Seconds until the next pending entry could possibly fire (for the
-    /// worker's sleep). None when the queue is empty.
-    async fn next_due(&self, quiet_secs: f64, max_delay_secs: f64) -> AppResult<Option<f64>> {
-        let row: (Option<f64>,) = crate::dbq::timed(
-            "tile_queue",
-            sqlx::query_as(
-                "SELECT EXTRACT(EPOCH FROM (min_due - now()))::float8 FROM (
-                 SELECT min(least(
-                     last_bump_at + ($1::float8 * interval '1 second'),
-                     enqueued_at + ($2::float8 * interval '1 second'))) AS min_due
-                 FROM tile_render_jobs WHERE state = 'pending'
-             ) t",
-            )
-            .bind(quiet_secs)
-            .bind(max_delay_secs)
-            .fetch_one(&self.pool),
-        )
-        .await?;
-        Ok(row.0)
-    }
-
-    /// Mark a claimed render complete. A FAILED render deliberately stays
-    /// `rendering` until the lease expires: reclaim is the retry, with a
-    /// 60 s natural backoff.
-    async fn mark_done(&self, z: i64, x: i64, y: i64) {
-        let _ = crate::dbq::timed(
-            "tile_queue",
-            sqlx::query(
-                "UPDATE tile_render_jobs SET state = 'done', claimed_at = NULL
-             WHERE z = $1 AND x = $2 AND y = $3 AND state = 'rendering'",
-            )
-            .bind(z as i16)
-            .bind(x as i32)
-            .bind(y as i32)
-            .execute(&self.pool),
-        )
-        .await;
-    }
-}
-
-/// Executes one claimed render job. The in-process executor is the default
-/// today; a future render node group runs the same job from the same table
-/// (its executor just calls the identical resolution path from a separate
-/// Deployment).
-pub trait RenderExecutor: Send + Sync + 'static {
-    fn render<'a>(
-        &'a self,
-        z: i64,
-        x: i64,
-        y: i64,
-    ) -> futures::future::BoxFuture<'a, AppResult<()>>;
-}
-
-/// Default executor: renders in this process through the normal
-/// always-fresh resolution path (mem/S3 hit if a concurrent inline render
-/// already caught up — the dedup for a coord re-enqueued mid-render).
-pub struct InProcessExecutor {
-    app: App,
-}
-
-impl RenderExecutor for InProcessExecutor {
-    fn render<'a>(
-        &'a self,
-        z: i64,
-        x: i64,
-        y: i64,
-    ) -> futures::future::BoxFuture<'a, AppResult<()>> {
-        Box::pin(async move {
-            let t0 = Instant::now();
-            let pause = RENDER_PAUSE_MS.load(Ordering::Relaxed);
-            if pause > 0 {
-                tokio::time::sleep(Duration::from_millis(pause)).await;
-            }
-            let ctx = TileCtx::prefetch(&self.app, z, x, y).await?;
-            let resolved =
-                tile_bytes_inner(&self.app, &ctx, z, x, y, Stale::Never, Admission::Ungated)
-                    .await?;
-            let (bytes, rendered) = match resolved {
-                TileResolved::Bytes {
-                    bytes, rendered, ..
-                } => (bytes, rendered),
-                TileResolved::Shed => unreachable!("Stale::Never never sheds"),
-            };
-            let dur = t0.elapsed();
-            crate::metrics::background_render_done(dur);
-            // `fresh_recheck`: the recheck found the work already done at
-            // the current seq (concurrent inline render, mem/S3 hit) or
-            // nothing left to draw (empty) — no pixel work happened.
-            let outcome = if rendered {
-                "rendered"
-            } else {
-                "fresh_recheck"
-            };
-            tracing::info!(
-                z,
-                x,
-                y,
-                dur_ms = dur.as_millis() as u64,
-                outcome,
-                bytes = bytes.len(),
-                "tile render done"
-            );
-            log_slow_render(z, x, y, dur, ctx.rows);
-            Ok(())
-        })
-    }
-}
-
-/// Test seam (precedent: `img::test_png`): makes every background render
-/// take at least this long so integration tests get deterministic timing
-/// windows. Always 0 in production.
-static RENDER_PAUSE_MS: AtomicU64 = AtomicU64::new(0);
-
-#[doc(hidden)]
-pub fn set_render_pause_for_tests(ms: u64) {
-    RENDER_PAUSE_MS.store(ms, Ordering::Relaxed);
-}
-
-static PYRAMID_PAUSE_MS: AtomicU64 = AtomicU64::new(0);
-
-#[doc(hidden)]
-pub fn set_pyramid_pause_for_tests(ms: u64) {
-    PYRAMID_PAUSE_MS.store(ms, Ordering::Relaxed);
-}
-
-/// Spawn the single background render worker. Called once from
-/// `build_app`; exits only with the process (same lifecycle as the events
-/// listener). A future out-of-process render worker replaces — not joins —
-/// this task per node by running the same loop without spawning it.
-pub fn spawn_render_worker(app: &App) {
-    let app = app.clone();
-    tokio::spawn(async move {
-        let executor = InProcessExecutor { app: app.clone() };
-        render_worker(app, executor).await;
-    });
-}
-
-async fn render_worker(app: App, executor: impl RenderExecutor) {
-    let quiet = app.cfg.tile_render_quiet_secs as f64;
-    let max_delay = app.cfg.tile_render_max_delay_secs as f64;
-    loop {
-        let claimed = match app.render_queue.claim_due(quiet, max_delay).await {
-            Ok(Some((z, x, y))) => {
-                tracing::info!(z, x, y, "tile render claimed");
-                if let Err(err) = executor.render(z, x, y).await {
-                    tracing::warn!(z, x, y, %err, "background tile render failed; lease reclaim will retry");
-                } else {
-                    app.render_queue.mark_done(z, x, y).await;
-                }
-                continue;
-            }
-            Ok(None) => None,
-            Err(err) => {
-                tracing::error!(%err, "render queue claim failed");
-                Some(Duration::from_secs(2))
-            }
-        };
-        // Nothing (reliably) due: sleep until the earliest possible firing
-        // instant, capped at 1 s so clock skew, lease reclaims and missed
-        // deadlines self-correct quickly.
-        let due = claimed.or(app
-            .render_queue
-            .next_due(quiet, max_delay)
-            .await
-            .ok()
-            .flatten()
-            .map(|s| Duration::from_secs_f64(s.max(0.0)))
-            .or(Some(Duration::from_secs(1))));
-        let sleep = due
-            .unwrap_or(Duration::from_secs(1))
-            .min(Duration::from_secs(1));
-        tokio::time::sleep(sleep.max(Duration::from_millis(20))).await;
-    }
-}
-
-/// GET /api/tiles/{z}/{x}/{y}.webp
-#[derive(serde::Deserialize, Default)]
-pub struct TileQuery {
-    /// Client-held version (`?v=`): the versioned read path's cache key.
-    v: Option<i64>,
+            .fetch_optional(&app.pool),
+    )
+    .await?;
+    Ok(row.map(|(seq,)| seq))
 }
 
 pub async fn get_tile(
@@ -452,56 +156,72 @@ pub async fn get_tile(
     if !is_valid_tile(z, x, y) {
         return Err(AppError::NotFound);
     }
-    // First-ever renders run inline on this path; time the whole
-    // resolution (snapshot + walk) as the render's duration.
-    let t0 = Instant::now();
-    // One-shot snapshot for this render (issue #120): two short pool
-    // holds, then the walk runs connection-free.
-    let ctx = TileCtx::prefetch(&app, z, x, y).await?;
-    let resolved = tile_bytes(&app, &ctx, z, x, y, Stale::Allow, Admission::Gated).await?;
-    let (bytes, seq, stale, rendered) = match resolved {
-        TileResolved::Bytes {
-            bytes,
-            seq,
-            stale,
-            rendered,
-        } => (bytes, seq, stale, rendered),
-        // Render-storm flood: queue at capacity, no stored bytes to serve.
-        // Shed instead of rendering inline (bounded CPU); the client's
-        // next revalidation renders normally once the backlog drains.
-        TileResolved::Shed => {
-            return Ok((
-                StatusCode::ACCEPTED,
-                [
-                    (header::RETRY_AFTER, "2"),
-                    (header::CACHE_CONTROL, "no-store"),
-                ],
-            )
-                .into_response())
-        }
-    };
-    // Inline (cold first-ever) render on the GET path: debug normally —
-    // the queue transitions carry routine visibility at info — promoted
-    // to the shared slow-render WARN past SLOW_RENDER. Cache/stale serves
-    // never log here (volume safety); the enqueue on the stale-serve path
-    // already emitted the queue's `queued` line.
-    if rendered {
-        let dur = t0.elapsed();
-        tracing::debug!(
-            z,
-            x,
-            y,
-            dur_ms = dur.as_millis() as u64,
-            outcome = "rendered",
-            bytes = bytes.len(),
-            "tile render done"
-        );
-        log_slow_render(z, x, y, dur, ctx.rows);
+    let t0 = std::time::Instant::now();
+    let seq = live_seq(&app, z, x, y).await?;
+
+    // Empty region: the constant paper tile — no storage, no recursion.
+    if seq == 0 {
+        let bytes = Bytes::from(iac_core::empty_tile::decode());
+        crate::metrics::tile_done(crate::metrics::tile_outcome("empty"), t0.elapsed());
+        let inm = headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok());
+        return Ok(tile_response(bytes, 0, false, inm, q.v));
     }
-    let inm = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok());
-    Ok(tile_response(bytes, seq, stale, inm, q.v))
+
+    let key: CacheKey = (z, x, y, seq);
+    if let Some(bytes) = app.tile_cache.get(z, key) {
+        crate::metrics::tile_done(crate::metrics::tile_outcome("hit_mem"), t0.elapsed());
+        let inm = headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok());
+        return Ok(tile_response(bytes, seq, false, inm, q.v));
+    }
+
+    let object_key = tile_key(z, x, y);
+    let stored = stored_seq(&app, z, x, y).await?;
+    if stored == Some(seq) {
+        if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
+            let bytes = Bytes::from(bytes);
+            app.tile_cache.put(z, key, bytes.clone());
+            crate::metrics::tile_done(crate::metrics::tile_outcome("hit_s3"), t0.elapsed());
+            let inm = headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok());
+            return Ok(tile_response(bytes, seq, false, inm, q.v));
+        }
+    }
+
+    // Stored bytes at an older seq: serve them NOW (server-side SWR) —
+    // the repaint belongs to the worker's quiet window, and the client
+    // refetches on the SSE `versions` event. The ETag carries the STORED
+    // seq so revalidations stay cheap 304s while the paint is in flight.
+    if let Some(stored_seq) = stored {
+        if stored_seq > 0 {
+            if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
+                crate::metrics::tile_done(
+                    crate::metrics::tile_outcome("stale_served"),
+                    t0.elapsed(),
+                );
+                let inm = headers
+                    .get(header::IF_NONE_MATCH)
+                    .and_then(|v| v.to_str().ok());
+                return Ok(tile_response(
+                    Bytes::from(bytes),
+                    stored_seq,
+                    true,
+                    inm,
+                    q.v,
+                ));
+            }
+        }
+    }
+
+    // Nothing stored (first-ever request inside the paint window, or
+    // storage loss): 404 — the worker is the only writer and the client
+    // refetches on the version event.
+    crate::metrics::tile_done(crate::metrics::tile_outcome("miss"), t0.elapsed());
+    Err(AppError::NotFound)
 }
 
 /// 304 when If-None-Match carries the served `"maxSeq"` tag, else 200 with
@@ -511,7 +231,7 @@ pub async fn get_tile(
 /// the background, the SSE-driven client refetch bounds visible staleness
 /// to ~1s past each place/remove commit, and the server-side stale-serve
 /// (`stale` ⇒ `X-Tile-Stale: true` + the STORED seq as ETag) keeps a GET
-/// with stale bytes available entirely off the render path — the ETag
+/// with stale bytes available entirely off the paint path — the ETag
 /// still makes every revalidation a cheap 304 while the seq is unchanged.
 fn tile_response(
     bytes: Bytes,
@@ -561,634 +281,15 @@ fn tile_response(
     resp
 }
 
-/// The constant empty (pure paper) tile, encoded once per process. Tiles
-/// with maxSeq 0 are exactly this — which is what keeps cold pyramid
-/// renders O(spine) instead of 4^z.
-static EMPTY_TILE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-
-fn empty_tile_bytes() -> AppResult<Vec<u8>> {
-    let bytes = EMPTY_TILE.get_or_init(|| img::empty_tile_256().expect("empty tile encode"));
-    Ok(bytes.clone())
-}
-
-/// Resolve tile bytes through: memory cache → object storage (if fresh or
-/// stale-serveable) → render. Boxed to permit recursion (children of
-/// z < BASE_Z render through this same fn).
-fn tile_bytes<'a>(
-    app: &'a App,
-    ctx: &'a TileCtx,
-    z: i64,
-    x: i64,
-    y: i64,
-    stale: Stale,
-    admission: Admission,
-) -> futures::future::BoxFuture<'a, AppResult<TileResolved>> {
-    Box::pin(tile_bytes_inner(app, ctx, z, x, y, stale, admission))
-}
-
-/// Whether the caller tolerates serving stored-but-stale bytes. Entry GETs
-/// allow it; every actual render (inline or background, including parent
-/// renders resolving children) must be pixel-fresh, so children always use
-/// [`Stale::Never`].
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Stale {
-    Allow,
-    Never,
-}
-
-/// Whether this resolution may acquire a pyramid lease. Only entry GETs
-/// are gated: a cold z < BASE_Z render is a multi-minute sequential
-/// recursion (issue #120), and N concurrent entries must not pin N pool
-/// connections for that long. Recursion children resolve under the
-/// parent's existing lease; the background worker is serial by
-/// construction; prewarm only walks z >= BASE_Z leaves.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Admission {
-    Gated,
-    Ungated,
-}
-
-/// Bound on concurrent full-pyramid (z < BASE_Z) renders. Held for the
-/// whole recursion — with one query in flight per render (sequential
-/// children), this is also the max pool footprint of all pyramid renders
-/// combined. Entry GETs that find the gate full are shed (202 + Retry-
-/// After, the existing shed path) instead of queueing invisibly.
-pub struct PyramidGate {
-    permits: std::sync::Arc<tokio::sync::Semaphore>,
-}
-
-impl PyramidGate {
-    pub fn new(permits: usize) -> Self {
-        Self {
-            permits: std::sync::Arc::new(tokio::sync::Semaphore::new(permits)),
-        }
-    }
-
-    /// Take a lease if one is free; `None` means shed. The gauge is
-    /// decremented when the lease drops.
-    pub fn try_acquire(&self) -> Option<PyramidLease> {
-        match self.permits.clone().try_acquire_owned() {
-            Ok(permit) => {
-                crate::metrics::pyramid_acquired();
-                Some(PyramidLease {
-                    _permit: Some(permit),
-                })
-            }
-            Err(_) => {
-                crate::metrics::pyramid_shed();
-                None
-            }
-        }
-    }
-}
-
-/// RAII marker for one in-flight pyramid render.
-pub struct PyramidLease {
-    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
-}
-
-impl Drop for PyramidLease {
-    fn drop(&mut self) {
-        if self._permit.take().is_some() {
-            crate::metrics::pyramid_released();
-        }
-    }
-}
-
-/// One-shot DB snapshot for a render (issue #120): everything the whole
-/// recursion needs, fetched in short pool holds and RELEASED before the
-/// walk. The walk itself is connection-free — pure Rust, object storage,
-/// pixels. This is the structural fix for the pool starvation: a render
-/// never holds a connection across its external I/O (S3/vips), so N
-/// concurrent renders pin zero idle connections.
-///
-/// Snapshot semantics are deliberately NOT transactional-perfect: we
-/// snapshot rows + seqs, render, and store at the snapshot seq. A
-/// placement landing mid-render bumps the covering seq, the next GET
-/// sees stored < covering and serves stale + re-enqueues — the system
-/// self-heals around the stale snapshot. Do NOT re-introduce a held
-/// connection "for correctness".
-/// One zoom level's stored-seq rows from the tiles table.
-type StoredLevel = HashMap<(i64, i64), i64>;
-
-struct TileCtx {
-    /// Per-chunk max live placement seq for every chunk intersecting the
-    /// root rect (ONE grouped query over the GiST index). Chunk
-    /// granularity is a conservative superset of per-leaf attribution: a
-    /// placement touching any part of a chunk marks all its leaves.
-    chunk_seqs: HashMap<(i64, i64), i64>,
-    /// Stored staleness rows (tiles table), fetched lazily ONE level at a
-    /// time: a level's `(x, y) -> seq` map is materialized at most once
-    /// per render, on a brief pool hold, the first time a node at that
-    /// level needs its stored seq (mem-cache hits skip it entirely).
-    stored_levels: StdMutex<HashMap<i64, Arc<StoredLevel>>>,
-    /// Precomputed effective seq per node, one level per zoom from
-    /// root_z to BASE_Z (index = z - root_z). Built once in `prefetch`
-    /// from the chunk rows: each level's entry count is bounded by the
-    /// level below, so the whole pyramid costs ~4/3 x the chunk rows —
-    /// NEVER materialize per-node memos on demand: a z5 entry GET would
-    /// recurse (4^13 - 1)/3 ~= 22M nodes (issue #150).
-    levels: Vec<HashMap<(i64, i64), i64>>,
-    /// The zoom this context was prefetched for (level-span arithmetic
-    /// and the "strictly under the root" check key off it).
-    root_z: i64,
-    /// The root tile's own staleness row (the lazy level fetches only
-    /// cover strictly deeper levels).
-    root_stored: Option<i64>,
-    /// Live placements the root bbox probe returned — the one-field
-    /// context on slow-render WARNs.
-    rows: usize,
-}
-
-impl TileCtx {
-    async fn prefetch(app: &App, z: i64, x: i64, y: i64) -> AppResult<Self> {
-        let rect = tile_bounds(z, x, y);
-        // Per-chunk content versions from the MAINTAINED rollup
-        // (chunk_seqs — bumped in the place/import/removal write paths;
-        // see chunks::bump_chunk_seqs). This is the doctrine end-state:
-        // the read path never consults placement rows, so view cost is
-        // pile-depth-independent — a PK range scan over the box's chunks
-        // (~ms, and ~23k rows for the whole-pile worst case instead of a
-        // 51k-row GiST recheck that cost 1.2 s and OOM-killed the pod
-        // under concurrent low-zoom GETs on 2026-10-14).
-        let rows: Vec<(i64, i64, i64)> = crate::dbq::timed(
-            "tile_seq",
-            sqlx::query_as(
-                "SELECT cx, cy, max_seq FROM chunk_seqs
-                 WHERE cx >= $1 AND cx <= $2 AND cy >= $3 AND cy <= $4",
-            )
-            .bind(rect.x.div_euclid(CHUNK_PX))
-            .bind((rect.x + rect.w - 1).div_euclid(CHUNK_PX))
-            .bind(rect.y.div_euclid(CHUNK_PX))
-            .bind((rect.y + rect.h - 1).div_euclid(CHUNK_PX))
-            .fetch_all(&app.pool),
-        )
-        .await?;
-        let probe_rows = rows.len();
-        let base: HashMap<(i64, i64), i64> =
-            rows.into_iter().map(|(cx, cy, s)| ((cx, cy), s)).collect();
-        // Collapse the chunk map into one max-level per zoom, bottom-up:
-        // level z's entry = max of its four children. Total entries across
-        // all levels are bounded by ~4/3 x the base level.
-        let levels_len = (BASE_Z - z).max(0) as usize + 1;
-        let mut levels = Vec::with_capacity(levels_len);
-        levels.push(base.clone());
-        let mut cur = base;
-        for _ in (0..(BASE_Z - z)).rev() {
-            let mut next: HashMap<(i64, i64), i64> = HashMap::new();
-            for (&(cx, cy), &seq) in &cur {
-                let p = (cx / 2, cy / 2);
-                let slot = next.entry(p).or_default();
-                if seq > *slot {
-                    *slot = seq;
-                }
-            }
-            cur = next;
-            levels.push(cur.clone());
-        }
-        levels.reverse(); // levels[k] = zoom (z + k)
-        Ok(Self {
-            chunk_seqs: levels[levels.len() - 1].clone(),
-            levels,
-            stored_levels: StdMutex::new(HashMap::new()),
-            root_z: z,
-            rows: probe_rows,
-            root_stored: crate::dbq::timed(
-                "tiles_meta",
-                sqlx::query_as("SELECT seq FROM tiles WHERE z = $1 AND x = $2 AND y = $3")
-                    .bind(z as i16)
-                    .bind(x as i32)
-                    .bind(y as i32)
-                    .fetch_optional(&app.pool),
-            )
-            .await?
-            .map(|(seq,)| seq),
-        })
-    }
-
-    /// Effective live seq at a node = max chunk seq over its subtree.
-    /// Memoized: every node of the pyramid is computed exactly once.
-    fn node_seq(&self, z: i64, x: i64, y: i64) -> i64 {
-        if z >= BASE_Z {
-            return *self.chunk_seqs.get(&tile_chunk(z, x, y)).unwrap_or(&0);
-        }
-        let k = (z - self.root_z).max(0) as usize;
-        self.levels
-            .get(k)
-            .and_then(|l| l.get(&(x, y)))
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// Stored staleness row for a node, materializing its level lazily.
-    async fn stored_seq(
-        &self,
-        app: &App,
-        z: i64,
-        x: i64,
-        y: i64,
-        root_z: i64,
-    ) -> AppResult<Option<i64>> {
-        if z == root_z {
-            return Ok(self.root_stored);
-        }
-        if z < root_z {
-            return Ok(None);
-        }
-        let level = {
-            let levels = self.stored_levels.lock().expect("stored levels");
-            levels.get(&z).cloned()
-        };
-        let level = match level {
-            Some(l) => l,
-            None => {
-                // The level map covers the ROOT's whole span at this
-                // level: [rx*span, (rx+1)*span). Deriving the range from
-                // THIS node's coords (#151) yields a disjoint window
-                // whenever the root isn't at 0 — every later lookup in
-                // the cached map misses and the subtree cold-renders.
-                // i64 math throughout: x*span wraps i32 at deep levels
-                // under low roots.
-                let span = 1i64 << (z - root_z);
-                let (rx, ry) = (x / span, y / span);
-                let rows: Vec<(i32, i32, i64)> = crate::dbq::timed(
-                    "tiles_meta",
-                    sqlx::query_as(
-                        "SELECT x, y, seq FROM tiles
-                         WHERE z = $1 AND x >= $2 AND x < $3 AND y >= $4 AND y < $5",
-                    )
-                    .bind(z as i16)
-                    .bind((rx * span) as i32)
-                    .bind(((rx + 1) * span) as i32)
-                    .bind((ry * span) as i32)
-                    .bind(((ry + 1) * span) as i32)
-                    .fetch_all(&app.pool),
-                )
-                .await?;
-                let map: HashMap<(i64, i64), i64> = rows
-                    .into_iter()
-                    .map(|(tx, ty, seq)| ((tx as i64, ty as i64), seq))
-                    .collect();
-                let map = Arc::new(map);
-                self.stored_levels
-                    .lock()
-                    .expect("stored levels")
-                    .insert(z, map.clone());
-                map
-            }
-        };
-        Ok(level.get(&(x, y)).copied())
-    }
-}
-
-/// Outcome of a resolution: bytes with the seq they correspond to (the
-/// STORED seq when stale-served — the ETag always matches the bytes),
-/// whether they are stale, and whether THIS node performed pixel work
-/// (`rendered`) or was served without it (mem/S3 hit at the current seq,
-/// or the constant empty tile) — the background executor and the inline
-/// GET path log that distinction as `outcome=rendered|fresh_recheck`.
-/// `Shed` is the flood-control signal.
-enum TileResolved {
-    Bytes {
-        bytes: Bytes,
-        seq: i64,
-        stale: bool,
-        rendered: bool,
-    },
-    Shed,
-}
-
-/// A single render (background job, inline GET render, prewarm tile)
-/// taking longer than this WARNs. Warm renders are tens of ms, so >2s is
-/// exactly the per-render slow signal pod logs need.
-const SLOW_RENDER: Duration = Duration::from_secs(2);
-
-/// Slow-render WARN for one completed render, with the tile coords, the
-/// duration, and the covering snapshot's row count as the one-field
-/// context (the 2026-10-14 pile-wedge showed up as bbox-probe row
-/// explosions). Called at per-request / per-queue-entry boundaries ONLY —
-/// never per recursion node — so a pyramid render warns once, not 4^z
-/// times.
-fn log_slow_render(z: i64, x: i64, y: i64, dur: Duration, ctx_rows: usize) {
-    if dur <= SLOW_RENDER {
-        return;
-    }
-    tracing::warn!(
-        z,
-        x,
-        y,
-        dur_ms = dur.as_millis() as u64,
-        rows = ctx_rows as u64,
-        "slow tile render"
-    );
-}
-
-// Records its resolution path (hit_mem / hit_s3 / render / empty /
-// stale_served / shed) into metrics on every success return, including
-// recursive child resolutions.
-async fn tile_bytes_inner(
-    app: &App,
-    ctx: &TileCtx,
-    z: i64,
-    x: i64,
-    y: i64,
-    stale: Stale,
-    admission: Admission,
-) -> AppResult<TileResolved> {
-    let t0 = std::time::Instant::now();
-    // Snapshot lookup — no pool touch. See TileCtx for the semantics.
-    let seq = ctx.node_seq(z, x, y);
-    // Empty region: constant paper tile, no recursion, no storage writes.
-    // Zero-cost placeholder — served even under congestion (it never
-    // queues and never renders).
-    if seq == 0 {
-        let bytes = crate::telemetry::blocking(empty_tile_bytes)
-            .await
-            .map_err(internal)??;
-        crate::metrics::tile_done(crate::metrics::tile_outcome("empty"), t0.elapsed());
-        return Ok(TileResolved::Bytes {
-            bytes: Bytes::from(bytes),
-            seq: 0,
-            stale: false,
-            rendered: false,
-        });
-    }
-    let key: CacheKey = (z, x, y, seq);
-    if let Some(bytes) = app.tile_cache.get(z, key) {
-        crate::metrics::tile_done(crate::metrics::tile_outcome("hit_mem"), t0.elapsed());
-        return Ok(TileResolved::Bytes {
-            bytes,
-            seq,
-            stale: false,
-            rendered: false,
-        });
-    }
-    // Serialize renders per tile so concurrent misses don't duplicate work.
-    // In-process only, by design: cross-instance duplicate renders are
-    // benign — every instance computes the same seq for the tile, so both
-    // produce byte-identical output and the last PUT wins with identical
-    // content (place compositing is the only nondeterministic raster
-    // writer, and it takes the chunk advisory locks). No PG advisory locks
-    // on this path.
-    let lock_key = format!("{z}/{x}/{y}");
-    let _guard = app.tile_locks.lock_sorted(&[lock_key]).await;
-    // Another request may have rendered this exact seq while we waited.
-    if let Some(bytes) = app.tile_cache.get(z, key) {
-        crate::metrics::tile_done(crate::metrics::tile_outcome("hit_mem"), t0.elapsed());
-        return Ok(TileResolved::Bytes {
-            bytes,
-            seq,
-            stale: false,
-            rendered: false,
-        });
-    }
-    let object_key = tile_key(z, x, y);
-    // Lazy per-level stored-seq snapshot; brief pool hold only the first
-    // time this level is touched in this render (mem hits skip it).
-    let stored = ctx.stored_seq(app, z, x, y, ctx.root_z).await?;
-    if stored == Some(seq) {
-        if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
-            let bytes = Bytes::from(bytes);
-            app.tile_cache.put(z, key, bytes.clone());
-            crate::metrics::tile_done(crate::metrics::tile_outcome("hit_s3"), t0.elapsed());
-            return Ok(TileResolved::Bytes {
-                bytes,
-                seq,
-                stale: false,
-                rendered: false,
-            });
-        }
-    }
-    // Stored tile at an older seq: serve the stored bytes NOW and queue a
-    // re-render on the background worker. This is the core SWR bound: a
-    // GET with stale bytes available never waits on (or triggers) pixel
-    // work. A row without its object falls through to a plain render.
-    if stale == Stale::Allow {
-        if let Some(stored_seq) = stored {
-            if let Some(bytes) = crate::store::get_bytes(&app.store, &object_key).await? {
-                // Dropping here is fine: the next stale GET re-enqueues.
-                app.render_queue.enqueue(z, x, y).await;
-                crate::metrics::tile_done(
-                    crate::metrics::tile_outcome("stale_served"),
-                    t0.elapsed(),
-                );
-                return Ok(TileResolved::Bytes {
-                    bytes: Bytes::from(bytes),
-                    seq: stored_seq,
-                    stale: true,
-                    rendered: false,
-                });
-            }
-        } else if app.render_queue.congested().await {
-            // First-ever render with the queue at capacity: shed. Only
-            // entry GETs get here (children always render fresh once the
-            // parent's inline render was admitted).
-            crate::metrics::tile_done(crate::metrics::tile_outcome("shed"), t0.elapsed());
-            return Ok(TileResolved::Shed);
-        }
-    }
-    // Cold oversized low-zoom tiles never render inline: a first-ever
-    // z0-z12 GET recurses its WHOLE subtree on the request path (the
-    // prod wedge: a z12 tile = 1323 chunk renders = 10-31 s; z0 = the
-    // pile's entire pyramid, minutes) while same-coord followers queue
-    // silently on the per-tile lock holding gate leases. Above this
-    // many prefetched chunk rows the tile goes to the background queue
-    // and the GET sheds like any other congestion. The worker renders
-    // it (Ungated) and later GETs stale-serve from storage.
-    if admission == Admission::Gated && z < BASE_Z && stored.is_none() && ctx.rows > 256 {
-        eprintln!("DEBUG cold-shed fired z={z} rows={}", ctx.rows);
-        app.render_queue.enqueue(z, x, y).await;
-        crate::metrics::tile_done(crate::metrics::tile_outcome("shed"), t0.elapsed());
-        return Ok(TileResolved::Shed);
-    }
-    eprintln!(
-        "DEBUG shed-check z={z} admission_gated={} rows={} stored={:?}",
-        admission == Admission::Gated,
-        ctx.rows,
-        stored.is_some()
-    );
-    // Pyramid gate (issue #120): a cold z < BASE_Z render is a
-    // multi-minute sequential recursion. Entry GETs hold one of a couple
-    // of leases for the whole recursion — with sequential children that
-    // is also the render's entire pool footprint (at most one query in
-    // flight). Entry GETs arriving when the gate is full are shed
-    // (202 + Retry-After) instead of stacking a fourth minute-long
-    // recursion onto the pool.
-    let _pyramid_lease = if admission == Admission::Gated && z < BASE_Z {
-        match app.pyramid_gate.try_acquire() {
-            Some(lease) => Some(lease),
-            None => {
-                crate::metrics::tile_done(crate::metrics::tile_outcome("shed"), t0.elapsed());
-                return Ok(TileResolved::Shed);
-            }
-        }
-    } else {
-        None
-    };
-    let encoded = render_tile(app, ctx, z, x, y).await?;
-    // Write-through: object storage + staleness row + memory cache.
-    crate::store::put(&app.store, &object_key, encoded.to_vec()).await?;
-    crate::dbq::timed(
-        "tiles_meta",
-        sqlx::query(
-            "INSERT INTO tiles (z, x, y, seq) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (z, x, y) DO UPDATE
-         SET seq = EXCLUDED.seq, rendered_at = now()",
-        )
-        .bind(z as i16)
-        .bind(x as i32)
-        .bind(y as i32)
-        .bind(seq)
-        .execute(&app.pool),
-    )
-    .await?;
-    app.tile_cache.put(z, key, encoded.clone());
-    // Version seam: every tiles.seq write publishes the new version —
-    // in-pod map for this pod's /api/versions + a `versions` NOTIFY so
-    // other pods' maps and area subscribers follow (#190's pipeline goes
-    // through this same seam).
-    crate::versions::note(z, x, y, seq);
-    let payload = crate::versions::payload_for(z, x, y, seq);
-    let pool = app.pool.clone();
-    tokio::spawn(async move {
-        let _ = sqlx::query("SELECT pg_notify('events', $1)")
-            .bind(&payload)
-            .execute(&pool)
-            .await;
-    });
-    crate::metrics::tile_done(crate::metrics::tile_outcome("render"), t0.elapsed());
-    Ok(TileResolved::Bytes {
-        bytes: encoded,
-        seq,
-        stale: false,
-        rendered: true,
-    })
-}
-
-/// Render + encode the tile from its sources (chunk for z ≥ BASE_Z, the
-/// four child tiles below). Pixel work is boxed into spawn_blocking.
-async fn render_tile(app: &App, ctx: &TileCtx, z: i64, x: i64, y: i64) -> AppResult<Bytes> {
-    // Test seam: slow THIS pyramid render (after the snapshot, before any
-    // child resolution) so gate/shed windows are deterministic. Parent
-    // renders only; always 0 in production.
-    if z < BASE_Z {
-        let pause = PYRAMID_PAUSE_MS.load(Ordering::Relaxed);
-        if pause > 0 {
-            tokio::time::sleep(Duration::from_millis(pause)).await;
-        }
-    }
-    let bytes = if z >= BASE_Z {
-        let (cx, cy) = tile_chunk(z, x, y);
-        let key = crate::world::chunk_key(cx, cy);
-        let chunk = crate::store::get_bytes(&app.store, &key).await?;
-        let (ox, oy) = tile_offset_in_chunk(z, x, y);
-        let native = tile_native_size(z);
-        crate::telemetry::blocking(move || img::render_leaf_tile(chunk, ox, oy, native))
-            .await
-            .map_err(internal)?
-            .map_err(internal)?
-    } else {
-        // Resolve the four children SEQUENTIALLY (issue #120): the old
-        // try_join_all put the whole subtree's queries in flight at once —
-        // a cold z9 render raced the pool with up to 4^9 pending
-        // acquisitions and starved every other handler. One child at a
-        // time keeps a render's pool footprint at exactly one in-flight
-        // query; the raster cache absorbs 3 of the 4 consecutive leaves
-        // (same chunk). Children ALWAYS resolve fresh (Stale::Never) so a
-        // parent render never bakes stale child bytes under a fresh parent
-        // seq. Deadlock-free: the parent holds "z/x/y" while children take
-        // "z+1/x'/y'" keys — the wait-for graph only ever points DOWN the
-        // pyramid (a child's own recursion goes deeper, never back up), so
-        // no cycle is possible regardless of scheduling. Children run
-        // under the parent's pyramid lease (Admission::Ungated): they
-        // never shed.
-        let mut kids: Vec<Vec<u8>> = Vec::with_capacity(4);
-        for (dx, dy) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)] {
-            match tile_bytes(
-                app,
-                ctx,
-                z + 1,
-                2 * x + dx,
-                2 * y + dy,
-                Stale::Never,
-                Admission::Ungated,
-            )
-            .await?
-            {
-                TileResolved::Bytes { bytes, .. } => kids.push(bytes.to_vec()),
-                // Children always resolve with Stale::Never, which never
-                // sheds.
-                TileResolved::Shed => unreachable!("child resolution never sheds"),
-            }
-        }
-        let kids: [Vec<u8>; 4] = kids.try_into().map_err(|_| internal("children count"))?;
-        crate::telemetry::blocking(move || img::render_parent_tile(&kids))
-            .await
-            .map_err(internal)?
-            .map_err(internal)?
-    };
-    Ok(Bytes::from(bytes))
-}
-
-/// TILE_PX must divide a chunk exactly at BASE_Z for the recursion to line
-/// up (compile-time sanity of the world constants).
-const _: () = assert!(TILE_PX * (1 << (20 - BASE_Z)) == CHUNK_PX);
-
-/// Post-import prewarm: render the z18..z20 tiles covering `chunks` through
-/// the NORMAL serving path (memory → object storage → render + staleness
-/// row), so prewarmed tiles are indistinguishable from lazily served ones.
-/// Opt-in via the import request's `prewarm` flag and strictly post-commit:
-/// tiles are never rendered while a batch is still ingesting (ingest only
-/// lets the `tiles.seq` staleness index mark them stale implicitly).
-pub async fn prewarm_chunks(app: &App, chunks: &[(i64, i64)]) -> AppResult<u64> {
-    let mut rendered = 0u64;
-    for &(cx, cy) in chunks {
-        for z in BASE_Z..=MAX_Z {
-            let span = 1i64 << (z - BASE_Z);
-            for dy in 0..span {
-                for dx in 0..span {
-                    // Stale::Never: prewarm is a render, not a serve — it
-                    // always resolves fresh (and never sheds), matching the
-                    // parent-render path's guarantees.
-                    let t0 = Instant::now();
-                    let tile_ctx =
-                        TileCtx::prefetch(app, z, cx * span + dx, cy * span + dy).await?;
-                    match tile_bytes(
-                        app,
-                        &tile_ctx,
-                        z,
-                        cx * span + dx,
-                        cy * span + dy,
-                        Stale::Never,
-                        Admission::Ungated,
-                    )
-                    .await?
-                    {
-                        TileResolved::Bytes { .. } => {
-                            // Prewarm tiles are renders too: slow ones get
-                            // the shared WARN; no routine line (volume
-                            // safety — an import prewarms 7 tiles/chunk).
-                            log_slow_render(
-                                z,
-                                cx * span + dx,
-                                cy * span + dy,
-                                t0.elapsed(),
-                                tile_ctx.rows,
-                            );
-                            rendered += 1;
-                        }
-                        TileResolved::Shed => unreachable!("Stale::Never never sheds"),
-                    }
-                }
-            }
-        }
-    }
-    Ok(rendered)
+#[derive(serde::Deserialize)]
+pub struct TileQuery {
+    /// The version the client already holds (contract #188).
+    pub v: Option<i64>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{tile_response, PyramidGate, TileCache};
+    use super::{tile_response, TileCache};
 
     #[test]
     fn low_zoom_keeps_only_newest_seq_per_tile() {
@@ -1198,12 +299,12 @@ mod tests {
         for seq in 0..1000i64 {
             cache.put(0, (0, 0, 0, seq), Bytes::from_static(b"new"));
         }
-        assert_eq!(cache.low_zoom.lock().unwrap().len(), 1);
+        assert_eq!(cache.low_zoom.lock().len(), 1);
         assert!(cache.get(0, (0, 0, 0, 999)).is_some());
         assert!(cache.get(0, (0, 0, 0, 0)).is_none());
         // A second coordinate is kept alongside.
         cache.put(2, (2, 1, 1, 7), Bytes::from_static(b"x"));
-        assert_eq!(cache.low_zoom.lock().unwrap().len(), 2);
+        assert_eq!(cache.low_zoom.lock().len(), 2);
     }
 
     use axum::http::header;
@@ -1256,17 +357,5 @@ mod tests {
         let resp = tile_response(BYTES.clone(), 6, true, Some("\"6\""), None);
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(resp.headers()["x-tile-stale"], "true");
-    }
-
-    #[test]
-    fn pyramid_gate_bounds_concurrency_and_sheds() {
-        let gate = PyramidGate::new(2);
-        let a = gate.try_acquire().expect("first lease");
-        let b = gate.try_acquire().expect("second lease");
-        // Third entry finds the gate full: shed signal, not a wait.
-        assert!(gate.try_acquire().is_none());
-        drop(b);
-        let c = gate.try_acquire().expect("lease after release");
-        drop((a, c));
     }
 }

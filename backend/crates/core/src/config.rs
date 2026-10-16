@@ -41,16 +41,6 @@ pub struct Config {
     /// Entries in the hot-tile LRU (zooms > 4; zooms <= 4 are unbounded —
     /// at most 341 tiles exist).
     pub tile_cache_entries: usize,
-    /// Background re-render queue: seconds of request-quiet on a tile
-    /// before its queued re-render fires (see `tiles::RenderQueue`).
-    pub tile_render_quiet_secs: u64,
-    /// Background re-render queue: hard cap on how long a queued tile can
-    /// wait past its first enqueue, even under continuous bumps.
-    pub tile_render_max_delay_secs: u64,
-    /// Hard bound on queued tile coords. Overflow sheds first-ever tile
-    /// renders (202) and skips stale re-render enqueues; stored tiles keep
-    /// serving stale regardless.
-    pub tile_render_queue_cap: usize,
     /// Gate new signups behind admin approval. Defaults to false so local
     /// development never touches the gate; production sets
     /// REGISTRATION_APPROVAL_REQUIRED=true to keep external signups closed.
@@ -171,15 +161,6 @@ impl Config {
             tile_cache_entries: env_or("TILE_CACHE_ENTRIES", "2048")
                 .parse()
                 .expect("invalid TILE_CACHE_ENTRIES"),
-            tile_render_quiet_secs: env_or("TILE_RENDER_QUIET_SECS", "4")
-                .parse()
-                .expect("invalid TILE_RENDER_QUIET_SECS"),
-            tile_render_max_delay_secs: env_or("TILE_RENDER_MAX_DELAY_SECS", "12")
-                .parse()
-                .expect("invalid TILE_RENDER_MAX_DELAY_SECS"),
-            tile_render_queue_cap: env_or("TILE_RENDER_QUEUE_CAP", "512")
-                .parse()
-                .expect("invalid TILE_RENDER_QUEUE_CAP"),
             registration_approval_required: parse_bool(&env_or(
                 "REGISTRATION_APPROVAL_REQUIRED",
                 "false",

@@ -1,5 +1,9 @@
-//! POST /api/admin/import — the batch ingest engine, and the bulk
-//! preupload that feeds it (`POST /api/admin/import/originals`).
+//! Admin batch import — the ingest engine and the bulk preupload that
+//! feeds it, run from the worker binary (`backend-worker import-originals
+//! <files...>` / `backend-worker import-batch <manifest.json>`). The
+//! admin-import HTTP routes died with the distroless split: this was the
+//! only remaining libvips holder in the API image (docs
+//! "Upload flow": the admin import uses the same worker).
 //!
 //! SLO: ≥ 10 images/second sustained on one 4-vCPU node (100k stretch:
 //! ≤ 3 h). The per-placement HTTP path pays ~4 s server-side per image
@@ -48,22 +52,19 @@
 //! scripts derive them deterministically) resume independently.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Mutex as StdMutex;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
-use axum::extract::{Multipart, State};
-use axum::Json;
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::auth::Authed;
-use crate::error::{internal, AppError, AppResult};
+use crate::ctx::WorkerCtx;
 use crate::img;
-use crate::state::App;
-use crate::world::{normalize_rot, rotated_aabb, Rect, CHUNK_PX, WORLD_PX};
+use iac_core::error::{internal, AppError, AppResult};
+use iac_core::world::{normalize_rot, rotated_aabb, Rect, CHUNK_PX, WORLD_PX};
 
 /// Body cap for both import routes. Bounds the manifest (`~150 B/entry`
 /// ⇒ >1 M entries) and the preupload (per-image `MAX_UPLOAD_BYTES` is
@@ -159,45 +160,26 @@ pub struct ImportSummary {
 
 // ------------------------------------------------------------- preupload
 
-/// POST /api/admin/import/originals — bulk preupload. Repeated `image`
-/// multipart fields each go through the EXACT /api/place pixel stage
-/// (`place::process_original`), at the source dimensions capped to
-/// `MAX_SIZE`. Both objects land content-addressed; the response mapping
+/// Bulk preupload: each image goes through the EXACT request-path pixel
+/// stage (`pixel::process_original`) at the source dimensions capped to
+/// `max_size`. Both objects land content-addressed; the returned mapping
 /// feeds the manifest (`source_sha`, `derivative_sha`, `w`, `h`).
-pub async fn import_originals(
-    State(app): State<App>,
-    Authed(admin_id): Authed,
-    mut mp: Multipart,
-) -> AppResult<Json<Vec<OriginalInfo>>> {
-    crate::auth::require_admin(&app, admin_id).await?;
+pub async fn import_originals_run(
+    ctx: &WorkerCtx,
+    images: Vec<Vec<u8>>,
+) -> AppResult<Vec<OriginalInfo>> {
     let mut out = Vec::new();
-    while let Some(field) = mp
-        .next_field()
-        .await
-        .map_err(|_| AppError::BadRequest("malformed multipart"))?
-    {
-        if field.name() != Some("image") {
-            continue;
+    for buf in images {
+        if buf.len() > ctx.cfg.max_upload_bytes {
+            return Err(AppError::TooLarge);
         }
-        let mut buf: Vec<u8> = Vec::new();
-        let mut field = field;
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|_| AppError::BadRequest("bad image part"))?
-        {
-            if buf.len() + chunk.len() > app.cfg.max_upload_bytes {
-                return Err(AppError::TooLarge);
-            }
-            buf.extend_from_slice(&chunk);
-        }
-        let pipeline = iac_worker::pixel::process_original(
+        let pipeline = crate::pixel::process_original(
             buf,
             None,
-            app.cfg.min_size,
-            app.cfg.max_size,
-            app.cfg.import_derivative_long_edge,
-            app.cfg.max_decode_pixels,
+            ctx.cfg.min_size,
+            ctx.cfg.max_size,
+            ctx.cfg.import_derivative_long_edge,
+            ctx.cfg.max_decode_pixels,
         )
         .await?;
         let original_key = format!(
@@ -206,8 +188,8 @@ pub async fn import_originals(
             pipeline.format.ext()
         );
         let image_key = format!("derivatives/{}.webp", pipeline.derivative_sha);
-        crate::store::put_if_absent(&app.store, &image_key, pipeline.derivative).await?;
-        crate::store::put_if_absent(&app.store, &original_key, pipeline.stripped).await?;
+        iac_core::store::put_if_absent(&ctx.store, &image_key, pipeline.derivative).await?;
+        iac_core::store::put_if_absent(&ctx.store, &original_key, pipeline.stripped).await?;
         out.push(OriginalInfo {
             source_sha: pipeline.original_sha,
             derivative_sha: pipeline.derivative_sha,
@@ -218,7 +200,7 @@ pub async fn import_originals(
     if out.is_empty() {
         return Err(AppError::BadRequest("no image fields"));
     }
-    Ok(Json(out))
+    Ok(out)
 }
 
 // ---------------------------------------------------------------- planning
@@ -269,7 +251,7 @@ fn plan_entry(e: ImportEntry, min_size: i64, max_size: i64) -> Result<PrePlan, &
         return Err("rot must be finite");
     }
     let rot = normalize_rot(e.rot);
-    let tags = crate::api::normalize_tags(e.tags)?;
+    let tags = iac_core::tags::normalize_tags(e.tags)?;
     // Identical semantics to the HTTP path: bounds checked on the rotated
     // AABB, bbox column = the AABB, x/y/w/h = the unrotated rect.
     let aabb = rotated_aabb(e.x, e.y, e.w, e.h, rot);
@@ -307,7 +289,7 @@ fn entry_id(batch_id: Uuid, p: &PrePlan, derivative_sha: &str) -> Uuid {
 /// Fill missing `derivative_sha`s from the newest placement of each
 /// `source_sha` — one round trip for the whole batch. Unresolvable ⇒ 400
 /// (the client must preupload first).
-async fn resolve_derivatives(app: &App, plans: &mut [PrePlan]) -> AppResult<()> {
+async fn resolve_derivatives(ctx: &WorkerCtx, plans: &mut [PrePlan]) -> AppResult<()> {
     let unresolved: BTreeSet<String> = plans
         .iter()
         .filter(|p| p.derivative_sha.is_none())
@@ -317,7 +299,7 @@ async fn resolve_derivatives(app: &App, plans: &mut [PrePlan]) -> AppResult<()> 
         return Ok(());
     }
     let list: Vec<String> = unresolved.into_iter().collect();
-    let rows: Vec<(String, String)> = crate::dbq::timed(
+    let rows: Vec<(String, String)> = iac_core::dbq::timed(
         "import",
         sqlx::query_as(
             "SELECT DISTINCT ON (original_sha) original_sha, derivative_sha
@@ -326,7 +308,7 @@ async fn resolve_derivatives(app: &App, plans: &mut [PrePlan]) -> AppResult<()> 
          ORDER BY original_sha, seq DESC",
         )
         .bind(&list)
-        .fetch_all(&app.pool),
+        .fetch_all(&ctx.pool),
     )
     .await?;
     let found: HashMap<String, String> = rows.into_iter().collect();
@@ -384,7 +366,7 @@ impl DerivCache {
 }
 
 async fn prefetch_derivatives(
-    app: &App,
+    ctx: &WorkerCtx,
     cache: &DerivCache,
     shas: BTreeSet<String>,
 ) -> AppResult<()> {
@@ -396,12 +378,16 @@ async fn prefetch_derivatives(
         return Ok(());
     }
     tracing::debug!(count = missing.len(), "import: fetching derivatives");
-    let app = app.clone();
+    let ctx = Arc::new(WorkerCtx {
+        cfg: ctx.cfg.clone(),
+        pool: ctx.pool.clone(),
+        store: ctx.store.clone(),
+    });
     futures::stream::iter(missing.into_iter().map(|sha| {
-        let app = app.clone();
+        let ctx = ctx.clone();
         async move {
             let key = format!("derivatives/{sha}.webp");
-            match crate::store::get_bytes(&app.store, &key).await? {
+            match iac_core::store::get_bytes(&ctx.store, &key).await? {
                 Some(bytes) => {
                     cache.put(sha, Bytes::from(bytes));
                     Ok(())
@@ -503,11 +489,12 @@ fn components(entries: &[Plan]) -> Vec<Vec<usize>> {
     out
 }
 
+#[cfg(test)]
 fn group_chunk_keys(entries: &[Plan], group: &[usize]) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
     for &i in group {
         for (cx, cy) in entries[i].aabb.chunk_keys() {
-            set.insert(crate::world::chunk_key(cx, cy));
+            set.insert(iac_core::world::chunk_key(cx, cy));
         }
     }
     set.into_iter().collect()
@@ -563,22 +550,20 @@ ON CONFLICT (id) DO NOTHING";
 /// one multi-row insert → commit. Locks release after commit, exactly
 /// like the per-placement pipeline.
 async fn run_group(
-    app: &App,
+    ctx: &WorkerCtx,
     admin_id: Uuid,
     plans: &[Plan],
     group: Vec<usize>,
     cache: &DerivCache,
 ) -> AppResult<GroupOutcome> {
     let group = &group;
-    let lock_keys = group_chunk_keys(plans, group);
-    let _guards = app.chunk_locks.lock_sorted(&lock_keys).await;
-    let mut tx = app.pool.begin().await?;
+    let mut tx = ctx.pool.begin().await?;
 
     // One seq round trip per group (the design's "one seq bump per chunk
     // per batch"): contiguous, ascending in entry order, allocated under
     // the group's chunk locks — the HTTP-path ordering invariant.
     let n = i64::try_from(group.len()).map_err(|_| internal("group overflow"))?;
-    let seqs: Vec<i64> = crate::dbq::timed(
+    let seqs: Vec<i64> = iac_core::dbq::timed(
         "import",
         sqlx::query_scalar("SELECT nextval('placement_seq') FROM generate_series(1, $1)")
             .bind(n)
@@ -633,13 +618,13 @@ async fn run_group(
         let mut chunk_list: Vec<img::ChunkPaint> = Vec::with_capacity(blocks.len());
         for (cx, cy) in blocks {
             let canvas =
-                crate::store::get_bytes(&app.store, &crate::world::chunk_key(cx, cy)).await?;
+                iac_core::store::get_bytes(&ctx.store, &iac_core::world::chunk_key(cx, cy)).await?;
             let members = chunk_members.remove(&(cx, cy)).expect("chunk has members");
             chunk_list.push((cx, cy, canvas, members));
         }
         let overlays_sb = overlays.clone();
         let (chunk_list, encoded_list) = {
-            let (chunk_list, res) = crate::telemetry::blocking(move || {
+            let (chunk_list, res) = iac_core::telemetry::blocking(move || {
                 let res = img::composite_group(&overlays_sb, &chunk_list, COMPOSITE_DECODE_BUDGET);
                 (chunk_list, res)
             })
@@ -648,9 +633,10 @@ async fn run_group(
             (chunk_list, res.map_err(internal)?)
         };
         for ((cx, cy, ..), encoded) in chunk_list.iter().zip(encoded_list) {
-            crate::store::put(&app.store, &crate::world::chunk_key(*cx, *cy), encoded).await?;
+            iac_core::store::put(&ctx.store, &iac_core::world::chunk_key(*cx, *cy), encoded)
+                .await?;
             out.chunk_writes += 1;
-            crate::metrics::chunk_composited();
+            iac_core::metrics::chunk_composited();
         }
     }
 
@@ -690,7 +676,7 @@ async fn run_group(
         oshas.push(p.source_sha.clone());
         dshas.push(p.derivative_sha.clone());
     }
-    let inserted = crate::dbq::timed(
+    let inserted = iac_core::dbq::timed(
         "import",
         sqlx::query(INSERT_SQL)
             .bind(&ids)
@@ -717,7 +703,7 @@ async fn run_group(
     // no-op there and an insert for freshly committed rows.
     for (k, &i) in group.iter().enumerate() {
         for tag in &plans[i].tags {
-            crate::dbq::timed(
+            iac_core::dbq::timed(
                 "import",
                 sqlx::query(
                     "INSERT INTO placement_tags (placement_id, tag)
@@ -747,7 +733,20 @@ async fn run_group(
             )
         })
         .collect();
-    crate::chunks::bump_chunk_seqs(&mut tx, &bumps).await?;
+    iac_core::chunk_seqs::bump_chunk_seqs(&mut tx, &bumps).await?;
+    // Phase 3: the touched chunks repaint through render_jobs (one z18
+    // job per chunk; parents bubble up). While the pipeline is dark
+    // (RENDER_PIPELINE_WORKERS=0) the rows simply wait; after the flip
+    // this is what keeps imported regions fresh (no GET-render fallback
+    // remains). Same transaction as the seq bumps: enqueue order equals
+    // seq order (doc "Ordering safety").
+    let group_coords: Vec<(i64, i64)> = group
+        .iter()
+        .flat_map(|&i| plans[i].aabb.chunk_keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    iac_core::jobs::enqueue_chunks(&mut tx, &group_coords).await?;
     tx.commit().await?;
 
     out.imported = inserted;
@@ -760,7 +759,7 @@ async fn run_group(
 /// event. Blocks run strictly sequentially, so chunk overlap across
 /// blocks never races.
 async fn process_block(
-    app: &App,
+    ctx: &WorkerCtx,
     admin_id: Uuid,
     batch_id: Uuid,
     block: Vec<Plan>,
@@ -786,11 +785,11 @@ async fn process_block(
         return Ok(stats);
     }
     let ids: Vec<Uuid> = fresh.iter().map(|p| p.id).collect();
-    let existing: HashSet<Uuid> = crate::dbq::timed(
+    let existing: HashSet<Uuid> = iac_core::dbq::timed(
         "import",
         sqlx::query_as::<_, (Uuid,)>("SELECT id FROM placements WHERE id = ANY($1)")
             .bind(&ids)
-            .fetch_all(&app.pool),
+            .fetch_all(&ctx.pool),
     )
     .await?
     .into_iter()
@@ -809,18 +808,18 @@ async fn process_block(
     // Prefetch unique derivatives for the NEW entries only, then verify
     // declared dims against the actual bitmaps.
     let shas: BTreeSet<String> = fresh.iter().map(|p| p.derivative_sha.clone()).collect();
-    prefetch_derivatives(app, cache, shas).await?;
+    prefetch_derivatives(ctx, cache, shas).await?;
     verify_dims(&fresh, cache)?;
 
     // The block's event bbox: the union of the NEW entries' AABBs.
     stats.bbox = fresh.iter().fold(None, |acc, p| union_bbox(acc, p.aabb));
 
     let groups = components(&fresh);
-    let concurrency = app.cfg.import_group_concurrency.max(1);
+    let concurrency = ctx.cfg.import_group_concurrency.max(1);
     let outcomes: Vec<GroupOutcome> = futures::stream::iter(
         groups
             .into_iter()
-            .map(|g| run_group(app, admin_id, &fresh, g, cache)),
+            .map(|g| run_group(ctx, admin_id, &fresh, g, cache)),
     )
     .buffer_unordered(concurrency)
     .try_collect::<Vec<_>>()
@@ -844,38 +843,46 @@ async fn process_block(
             "bbox": [bbox.x, bbox.y, bbox.w, bbox.h],
         })
         .to_string();
-        let _: ((),) = crate::dbq::timed(
+        let _: ((),) = iac_core::dbq::timed(
             "import",
             sqlx::query_as("SELECT pg_notify('events', $1)")
                 .bind(&event)
-                .fetch_one(&app.pool),
+                .fetch_one(&ctx.pool),
         )
         .await?;
     }
     Ok(stats)
 }
 
-// ---------------------------------------------------------------- handler
+// ---------------------------------------------------------------- run
 
-/// POST /api/admin/import.
-pub async fn import(
-    State(app): State<App>,
-    Authed(admin_id): Authed,
-    Json(req): Json<ImportReq>,
-) -> AppResult<Json<ImportSummary>> {
-    crate::auth::require_admin(&app, admin_id).await?;
+/// Resolve the account that owns imported placements: the sole admin
+/// (the HTTP path used the caller's session; the subcommand runs with
+/// operator credentials and attributes to the admin account).
+async fn resolve_admin_account(pool: &sqlx::PgPool) -> AppResult<Uuid> {
+    let row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM accounts WHERE is_admin ORDER BY created_at LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+    row.map(|(id,)| id)
+        .ok_or_else(|| internal("no admin account exists (create one before importing)"))
+}
+
+/// Execute a whole import request (the former POST /api/admin/import).
+pub async fn import_run(ctx: &WorkerCtx, req: ImportReq) -> AppResult<ImportSummary> {
+    let admin_id = resolve_admin_account(&ctx.pool).await?;
     let t0 = Instant::now();
 
     let mut plans: Vec<PrePlan> = Vec::with_capacity(req.entries.len());
     for (i, e) in req.entries.into_iter().enumerate() {
         plans.push(
-            plan_entry(e, app.cfg.min_size, app.cfg.max_size).map_err(|reason| {
+            plan_entry(e, ctx.cfg.min_size, ctx.cfg.max_size).map_err(|reason| {
                 tracing::warn!(entry = i, reason, "import entry rejected");
                 AppError::BadRequest("entry rejected")
             })?,
         );
     }
-    resolve_derivatives(&app, &mut plans).await?;
+    resolve_derivatives(ctx, &mut plans).await?;
     let mut plans: Vec<Plan> = plans
         .into_iter()
         .map(|mut p| {
@@ -896,7 +903,7 @@ pub async fn import(
         .collect();
 
     let cache = DerivCache::default();
-    let block_size = app.cfg.import_block_entries.max(1);
+    let block_size = ctx.cfg.import_block_entries.max(1);
     let mut summary = ImportSummary {
         batch_id: req.batch_id,
         imported: 0,
@@ -917,7 +924,7 @@ pub async fn import(
     while !plans.is_empty() {
         let rest = plans.split_off(block_size.min(plans.len()));
         let block = std::mem::take(&mut plans);
-        let st = match process_block(&app, admin_id, req.batch_id, block, &cache).await {
+        let st = match process_block(ctx, admin_id, req.batch_id, block, &cache).await {
             Ok(st) => st,
             // Blocks 1..n-1 already committed: fire the metrics on the
             // partial batch before surfacing the error, or the counters
@@ -941,10 +948,77 @@ pub async fn import(
 
     if req.prewarm {
         let chunks: Vec<(i64, i64)> = touched.into_iter().collect();
-        summary.prewarmed_tiles = Some(crate::tiles::prewarm_chunks(&app, &chunks).await?);
+        summary.prewarmed_tiles = Some(prewarm_leaves(ctx, &chunks).await?);
     }
 
-    Ok(Json(summary))
+    Ok(summary)
+}
+
+/// Opt-in prewarm: cut z18-z20 tiles for the touched chunks from their
+/// (just-painted) rasters and store them, exactly what a tile GET's leaf
+/// render would produce. The worker binary is allowed libvips; the API
+/// never was, which is why this moved here with the import.
+async fn prewarm_leaves(ctx: &WorkerCtx, chunks: &[(i64, i64)]) -> AppResult<u64> {
+    use iac_core::world::{is_valid_tile, tile_key, tile_native_size};
+    let mut count = 0u64;
+    for &(cx, cy) in chunks {
+        let canvas_bytes =
+            iac_core::store::get_bytes(&ctx.store, &iac_core::world::chunk_key(cx, cy))
+                .await?
+                .ok_or_else(|| internal("prewarm: chunk raster missing"))?;
+        let (row, column) = (cx * CHUNK_PX, cy * CHUNK_PX);
+        // The chunk's own content seq: every tile cut from this raster is
+        // current at exactly that version.
+        let seq: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(max_seq, 0) FROM chunk_seqs WHERE cx = $1 AND cy = $2",
+        )
+        .bind(cx)
+        .bind(cy)
+        .fetch_one(&ctx.pool)
+        .await?;
+        // libvips images are !Send: decode and cut every leaf on ONE
+        // blocking thread, returning only encoded bytes.
+        let cuts = iac_core::telemetry::blocking(move || {
+            let (chunk_img, _) = img::decode(&canvas_bytes, u64::MAX)?;
+            let mut out = Vec::new();
+            for z in iac_core::world::BASE_Z..=iac_core::world::MAX_Z {
+                let step = tile_native_size(z);
+                let tiles = (CHUNK_PX / step) as i64;
+                let tx0 = row.div_euclid(step);
+                let ty0 = column.div_euclid(step);
+                for ty in ty0..ty0 + tiles {
+                    for tx in tx0..tx0 + tiles {
+                        if !is_valid_tile(z, tx, ty) {
+                            continue;
+                        }
+                        let (left, top) = (tx * step - row, ty * step - column);
+                        let encoded = img::tile_from_chunk(&chunk_img, left, top, step)
+                            .and_then(|tile| img::webp_bytes(&tile, 90))?;
+                        out.push((z, tx, ty, encoded));
+                    }
+                }
+            }
+            Ok::<Vec<(i64, i64, i64, Vec<u8>)>, iac_core::error::AppError>(out)
+        })
+        .await
+        .map_err(internal)??;
+        for (z, tx, ty, encoded) in cuts {
+            iac_core::store::put(&ctx.store, &tile_key(z, tx, ty), encoded).await?;
+            sqlx::query(
+                "INSERT INTO tiles (z, x, y, seq) VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (z, x, y) DO UPDATE SET seq = $4, rendered_at = now()
+                 WHERE tiles.seq < $4",
+            )
+            .bind(z as i16)
+            .bind(tx as i32)
+            .bind(ty as i32)
+            .bind(seq)
+            .execute(&ctx.pool)
+            .await?;
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 /// Stamp wall time into the summary and record the batch in the metrics.
@@ -956,7 +1030,7 @@ fn finish_metrics(summary: &mut ImportSummary, t0: Instant) {
     // and repaints no chunk: it is not a batch and must not count as
     // one. Timing is still stamped so the response body stays complete.
     if summary.imported > 0 || summary.chunk_writes > 0 {
-        crate::metrics::import_done(summary.imported, summary.chunk_writes, elapsed);
+        iac_core::metrics::import_done(summary.imported, summary.chunk_writes, elapsed);
     }
     summary.duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
     let secs = elapsed.as_secs_f64();
@@ -975,7 +1049,7 @@ fn finish_metrics(summary: &mut ImportSummary, t0: Instant) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::chunk_key;
+    use iac_core::world::chunk_key;
 
     fn plan(x: i64, y: i64, w: i64, h: i64, rot: f32) -> Plan {
         let rot = normalize_rot(rot);

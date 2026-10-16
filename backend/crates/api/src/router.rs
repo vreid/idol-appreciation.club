@@ -1,7 +1,7 @@
 //! Router assembly.
 
 use crate::state::App;
-use crate::{api, events, handlers, import, place, statics, tiles};
+use crate::{api, events, handlers, place, statics, tiles};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 
@@ -39,17 +39,6 @@ pub fn router(state: App) -> Router {
         )
         .layer(axum::extract::DefaultBodyLimit::max(max_body))
         .with_state(state.clone());
-    // Import routes carry their own (much larger) body cap: manifests are
-    // ~150 B/entry and preuploads batch ~100 unique originals per request.
-    let import = Router::new()
-        .route("/api/admin/import", post(import::import))
-        .route(
-            "/api/admin/import/originals",
-            post(import::import_originals),
-        )
-        .layer(axum::extract::DefaultBodyLimit::max(import::BODY_LIMIT))
-        .with_state(state.clone());
-    let api = api.merge(import);
     api.fallback(|req: axum::http::Request<axum::body::Body>| async move {
         let uri = req.uri().clone();
         statics::fallback(state.clone(), uri, req).await

@@ -10,11 +10,13 @@
 pub mod chunk_seqs;
 pub mod config;
 pub mod dbq;
+pub mod empty_tile;
 pub mod error;
 pub mod imgprobe;
 pub mod jobs;
 pub mod metrics;
 pub mod store;
+pub mod tags;
 pub mod telemetry;
 pub mod versions_note;
 pub mod world;

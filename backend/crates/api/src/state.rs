@@ -15,6 +15,15 @@ pub struct KeyLocks {
     map: StdMutex<HashMap<String, Arc<TokioMutex<()>>>>,
 }
 
+impl AppState {
+    /// The narrow execution context the worker loops run against (the
+    /// worker binary constructs `WorkerCtx` standalone; the API derives
+    /// it from the HTTP state).
+    pub fn worker_ctx(&self) -> iac_worker::ctx::WorkerCtx {
+        iac_worker::ctx::WorkerCtx::new(self.cfg.clone(), self.pool.clone(), self.store.clone())
+    }
+}
+
 impl KeyLocks {
     pub fn new() -> Self {
         Self::default()

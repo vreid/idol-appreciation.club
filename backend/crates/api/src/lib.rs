@@ -8,12 +8,9 @@ pub mod auth;
 pub mod chunks;
 pub mod events;
 pub mod handlers;
-pub mod img;
 pub mod import;
-pub mod ingest;
 pub mod place;
 pub mod rate;
-pub mod render_jobs;
 pub mod router;
 
 pub mod state;
@@ -21,10 +18,15 @@ pub mod statics;
 pub mod tiles;
 pub mod versions;
 
-// The shared foundation lives in `iac-core` (workspace split); re-export
-// it at the crate root so `crate::config` and every existing
+// The shared foundation lives in `iac-core` and the pixel work in
+// `iac-worker` (workspace split); re-export them at the crate root so
+// `crate::config`, `crate::img` and every existing
 // `idol_appreciation_club_backend::*` path keeps resolving unchanged.
 pub use iac_core::{config, dbq, error, metrics, store, telemetry, world};
+// TRANSITIONAL: the API still hosts the dark 201 path and the Phase-2
+// tile fallback, so it links the pixel crate. Both leave the API at the
+// distroless step (docs/backend.md "Workspace layout").
+pub use iac_worker::{img, ingest, render_jobs};
 
 use crate::state::{AppState, KeyLocks};
 use std::sync::Arc;
@@ -73,6 +75,10 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         cfg,
     });
 
+    // The worker loops invalidate the API's in-process version caches
+    // through this hook; the standalone worker binary leaves it unset.
+    iac_core::versions_note::register(versions::note);
+
     tokio::spawn(events::spawn_listener(
         state.pool.clone(),
         events_tx.clone(),
@@ -85,13 +91,13 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
     // pre-seeded queue while the request path still composites (staged
     // cutover, docs/backend.md).
     for _ in 0..state.cfg.render_pipeline_workers {
-        render_jobs::spawn_worker(&state);
+        render_jobs::spawn_worker(&state.worker_ctx());
     }
     // Phase 4 ingest consumer (docs "Upload flow"): dark unless
     // INGEST_PIPELINE_ENABLED=true — the 202 quarantine path only runs
     // when the consumer is alive to drain the queue.
     if state.cfg.ingest_pipeline_enabled {
-        ingest::spawn_consumer(&state);
+        ingest::spawn_consumer(&state.worker_ctx());
     }
 
     Ok((state.clone(), router::router(state)))

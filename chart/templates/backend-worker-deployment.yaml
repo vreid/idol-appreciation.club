@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-worker
+  namespace: idol
+  labels:
+    app: backend-worker
+    app.kubernetes.io/part-of: idol-appreciation.club
+  annotations:
+    # Dedicated pixel workers (docs/scaling-architecture.md "Cluster
+    # layout"): the same image as the api, running the worker binary —
+    # render_jobs claim loops + the ingest consumer, no HTTP server.
+    # Ships DARK: replicaCount 0 means no pods and no queue consumers
+    # beyond the api pods' in-process loops. Scaling this up is cutover
+    # stage 4 (docs/backend.md): set backend.worker.replicaCount > 0 AND
+    # backend.renderPipelineWorkers: 0 in one release, so the loops move
+    # off the api pods instead of doubling claims.
+spec:
+  replicas: {{ .Values.backend.worker.replicaCount }}
+  # Worker pods are stateless claimers; a replaced pod's unfinished job
+  # is simply re-claimed after its lease (render_jobs claim query).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: backend-worker
+  template:
+    metadata:
+      labels:
+        app: backend-worker
+      annotations:
+        idol-appreciation.club/release-tag: {{ .Values.images.backend.tag | quote }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend-worker
+          image: {{ include "idol-canvas.image" (dict "image" .Values.images.backend "name" "backend") }}
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/backend-worker"]
+          env:
+            - name: RENDER_PIPELINE_WORKERS
+              # Loops per worker pod (the api pods' own loops are governed
+              # by backend.renderPipelineWorkers — kept separate so the
+              # two pools can be rebalanced without touching each other).
+              value: "2"
+            - name: INGEST_PIPELINE_ENABLED
+              # Must mirror backend.ingestPipelineEnabled at cutover: the
+              # 202 quarantine path needs SOME consumer alive; the first
+              # worker pod with this on takes the drain.
+              value: {{ .Values.backend.ingestPipelineEnabled | quote }}
+            - name: DATABASE_POOL_MAX
+              value: "10"
+          envFrom:
+            - secretRef:
+                name: app-env
+          resources:
+            {{- toYaml .Values.backend.worker.resources | nindent 12 }}
+          # No HTTP probes: the binary serves no endpoints. Liveness is
+          # the process contract — a wedged loop is restarted by the
+          # kubelet only via exit; claim leases make that safe (unfinished
+          # jobs are re-claimed, never lost).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]

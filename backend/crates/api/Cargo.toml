@@ -16,6 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 iac-core = { path = "../core" }
+# TRANSITIONAL (worker-binaries step): the dark 201 path and the Phase-2
+# tile fallback still run pixel work in-process; both leave the API at
+# the distroless step, after which this dependency (and libvips) drop.
+iac-worker = { path = "../worker" }
 axum = { version = "0.8", features = ["multipart"] }
 tokio.workspace = true
 tower = "0.5"

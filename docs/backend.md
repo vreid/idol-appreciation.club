@@ -1,34 +1,45 @@
 # Backend architecture
 
-The backend is a single Rust service: HTTP API, tile-pyramid renderer and static
-file host. It is a Cargo **workspace**: the shared, pixel-free foundation lives
-in `backend/crates/core` (`iac-core`: world math, config, DB query helpers,
-object store, metrics, telemetry, the error taxonomy), and the service lives in
-`backend/crates/api` (`iac-api`, binary `backend`), which re-exports the core
-modules at its root so `crate::*` paths stay stable. The API temporarily still
-links libvips for the dark 201 path and the Phase-2 tile fallback; the
-worker-binaries step gives the pixel work its own crate (only that crate will
-depend on libvips, per docs/scaling-architecture.md § Code and images), and the
-distroless API image lands once the API is vips-free. Modules (all under
-`crates/api/src` except the core set):
+The backend is a Rust **workspace** of three crates plus one binary each (the
+api's binary `backend`, the worker's binary `backend-worker`). The shared,
+pixel-free foundation lives in `backend/crates/core` (`iac-core`: world math,
+config, DB query helpers, object store, metrics, telemetry, the error taxonomy,
+the pure-SQL `chunk_seqs` version bumps and the `versions_note`
+cache-invalidation hook); the pixel work lives in `backend/crates/worker`
+(`iac-worker`: `img` — every libvips call — the `render_jobs` claim loops, the
+`ingest` consumer and the shared `pixel` engine; ONLY this crate depends on
+libvips, per docs/scaling-architecture.md § Code and images); and the HTTP
+service lives in `backend/crates/api` (`iac-api`, binary `backend`), which
+re-exports the core and worker modules at its root so `crate::*` paths stay
+stable. The API temporarily still links the worker crate (transitively libvips)
+for the dark 201 path and the Phase-2 tile fallback; the distroless API image
+lands once the API is vips-free. The worker binary runs the render_jobs loops
+and the ingest consumer WITHOUT the HTTP server; the chart deploys it as the
+`backend-worker` Deployment, values-gated dark
+(`backend.worker.replicaCount: 0`). Modules (all under `crates/api/src` except
+the core and worker sets):
 
-| module     | responsibility                                                |
-| ---------- | ------------------------------------------------------------- |
-| `world`    | core · pure tile/chunk/rect geometry (unit + property tested) |
-| `config`   | core · env parsing, cooldown and size knobs                   |
-| `img`      | all libvips calls, bytes-in/bytes-out API                     |
-| `store`    | core · object storage (S3-compatible; `file://` dev mode)     |
-| `chunks`   | chunk raster mutation + moderation replay                     |
-| `tiles`    | pyramid rendering, maxSeq staleness, caches                   |
-| `place`    | `POST /api/place`, admin soft-delete pipeline                 |
-| `ingest`   | Phase 4 quarantine consumer behind the 202 upload path        |
-| `api`      | near / center / health / reports / image counts               |
-| `handlers` | register / login / logout / me                                |
-| `auth`     | HMAC-signed stateless cookies, `Authed` extractor             |
-| `events`   | Postgres LISTEN/NOTIFY → broadcast → SSE                      |
-| `statics`  | SPA hosting with graceful no-frontend fallback                |
-| `router`   | route table + body limit + tracing                            |
-| `error`    | core · every failure maps to JSON `{"error": "..."}`          |
+| module          | responsibility                                                  |
+| --------------- | --------------------------------------------------------------- |
+| `world`         | core · pure tile/chunk/rect geometry (unit + property tested)   |
+| `config`        | core · env parsing, cooldown and size knobs                     |
+| `chunk_seqs`    | core · pure-SQL chunk version bumps (api + worker share)        |
+| `versions_note` | core · in-process cache-invalidation hook (worker → api)        |
+| `store`         | core · object storage (S3-compatible; `file://` dev mode)       |
+| `img`           | worker · all libvips calls, bytes-in/bytes-out API              |
+| `pixel`         | worker · the shared decode/strip/hash/derivative engine         |
+| `render_jobs`   | worker · render_jobs claim loops (chunk + parent jobs)          |
+| `ingest`        | worker · Phase 4 quarantine consumer behind the 202 upload path |
+| `chunks`        | api · chunk raster mutation + moderation replay (transitional)  |
+| `tiles`         | api · pyramid rendering, maxSeq staleness, caches               |
+| `place`         | api · `POST /api/place`, admin soft-delete pipeline             |
+| `api`           | api · near / center / health / reports / image counts           |
+| `handlers`      | api · register / login / logout / me                            |
+| `auth`          | api · HMAC-signed stateless cookies, `Authed` extractor         |
+| `events`        | api · Postgres LISTEN/NOTIFY → broadcast → SSE                  |
+| `statics`       | api · SPA hosting with graceful no-frontend fallback            |
+| `router`        | api · route table + body limit + tracing                        |
+| `error`         | core · every failure maps to JSON `{"error": "..."}`            |
 
 ## World math
 

@@ -5,7 +5,7 @@
 //! under `quarantine/{job_id}` and insert an `ingest_jobs` row; this
 //! consumer claims rows `FOR UPDATE SKIP LOCKED` (one in-process task;
 //! horizontal scale comes from more processes, mirroring render_jobs),
-//! runs the pixel stage via the shared [`crate::place::process_original`]
+//! runs the pixel stage via the shared [`crate::pixel::process_original`]
 //! engine and records the placement under the sequencer lock so commit
 //! order equals sequence order — then advances chunk versions, queues
 //! render jobs and notifies `placed`/`place_failed` on the SSE stream.
@@ -16,8 +16,8 @@
 //! else retries with a poll-interval backoff up to
 //! [`MAX_INGEST_ATTEMPTS`], then fails permanently.
 
-use crate::error::{internal, AppError, AppResult};
-use crate::state::App;
+use crate::ctx::WorkerCtx;
+use iac_core::error::{internal, AppError, AppResult};
 use object_store::ObjectStoreExt;
 use serde_json::json;
 use sqlx::{Postgres, Row, Transaction};
@@ -179,7 +179,7 @@ pub fn is_permanent(err: &AppError) -> bool {
 /// `failed` + `place_failed` notify + cooldown refund; otherwise back to
 /// `pending` with a backoff.
 pub async fn fail_job(
-    app: &App,
+    ctx: &WorkerCtx,
     job: &IngestJob,
     err: &AppError,
     backoff_secs: f64,
@@ -201,7 +201,7 @@ pub async fn fail_job(
     .bind(MAX_INGEST_ATTEMPTS)
     .bind(backoff_secs)
     .bind(err.to_string())
-    .fetch_one(&app.pool)
+    .fetch_one(&ctx.pool)
     .await
     .map_err(internal)?;
     let attempts: i16 = row.get("attempts");
@@ -222,7 +222,7 @@ pub async fn fail_job(
             )
             .bind(account_id)
             .bind(job.created_at)
-            .execute(&app.pool)
+            .execute(&ctx.pool)
             .await
             .map_err(internal)?;
         }
@@ -238,7 +238,7 @@ pub async fn fail_job(
         .to_string();
         sqlx::query("SELECT pg_notify('events', $1)")
             .bind(&event)
-            .execute(&app.pool)
+            .execute(&ctx.pool)
             .await
             .map_err(internal)?;
     }
@@ -248,17 +248,17 @@ pub async fn fail_job(
 /// Execute one claimed job. Test seam: [`claim_due`] is exposed so tests
 /// drive claims deterministically without the spawned consumer.
 #[doc(hidden)]
-pub async fn execute_job(app: &App, job: IngestJob) -> AppResult<()> {
+pub async fn execute_job(ctx: &WorkerCtx, job: IngestJob) -> AppResult<()> {
     match job.kind.as_str() {
-        "removal" => run_removal_job(app, &job).await,
-        _ => run_place_job(app, &job).await,
+        "removal" => run_removal_job(ctx, &job).await,
+        _ => run_place_job(ctx, &job).await,
     }
 }
 
 /// Quarantine placement: pixel stage → content-addressed originals and
 /// derivative → record under the sequencer lock → advance chunks →
 /// queue render jobs → notify `placed`.
-async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
+async fn run_place_job(ctx: &WorkerCtx, job: &IngestJob) -> AppResult<()> {
     let quarantine_key = job
         .quarantine_key
         .clone()
@@ -266,7 +266,7 @@ async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
     let size = job
         .size
         .ok_or_else(|| AppError::BadRequest("job has no derivative size"))?;
-    let bytes = crate::store::get_bytes(&app.store, &quarantine_key)
+    let bytes = iac_core::store::get_bytes(&ctx.store, &quarantine_key)
         .await?
         .ok_or(AppError::NotFound)?;
 
@@ -275,13 +275,13 @@ async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
     // variant below) are properties of the upload: retrying cannot
     // succeed. The API's header read fixed the accepted rect; if libvips
     // disagrees with it, the job fails (docs "Upload flow").
-    let max_pixels = app.cfg.max_decode_pixels;
-    let pipeline = crate::place::process_original(
+    let max_pixels = ctx.cfg.max_decode_pixels;
+    let pipeline = crate::pixel::process_original(
         bytes,
         Some(size),
-        app.cfg.min_size,
-        app.cfg.max_size,
-        app.cfg.max_size,
+        ctx.cfg.min_size,
+        ctx.cfg.max_size,
+        ctx.cfg.max_size,
         max_pixels,
     )
     .await?;
@@ -291,12 +291,12 @@ async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
         ));
     }
 
-    let rect = crate::world::Rect::new(job.x, job.y, pipeline.w, pipeline.h);
-    let aabb = crate::world::rotated_aabb(rect.x, rect.y, rect.w, rect.h, job.rot);
+    let rect = iac_core::world::Rect::new(job.x, job.y, pipeline.w, pipeline.h);
+    let aabb = iac_core::world::rotated_aabb(rect.x, rect.y, rect.w, rect.h, job.rot);
     if aabb.x < 0
         || aabb.y < 0
-        || aabb.x + aabb.w > crate::world::WORLD_PX
-        || aabb.y + aabb.h > crate::world::WORLD_PX
+        || aabb.x + aabb.w > iac_core::world::WORLD_PX
+        || aabb.y + aabb.h > iac_core::world::WORLD_PX
     {
         return Err(AppError::BadRequest("rect out of world bounds"));
     }
@@ -308,8 +308,8 @@ async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
         pipeline.format.ext()
     );
     let image_key = format!("derivatives/{}.webp", pipeline.derivative_sha);
-    crate::store::put_if_absent(&app.store, &image_key, pipeline.derivative.clone()).await?;
-    crate::store::put_if_absent(&app.store, &original_key, pipeline.stripped.clone()).await?;
+    iac_core::store::put_if_absent(&ctx.store, &image_key, pipeline.derivative.clone()).await?;
+    iac_core::store::put_if_absent(&ctx.store, &original_key, pipeline.stripped.clone()).await?;
 
     let account_id = job
         .account_id
@@ -318,18 +318,18 @@ async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
     let chunk_keys = aabb.chunk_keys();
     let t0 = std::time::Instant::now();
 
-    let mut tx = app.pool.begin().await?;
+    let mut tx = ctx.pool.begin().await?;
     // Ordering doctrine (docs "Ordering"): the sequencer row lock is held
     // from the seq draw to commit, so commit order equals sequence order
     // and the render workers' incremental painting sees a consistent
     // world.
     crate::render_jobs::lock_sequencer(&mut tx).await?;
-    let seq: (i64,) = crate::dbq::timed(
+    let seq: (i64,) = iac_core::dbq::timed(
         "ingest",
         sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
     )
     .await?;
-    let duplicate_count: (i64,) = crate::dbq::timed(
+    let duplicate_count: (i64,) = iac_core::dbq::timed(
         "ingest",
         sqlx::query_as(
             "SELECT count(*) FROM placements
@@ -339,7 +339,7 @@ async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
         .fetch_one(&mut *tx),
     )
     .await?;
-    crate::dbq::timed(
+    iac_core::dbq::timed(
         "ingest",
         sqlx::query(
             "INSERT INTO placements
@@ -367,7 +367,7 @@ async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
         .execute(&mut *tx),
     )
     .await?;
-    crate::chunks::bump_chunk_seqs_pipeline(
+    iac_core::chunk_seqs::bump_chunk_seqs_pipeline(
         &mut tx,
         &[(seq.0, aabb.x, aabb.y, aabb.w as i32, aabb.h as i32)],
     )
@@ -410,22 +410,26 @@ async fn run_place_job(app: &App, job: &IngestJob) -> AppResult<()> {
     // Happy-path quarantine cleanup (doc step 3; the lifecycle rule only
     // backs this up for crashed consumers). Best-effort: the placement is
     // committed, so a failed delete must not fail the job.
-    if let Err(err) = app.store.delete(&crate::store::key(&quarantine_key)).await {
+    if let Err(err) = ctx
+        .store
+        .delete(&iac_core::store::key(&quarantine_key))
+        .await
+    {
         tracing::warn!(job = %job.id, %err, "quarantine cleanup failed");
     }
-    crate::metrics::ingest_done(t0.elapsed());
+    iac_core::metrics::ingest_done(t0.elapsed());
     Ok(())
 }
 
 /// Removal: wait-free apply once the placement exists. Already-removed
 /// targets resolve idempotently; the job's `placed` state mirrors the
 /// removal bump so GET /api/uploads/{id} reports completion either way.
-async fn run_removal_job(app: &App, job: &IngestJob) -> AppResult<()> {
+async fn run_removal_job(ctx: &WorkerCtx, job: &IngestJob) -> AppResult<()> {
     let placement_id = job
         .placement_id
         .ok_or_else(|| AppError::BadRequest("removal job has no placement"))?;
-    let mut tx = app.pool.begin().await?;
-    let peeked: Option<(i64, i64, i64, i64, f32)> = crate::dbq::timed(
+    let mut tx = ctx.pool.begin().await?;
+    let peeked: Option<(i64, i64, i64, i64, f32)> = iac_core::dbq::timed(
         "ingest",
         sqlx::query_as(
             "SELECT x, y, w::bigint, h::bigint, rot FROM placements
@@ -437,21 +441,21 @@ async fn run_removal_job(app: &App, job: &IngestJob) -> AppResult<()> {
     .await?;
     let (aabb_x, aabb_y, aabb_w, aabb_h, bump) = match peeked {
         Some((x, y, w, h, rot)) => {
-            let aabb = crate::world::rotated_aabb(x, y, w, h, rot);
+            let aabb = iac_core::world::rotated_aabb(x, y, w, h, rot);
             let chunk_keys = aabb.chunk_keys();
-            let bump: (i64,) = crate::dbq::timed(
+            let bump: (i64,) = iac_core::dbq::timed(
                 "ingest",
                 sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
             )
             .await?;
-            crate::dbq::timed(
+            iac_core::dbq::timed(
                 "ingest",
                 sqlx::query("UPDATE placements SET removed_at = now() WHERE id = $1")
                     .bind(placement_id)
                     .execute(&mut *tx),
             )
             .await?;
-            crate::chunks::bump_chunk_seqs_removal(&mut tx, bump.0, &chunk_keys).await?;
+            iac_core::chunk_seqs::bump_chunk_seqs_removal(&mut tx, bump.0, &chunk_keys).await?;
             crate::render_jobs::enqueue_chunks(&mut tx, &chunk_keys).await?;
             sqlx::query("SELECT pg_notify('events', $1)")
                 .bind(
@@ -470,7 +474,7 @@ async fn run_removal_job(app: &App, job: &IngestJob) -> AppResult<()> {
         // Nothing live to remove (already removed, or the placement never
         // landed because its place job failed): the removal is complete.
         None => {
-            let bump: (i64,) = crate::dbq::timed(
+            let bump: (i64,) = iac_core::dbq::timed(
                 "ingest",
                 sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),
             )
@@ -543,8 +547,8 @@ pub async fn status_json(pool: &sqlx::PgPool, id: Uuid) -> AppResult<Option<serd
 /// only when the ingest pipeline is enabled. One task per process, at
 /// most one pixel stage at a time (mirrors the request path's libvips
 /// serialization); claims are SKIP LOCKED for horizontal scale.
-pub fn spawn_consumer(app: &App) {
-    let app = app.clone();
+pub fn spawn_consumer(ctx: &WorkerCtx) {
+    let app = std::sync::Arc::new(ctx.clone());
     tokio::spawn(async move {
         loop {
             if let Ok(rows) = sqlx::query_as::<_, (String, i64)>(
@@ -559,7 +563,7 @@ pub fn spawn_consumer(app: &App) {
                         .map(|(_, n)| *n)
                         .unwrap_or(0)
                 };
-                crate::metrics::ingest_jobs_queue(
+                iac_core::metrics::ingest_jobs_queue(
                     get("pending"),
                     get("running"),
                     get("placed"),

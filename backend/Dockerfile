@@ -44,7 +44,7 @@ COPY crates ./crates
 COPY migrations ./migrations
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --bin backend -p iac-api
+    cargo build --release --bin backend -p iac-api --bin backend-worker
 
 FROM debian:trixie-slim AS runtime
 RUN apt-get update \
@@ -55,6 +55,7 @@ RUN apt-get update \
     && useradd --system --create-home --shell /usr/sbin/nologin idol
 WORKDIR /app
 COPY --from=builder /app/target/release/backend /usr/local/bin/backend
+COPY --from=builder /app/target/release/backend-worker /usr/local/bin/backend-worker
 ENV LISTEN_ADDR=0.0.0.0:8080
 # STATIC_DIR is optional (dev convenience); when unset or missing the
 # server serves a tiny JSON at / instead of the SPA.

@@ -12,7 +12,7 @@
 //!   arrayjoin (background empty vec, hspacing/vspacing 1) — always set
 //!   explicit backgrounds and zero spacing.
 
-use crate::error::{internal, AppError};
+use iac_core::error::{internal, AppError};
 use libvips::ops;
 pub use libvips::VipsImage;
 
@@ -379,7 +379,7 @@ pub fn rotate_centered(img: &VipsImage, rot: f32) -> Result<VipsImage, AppError>
         // vips_copy makes a properly referenced alias node.
         return Ok(ops::copy(img)?);
     }
-    let aabb = crate::world::rotated_aabb(
+    let aabb = iac_core::world::rotated_aabb(
         0,
         0,
         i64::from(img.get_width()),
@@ -532,7 +532,7 @@ pub fn tile_from_chunk(
     let top = i32::try_from(top).map_err(|_| internal("tile top out of range"))?;
     let src = i32::try_from(src_size).map_err(|_| internal("tile size out of range"))?;
     let crop = ops::extract_area(chunk, left, top, src, src)?;
-    let scale = f64::from(crate::world::TILE_PX as i32) / f64::from(src);
+    let scale = f64::from(iac_core::world::TILE_PX as i32) / f64::from(src);
     let img = if (scale - 1.0).abs() < f64::EPSILON {
         crop
     } else {
@@ -711,7 +711,7 @@ pub fn composite_chunks(
     overlay: &[u8],
     targets: &[(i64, i64)],
     rot: f32,
-) -> crate::error::AppResult<Vec<Vec<u8>>> {
+) -> iac_core::error::AppResult<Vec<Vec<u8>>> {
     let _vips = VIPS.lock();
     let (ov, _) = decode(overlay, DEFAULT_MAX_DECODE_PIXELS)?;
     // WebP sources decode to sequential-access lazy images; embedding or
@@ -744,7 +744,7 @@ pub fn composite_chunks(
         out.push(
             webp_bytes(&composed, 90)
                 .map_err(|e| anyhow::anyhow!("chunk webp encode: {e}"))
-                .map_err(crate::error::AppError::from)?,
+                .map_err(iac_core::error::AppError::from)?,
         );
     }
     Ok(out)
@@ -757,7 +757,7 @@ fn embed_rect(
     y: i32,
     w: i32,
     h: i32,
-) -> crate::error::AppResult<VipsImage> {
+) -> iac_core::error::AppResult<VipsImage> {
     // Background length must match the overlay's band count.
     let bg = vec![0.0; overlay.get_bands().max(1) as usize];
     Ok(ops::embed_with_opts(
@@ -787,7 +787,7 @@ const TILE_EDGE: i64 = 256;
 pub fn replay_canvas<C: AsRef<[u8]>, T: AsRef<[u8]>>(
     canvas: Option<C>,
     overlays: &[(T, i64, i64, f32)],
-) -> crate::error::AppResult<Vec<u8>> {
+) -> iac_core::error::AppResult<Vec<u8>> {
     let _vips = VIPS.lock();
     let mut canvas = match &canvas {
         Some(bytes) => Some(VipsImage::new_from_buffer(bytes.as_ref(), "")?),
@@ -820,11 +820,11 @@ pub fn replay_canvas<C: AsRef<[u8]>, T: AsRef<[u8]>>(
 
 /// A member overlay placement inside one chunk: index into the group's
 /// overlay table + the chunk-local AABB top-left (paint order).
-pub(crate) type OverlayPlacement = (usize, i64, i64);
+pub type OverlayPlacement = (usize, i64, i64);
 
 /// One chunk pass: chunk coords, current raster bytes (None = virgin),
 /// members in paint order.
-pub(crate) type ChunkPaint = (i64, i64, Option<Vec<u8>>, Vec<OverlayPlacement>);
+pub type ChunkPaint = (i64, i64, Option<Vec<u8>>, Vec<OverlayPlacement>);
 
 /// Composite a whole chunk-group in ONE vips section with a bounded
 /// decoded-overlay cache: each unique overlay is decoded + rotated once
@@ -842,7 +842,7 @@ pub fn composite_group<T: AsRef<[u8]>>(
     overlays: &[(T, f32)],
     chunks: &[ChunkPaint],
     decoded_budget_bytes: u64,
-) -> crate::error::AppResult<Vec<Vec<u8>>> {
+) -> iac_core::error::AppResult<Vec<Vec<u8>>> {
     let _vips = VIPS.lock();
     let mut cache: HashMap<usize, VipsImage> = HashMap::new();
     let mut cache_bytes = 0u64;
@@ -890,7 +890,7 @@ pub fn composite_group<T: AsRef<[u8]>>(
         out.push(
             webp_bytes(&composed, 90)
                 .map_err(|e| anyhow::anyhow!("chunk webp encode: {e}"))
-                .map_err(crate::error::AppError::from)?,
+                .map_err(iac_core::error::AppError::from)?,
         );
     }
     Ok(out)
@@ -902,7 +902,7 @@ pub fn render_leaf_tile(
     offset_x: i64,
     offset_y: i64,
     native_size: i64,
-) -> crate::error::AppResult<Vec<u8>> {
+) -> iac_core::error::AppResult<Vec<u8>> {
     let _vips = VIPS.lock();
     let chunk = match chunk {
         Some(bytes) => {
@@ -919,7 +919,7 @@ pub fn render_leaf_tile(
 }
 
 /// The constant empty tile: pure paper, 256×256 webp.
-pub fn empty_tile_256() -> crate::error::AppResult<Vec<u8>> {
+pub fn empty_tile_256() -> iac_core::error::AppResult<Vec<u8>> {
     let _vips = VIPS.lock();
     let blank = blank_chunk(TILE_EDGE as i32)?;
     let flat = flatten_paper(blank)?;
@@ -927,7 +927,7 @@ pub fn empty_tile_256() -> crate::error::AppResult<Vec<u8>> {
 }
 
 /// Render a parent tile from its four encoded child tiles (2×2, row-major).
-pub fn render_parent_tile(children: &[Vec<u8>; 4]) -> crate::error::AppResult<Vec<u8>> {
+pub fn render_parent_tile(children: &[Vec<u8>; 4]) -> iac_core::error::AppResult<Vec<u8>> {
     let _vips = VIPS.lock();
     let imgs: [VipsImage; 4] = core::array::from_fn(|i| {
         VipsImage::new_from_buffer(&children[i], "").expect("child tile decodes")
@@ -1350,7 +1350,7 @@ mod rot_tests {
         let src = VipsImage::new_from_buffer(&test_png(100, 100), "").unwrap();
         for rot in [7.5f32, 45.0, 179.0, 359.0] {
             let out = rotate_centered(&src, rot).unwrap();
-            let aabb = crate::world::rotated_aabb(0, 0, 100, 100, rot);
+            let aabb = iac_core::world::rotated_aabb(0, 0, 100, 100, rot);
             assert_eq!(
                 (out.get_width(), out.get_height()),
                 (aabb.w as i32, aabb.h as i32),

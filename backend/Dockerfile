@@ -44,7 +44,7 @@ COPY crates ./crates
 COPY migrations ./migrations
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --bin backend -p iac-api --bin backend-worker
+    cargo build --release -p iac-api --bin backend -p iac-worker --bin backend-worker
 
 FROM debian:trixie-slim AS runtime
 RUN apt-get update \

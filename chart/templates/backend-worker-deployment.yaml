@@ -34,6 +34,10 @@ spec:
       annotations:
         idol-appreciation.club/release-tag: {{ .Values.images.backend.tag | quote }}
     spec:
+      {{- with .Values.backend.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: 30
       securityContext:
         seccompProfile:

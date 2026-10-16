@@ -27,6 +27,8 @@ import {
   positionGhost,
   setGhostImage,
   type GhostState,
+  renderPendingMarkers,
+  type PendingMarker,
 } from "./ghost";
 import type { Placement } from "./api";
 
@@ -57,6 +59,8 @@ export interface WorldMapController {
   refreshTileKeys(keys: string[]): void;
   pulse(bbox: BBox): void;
   setGhost(ghost: GhostImage | null): void;
+  /** The 202-accepted uploads' preview markers (re-rendered per zoom). */
+  setPendingMarkers(markers: PendingMarker[]): void;
   setPlacing(placing: boolean): void;
   currentZoom(): number;
   worldToScreenPoint(x: number, y: number): { x: number; y: number };
@@ -129,16 +133,18 @@ interface MapInternals {
   ghost: GhostState;
   callbacks: MapCallbacks;
   highlight: { current: L.Marker | null; placement: Placement | null };
+  pending: { markers: PendingMarker[]; layer: L.LayerGroup | null };
 }
 
 function wireMapEvents(internal: MapInternals): void {
-  const { map, ghost, callbacks, highlight } = internal;
+  const { map, ghost, callbacks, highlight, pending } = internal;
   map.on("zoomend", () => {
-    // The rotated highlight is sized in screen px — re-render it at the new
-    // scale while its popup is open.
+    // The rotated highlight and the pending markers are sized in
+    // screen px — re-render them at the new scale.
     if (highlight.placement !== null) {
       showHighlight(map, highlight);
     }
+    renderPendingMarkers(map, pending);
   });
   const longPress = wireLongPress(internal.container, map, callbacks);
   map.on("click", (event: L.LeafletMouseEvent) => {
@@ -311,6 +317,7 @@ export function createWorldMap(
     callbacks,
     ghost: makeGhostState(),
     highlight: { current: null, placement: null },
+    pending: { markers: [], layer: null },
   };
   wireMapEvents(internal);
   const { ghost, highlight } = internal;
@@ -335,6 +342,11 @@ export function createWorldMap(
 
     setGhost(next: GhostImage | null): void {
       setGhostImage(map, container, ghost, next);
+    },
+
+    setPendingMarkers(markers: PendingMarker[]): void {
+      internal.pending.markers = markers;
+      renderPendingMarkers(map, internal.pending);
     },
 
     setPlacing(placing: boolean): void {

@@ -7,6 +7,7 @@ import type {
   PlacedPlacement,
   TagList,
 } from "./api";
+import type { PlaceFailedEvent, PlacedEvent } from "@contract";
 import type { Toast } from "./toasts";
 
 /** idle: nothing happening; panel: preview ready; choose: picking a spot. */
@@ -21,8 +22,30 @@ export interface PreparedImage {
 }
 
 export type PlaceAttempt =
-  | { ok: true; placement: PlacedPlacement }
+  | {
+      ok: true;
+      placement: PlacedPlacement;
+      /** True when the placement is only ACCEPTED (202 quarantine era):
+       * it is not recorded yet; the pending marker carries the visual
+       * and callers must not pulse/confetti at the spot. */
+      pending?: boolean;
+    }
   | { ok: false };
+
+/** A 202-accepted upload the client is still waiting to see recorded.
+ * The marker shows the user's own preview at the accepted AABB until
+ * the `placed`/`place_failed` event (or the status poll) resolves it. */
+export interface PendingUpload {
+  /** The upload id from the 202 (= the eventual placement id). */
+  readonly jobId: string;
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly rot: number;
+  /** Borrowed object URL — owned by this entry until resolution. */
+  readonly previewUrl: string;
+}
 
 export interface AppStore {
   readonly me: Me | null;
@@ -107,6 +130,12 @@ export interface AppStore {
   get digTotal(): number;
   /** Which stratum the panel shows (0-based; -1 = not in the pile). */
   get digIndex(): number;
+  /** SSE dispatch target for the place flow: resolves the waiter that
+   * confirmAt parked on the 202 acceptance's job id (placed → its
+   * event; place_failed → null plus the error toast). */
+  resolvePlacementEvent(event: PlacedEvent | PlaceFailedEvent): void;
+  /** 202-accepted uploads not yet recorded, oldest first. */
+  get pendingUploads(): PendingUpload[];
 }
 
 export interface AppStoreDeps {
@@ -115,4 +144,8 @@ export interface AppStoreDeps {
   revokeObjectUrl?: (url: string) => void;
   toastMs?: number;
   errorToastMs?: number;
+  /** A pending upload resolved: `placed` carries the worker's event
+   * (bbox/seq for the pulse); null means failed or the wait budget ran
+   * out — the marker is gone either way. Wired to map effects in App. */
+  onUploadResolved?: (jobId: string, placed: PlacedEvent | null) => void;
 }

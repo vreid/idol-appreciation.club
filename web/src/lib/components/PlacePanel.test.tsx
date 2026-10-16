@@ -20,15 +20,19 @@ function makeClient(): ApiClient {
     me: vi.fn(() => Promise.resolve(null)),
     place: vi.fn(() =>
       Promise.resolve({
-        id: "p",
-        x: 0,
-        y: 0,
-        w: 16,
-        h: 16,
-        rot: 0,
-        seq: 1,
+        era: "quarantine" as const,
+        accepted: {
+          id: "job-1",
+          state: "pending" as const,
+          x: 0,
+          y: 0,
+          w: 1,
+          h: 1,
+          rot: 0,
+        },
       }),
     ),
+    uploadStatus: vi.fn(() => Promise.resolve(null)),
     near: vi.fn(() => Promise.resolve([])),
     center: vi.fn(() => Promise.resolve({ current: null, all_time: [] })),
     report: vi.fn(() => Promise.resolve()),
@@ -116,7 +120,16 @@ describe("PlacePanel", () => {
     expect(screen.queryByText(/🎯 Choose spot/u)).toBeNull();
 
     fireEvent.click(screen.getByText(/Place at pinned spot/u));
+    // The 202 flow settles on the ingest worker's `placed` event.
     await vi.waitFor(() => {
+      store.resolvePlacementEvent({
+        type: "placed",
+        id: "job-1",
+        job: "job-1",
+        seq: 1,
+        bbox: [0, 0, 1, 1],
+        duplicate_count: 0,
+      });
       expect(store.pendingSpot).toBeNull();
     });
     expect(store.placeMode).toBe("idle");

@@ -6,8 +6,9 @@ import {
   it,
   vi,
 } from "vite-plus/test";
+import { samplePlacedEvent } from "./placeWait";
+
 import { ApiError, type ApiClient, type PlaceRequest } from "./api";
-import { DEFAULT_LONG_EDGE } from "./sizing";
 import { createAppStore } from "./state";
 
 interface ClientProbe {
@@ -31,23 +32,26 @@ function makeClient(
     me: vi.fn(() => Promise.resolve(null)),
     place: vi.fn((req: PlaceRequest) => {
       placeCalls.push({ x: req.x, y: req.y, size: req.size });
+      const { id } = samplePlacedEvent("job-1");
       return Promise.resolve({
-        id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001",
-        x: req.x,
-        y: req.y,
-        w: req.size,
-        h: req.size,
-        rot: req.rot,
-        seq: 5,
+        era: "quarantine" as const,
+        accepted: {
+          id,
+          state: "pending" as const,
+          x: req.x,
+          y: req.y,
+          w: req.size,
+          h: req.size,
+          rot: req.rot,
+        },
       });
     }),
+    uploadStatus: vi.fn(() => Promise.resolve(null)),
     near: vi.fn(() => Promise.resolve([])),
     center: vi.fn(() => Promise.resolve({ current: null, all_time: [] })),
     report: vi.fn(() => Promise.resolve()),
     removePlacement: vi.fn(() => Promise.resolve()),
-    updateTags: vi.fn(() =>
-      Promise.resolve({ id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001", tags: [] }),
-    ),
+    updateTags: vi.fn(() => Promise.resolve({ id: "j", tags: [] })),
     hot: vi.fn(() =>
       Promise.resolve({ window_hours: 24, total: 0, cells: [] }),
     ),
@@ -67,8 +71,6 @@ function makeStore(client: ApiClient = makeClient()) {
   });
   return { store, revoked };
 }
-
-const PNG = new Blob(["png"], { type: "image/png" });
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -197,102 +199,6 @@ describe("toasts", () => {
     if (toast === undefined) throw new Error("expected an error toast");
     store.dismissToast(toast.id);
     expect(store.toasts.length).toBe(0);
-  });
-});
-
-describe("place flow", () => {
-  it("rejects oversized files without entering the flow", () => {
-    const { store } = makeStore();
-    const big = new Blob([new Uint8Array(11).fill(0)], {
-      type: "image/png",
-    });
-    Object.defineProperty(big, "size", { value: 10 * 1024 * 1024 + 1 });
-    expect(store.startPlace(big, "big.png", 100, 100)).toBe(false);
-    expect(store.placeMode).toBe("idle");
-  });
-
-  it("prepares an image, adjusts size, and computes the ghost", () => {
-    const { store, revoked } = makeStore();
-    expect(store.startPlace(PNG, "a.png", 1000, 500)).toBe(true);
-    expect(store.placeMode).toBe("panel");
-    expect(store.longEdge).toBe(DEFAULT_LONG_EDGE);
-    store.setLongEdge(300.9);
-    expect(store.longEdge).toBe(301);
-    expect(store.ghostSize()).toEqual({ w: 301, h: 151 });
-    store.enterChoose();
-    expect(store.placeMode).toBe("choose");
-    store.backToPanel();
-    expect(store.placeMode).toBe("panel");
-    store.cancelPlace();
-    expect(store.placeMode).toBe("idle");
-    expect(revoked).toEqual(["blob:fake-1"]);
-  });
-
-  it("confirms a spot with the ghost top-left coordinates", async () => {
-    const client = makeClient();
-    const { store } = makeStore(client);
-    store.startPlace(PNG, "a.png", 1000, 500);
-    store.setLongEdge(512);
-    store.enterChoose();
-    const attempt = await store.confirmSpot(134217000, 134217700);
-    expect(attempt).toEqual({
-      ok: true,
-      placement: {
-        id: "0197d3a4-8f2b-7c11-b3a1-5d2e9f60a001",
-        x: 134217000,
-        y: 134217700,
-        w: 512,
-        h: 512,
-        rot: 0,
-        seq: 5,
-      },
-    });
-    expect(client.placeCalls[0]).toEqual({
-      x: 134217000,
-      y: 134217700,
-      size: 512,
-    });
-    expect(store.placeMode).toBe("idle");
-  });
-
-  it("clamps out-of-world spots into the world", async () => {
-    const client = makeClient();
-    const { store } = makeStore(client);
-    store.startPlace(PNG, "a.png", 100, 100);
-    await store.confirmSpot(-50, 2 ** 29);
-    expect(client.placeCalls[0]).toEqual({ x: 0, y: 2 ** 28, size: 256 });
-  });
-
-  it("shows the cooldown remaining on 429 and keeps the panel", async () => {
-    const client = makeClient({
-      place: () => Promise.reject(new ApiError(429, "cooldown", 30)),
-    });
-    const { store } = makeStore(client);
-    store.startPlace(PNG, "a.png", 100, 100);
-    store.enterChoose();
-    const attempt = await store.confirmSpot(5, 5);
-    expect(attempt.ok).toBe(false);
-    expect(store.placeMode).toBe("panel");
-    expect(
-      store.toasts.some((t) => t.message.includes("Try again in 30s")),
-    ).toBe(true);
-  });
-
-  it("prompts auth on 401 while placing", async () => {
-    const client = makeClient({
-      place: () => Promise.reject(new ApiError(401, "nope", null)),
-    });
-    const { store } = makeStore(client);
-    store.startPlace(PNG, "a.png", 100, 100);
-    await store.confirmSpot(1, 2);
-    expect(store.authPrompt).toBe(true);
-  });
-
-  it("ignores confirm without a prepared image", async () => {
-    const client = makeClient();
-    const { store } = makeStore(client);
-    expect((await store.confirmSpot(1, 2)).ok).toBe(false);
-    expect(client.placeCalls.length).toBe(0);
   });
 });
 

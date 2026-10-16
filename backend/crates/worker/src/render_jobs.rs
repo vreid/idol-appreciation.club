@@ -38,10 +38,10 @@
 //! e.g. a batch import), forcing a from-blank rebuild whose paint order
 //! is the manifest order.
 
-use crate::error::{internal, AppResult};
+use crate::ctx::WorkerCtx;
 use crate::img;
-use crate::state::App;
-use crate::world::{
+use iac_core::error::{internal, AppResult};
+use iac_core::world::{
     chunk_key, tile_key, tile_native_size, tile_offset_in_chunk, BASE_Z, CHUNK_PX, MAX_Z,
 };
 use sqlx::{Postgres, Transaction};
@@ -68,7 +68,7 @@ const CHUNK_DECODE_BUDGET: u64 = 256 << 20;
 /// Hold from the `nextval('placement_seq')` draw to commit in every
 /// pipeline-on place transaction. Released automatically at commit.
 pub async fn lock_sequencer(tx: &mut Transaction<'_, Postgres>) -> AppResult<()> {
-    crate::dbq::timed(
+    iac_core::dbq::timed(
         "render_jobs",
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(SEQUENCER_LOCK_KEY)
@@ -115,7 +115,7 @@ pub async fn mark_dirty(
         ys.push(*y as i32);
         delays.push(*delay_ms as f64 / 1000.0);
     }
-    crate::dbq::timed(
+    iac_core::dbq::timed(
         "render_jobs",
         sqlx::query(
             "INSERT INTO render_jobs (z, x, y, not_before)
@@ -164,7 +164,7 @@ pub async fn enqueue_chunks(
 /// (`FOR UPDATE SKIP LOCKED`); the claim increments `attempts`.
 #[doc(hidden)]
 pub async fn claim_due(pool: &sqlx::PgPool, lease_secs: i64) -> AppResult<Option<(i64, i64, i64)>> {
-    let row: Option<(i16, i32, i32)> = crate::dbq::timed(
+    let row: Option<(i16, i32, i32)> = iac_core::dbq::timed(
         "render_jobs",
         sqlx::query_as(
             "WITH picked AS (
@@ -200,7 +200,7 @@ pub async fn fail_job(
     y: i64,
     retry_delay_secs: f64,
 ) -> AppResult<()> {
-    crate::dbq::timed(
+    iac_core::dbq::timed(
         "render_jobs",
         sqlx::query(
             "UPDATE render_jobs SET
@@ -244,8 +244,8 @@ async fn pause_for_tests() {
 /// pipeline is enabled. One task per process: at most one job at a time,
 /// mirroring the request path's libvips serialization; horizontal scale
 /// comes from more worker processes (claims are SKIP LOCKED).
-pub fn spawn_worker(app: &App) {
-    let app = app.clone();
+pub fn spawn_worker(ctx: &WorkerCtx) {
+    let app = std::sync::Arc::new(ctx.clone());
     tokio::spawn(async move {
         loop {
             // Queue-depth gauges for the cutover watch (one cheap
@@ -263,7 +263,7 @@ pub fn spawn_worker(app: &App) {
                         .map(|(_, n)| *n)
                         .unwrap_or(0)
                 };
-                crate::metrics::render_jobs_queue(get("pending"), get("running"), get("failed"));
+                iac_core::metrics::render_jobs_queue(get("pending"), get("running"), get("failed"));
             }
             let claimed = match claim_due(&app.pool, app.cfg.render_pipeline_lease_secs).await {
                 Ok(Some((z, x, y))) => {
@@ -315,10 +315,10 @@ pub fn spawn_worker(app: &App) {
 /// Execute one claimed job. Test seam ([`claim_due`] is exposed so tests
 /// can drive claims deterministically without the spawned worker).
 #[doc(hidden)]
-pub async fn execute_job(app: &App, z: i64, x: i64, y: i64) -> AppResult<()> {
+pub async fn execute_job(ctx: &WorkerCtx, z: i64, x: i64, y: i64) -> AppResult<()> {
     match z {
-        BASE_Z => run_chunk_job(app, x, y).await,
-        _ => run_parent_job(app, z, x, y).await,
+        BASE_Z => run_chunk_job(ctx, x, y).await,
+        _ => run_parent_job(ctx, z, x, y).await,
     }
 }
 
@@ -329,9 +329,9 @@ pub async fn execute_job(app: &App, z: i64, x: i64, y: i64) -> AppResult<()> {
 /// (or, on `needs_rebuild`, EVERY live placement from blank — the
 /// removal fix) in sequence order; tiles are cut from the raster already
 /// in memory.
-async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
+async fn run_chunk_job(ctx: &WorkerCtx, cx: i64, cy: i64) -> AppResult<()> {
     pause_for_tests().await;
-    let (max_seq, painted, rebuild_flag): (i64, i64, bool) = crate::dbq::timed(
+    let (max_seq, painted, rebuild_flag): (i64, i64, bool) = iac_core::dbq::timed(
         "render_jobs",
         sqlx::query_as(
             "SELECT max_seq, painted_seq, needs_rebuild
@@ -339,7 +339,7 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
         )
         .bind(cx)
         .bind(cy)
-        .fetch_optional(&app.pool),
+        .fetch_optional(&ctx.pool),
     )
     .await?
     .unwrap_or((0, 0, false));
@@ -350,7 +350,7 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
     let basis = if rebuild_flag {
         None
     } else {
-        crate::store::get_bytes(&app.store, &chunk_key(cx, cy)).await?
+        iac_core::store::get_bytes(&ctx.store, &chunk_key(cx, cy)).await?
     };
     let rebuild = rebuild_flag || (basis.is_none() && painted > 0);
 
@@ -358,7 +358,7 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
     let (qx1, qy1) = (qx0 + CHUNK_PX - 1, qy0 + CHUNK_PX - 1);
     // Incremental: only placements NEWER than what the raster shows.
     // Rebuild: every live placement, in seq order.
-    let rows: Vec<(String, i64, i64, i32, i32, f32, i64)> = crate::dbq::timed(
+    let rows: Vec<(String, i64, i64, i32, i32, f32, i64)> = iac_core::dbq::timed(
         "tile_rows",
         sqlx::query_as(
             "SELECT image_key, x, y, w, h, rot, seq FROM placements
@@ -374,7 +374,7 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
         .bind(qy1)
         .bind(rebuild)
         .bind(painted)
-        .fetch_all(&app.pool),
+        .fetch_all(&ctx.pool),
     )
     .await?;
 
@@ -386,13 +386,13 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
     let mut overlays: Vec<(Vec<u8>, f32)> = Vec::with_capacity(rows.len());
     let mut members: Vec<img::OverlayPlacement> = Vec::with_capacity(rows.len());
     for (image_key, px, py, w, h, rot, seq) in rows {
-        let Some(bytes) = crate::store::get_bytes(&app.store, &image_key).await? else {
+        let Some(bytes) = iac_core::store::get_bytes(&ctx.store, &image_key).await? else {
             tracing::warn!(key = %image_key, "derivative missing during chunk paint");
             continue;
         };
         // The stored x/y are the UNROTATED rect's top-left; the painted
         // bitmap is the rotated AABB, offset from the chunk corner.
-        let aabb = crate::world::rotated_aabb(px, py, i64::from(w), i64::from(h), rot);
+        let aabb = iac_core::world::rotated_aabb(px, py, i64::from(w), i64::from(h), rot);
         members.push((overlays.len(), aabb.x - qx0, aabb.y - qy0));
         overlays.push((bytes, rot));
         v = v.max(seq);
@@ -406,13 +406,13 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
             // basis (incremental pass with nothing new — only reachable
             // on a rebuild-flagged chunk).
             let empty: [(Vec<u8>, i64, i64, f32); 0] = [];
-            crate::telemetry::blocking(move || img::replay_canvas(canvas, &empty))
+            iac_core::telemetry::blocking(move || img::replay_canvas(canvas, &empty))
                 .await
                 .map_err(internal)?
                 .map_err(internal)?
         } else {
             let chunks = vec![(cx, cy, canvas, members)];
-            let encoded = crate::telemetry::blocking(move || {
+            let encoded = iac_core::telemetry::blocking(move || {
                 img::composite_group(&overlays, &chunks, CHUNK_DECODE_BUDGET)
             })
             .await
@@ -425,7 +425,7 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
 
         // Chunk raster first, then its 21 tiles (z 18–20) cut from the
         // bytes already in memory, then the versioned bookkeeping.
-        crate::store::put(&app.store, &chunk_key(cx, cy), encoded.clone()).await?;
+        iac_core::store::put(&ctx.store, &chunk_key(cx, cy), encoded.clone()).await?;
         let mut tile_zs = Vec::with_capacity(21);
         let mut tile_xs = Vec::with_capacity(21);
         let mut tile_ys = Vec::with_capacity(21);
@@ -437,12 +437,12 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
                     let (ox, oy) = tile_offset_in_chunk(z, tx, ty);
                     let native = tile_native_size(z);
                     let bytes = encoded.clone();
-                    let tile = crate::telemetry::blocking(move || {
+                    let tile = iac_core::telemetry::blocking(move || {
                         img::render_leaf_tile(Some(bytes), ox, oy, native)
                     })
                     .await
                     .map_err(internal)??;
-                    crate::store::put(&app.store, &tile_key(z, tx, ty), tile).await?;
+                    iac_core::store::put(&ctx.store, &tile_key(z, tx, ty), tile).await?;
                     tile_zs.push(z as i16);
                     tile_xs.push(tx as i32);
                     tile_ys.push(ty as i32);
@@ -452,7 +452,7 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
         // A chunk job's own rerun requeue never waits (delay 0); the z 17
         // parent marks with its zoom's delay inside finish_chunk.
         finish_chunk(
-            app,
+            ctx,
             cx,
             cy,
             v,
@@ -466,7 +466,7 @@ async fn run_chunk_job(app: &App, cx: i64, cy: i64) -> AppResult<()> {
     } else {
         // Nothing new to paint (painted already == max_seq): bookkeeping
         // only — the parent may still need the bump notification.
-        finish_chunk(app, cx, cy, painted, false, false, &[], &[], &[]).await
+        finish_chunk(ctx, cx, cy, painted, false, false, &[], &[], &[]).await
     }
 }
 
@@ -502,12 +502,12 @@ async fn queue_version_event(
     let tiles: Vec<serde_json::Value> = written
         .iter()
         .map(|(z, x, y)| {
-            crate::versions::note(*z, *x, *y, v);
+            iac_core::versions_note::notify(*z, *x, *y, v);
             serde_json::json!({ "key": format!("{z}/{x}/{y}"), "version": v })
         })
         .collect();
     let payload = serde_json::json!({ "type": "versions", "tiles": tiles }).to_string();
-    crate::dbq::timed(
+    iac_core::dbq::timed(
         "render_jobs",
         sqlx::query("SELECT pg_notify('events', $1)")
             .bind(payload)
@@ -519,7 +519,7 @@ async fn queue_version_event(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn finish_chunk(
-    app: &App,
+    ctx: &WorkerCtx,
     cx: i64,
     cy: i64,
     v: i64,
@@ -529,10 +529,10 @@ pub async fn finish_chunk(
     tile_xs: &[i32],
     tile_ys: &[i32],
 ) -> AppResult<()> {
-    let mut tx = app.pool.begin().await.map_err(internal)?;
+    let mut tx = ctx.pool.begin().await.map_err(internal)?;
     if advance && !tile_zs.is_empty() {
         // Tiles-table staleness rows for the cut tiles: monotone.
-        crate::dbq::timed(
+        iac_core::dbq::timed(
             "render_jobs",
             sqlx::query(
                 "INSERT INTO tiles (z, x, y, seq)
@@ -557,7 +557,7 @@ pub async fn finish_chunk(
         queue_version_event(&mut tx, &written, v).await?;
     }
     // 1. A change arrived while the job ran: re-queue, never abort.
-    let requeued: Option<(i32,)> = crate::dbq::timed(
+    let requeued: Option<(i32,)> = iac_core::dbq::timed(
         "render_jobs",
         sqlx::query_as(
             "UPDATE render_jobs
@@ -581,7 +581,7 @@ pub async fn finish_chunk(
         // conditions are independent: a rebuild whose painted value is
         // superseded still consumed its flag, so a lost version race can
         // never hot-loop the chunk.
-        let row: Option<(bool,)> = crate::dbq::timed(
+        let row: Option<(bool,)> = iac_core::dbq::timed(
             "render_jobs",
             sqlx::query_as(
                 "UPDATE chunk_seqs
@@ -608,7 +608,7 @@ pub async fn finish_chunk(
         if !guard_ok {
             // 3. Superseded or re-flagged mid-job: re-queue; the next
             // pass is a cheap catch-up (or the demanded rebuild).
-            crate::dbq::timed(
+            iac_core::dbq::timed(
                 "render_jobs",
                 sqlx::query(
                     "UPDATE render_jobs
@@ -628,7 +628,7 @@ pub async fn finish_chunk(
         // 4. Success: delete — unless a change arrived meanwhile
         // (mark_dirty between our claim and here set rerun on the
         // still-running row), then re-queue.
-        let deleted = crate::dbq::timed(
+        let deleted = iac_core::dbq::timed(
             "render_jobs",
             sqlx::query_as::<_, (i64,)>(
                 "DELETE FROM render_jobs
@@ -643,7 +643,7 @@ pub async fn finish_chunk(
         )
         .await?;
         if deleted.is_none() {
-            crate::dbq::timed(
+            iac_core::dbq::timed(
                 "render_jobs",
                 sqlx::query(
                     "UPDATE render_jobs
@@ -669,9 +669,9 @@ pub async fn finish_chunk(
             cx.div_euclid(2),
             cy.div_euclid(2),
             job_delay_ms(
-                app.cfg.render_pipeline_parent_low_ms,
-                app.cfg.render_pipeline_parent_spread_ms,
-                app.cfg.render_pipeline_parent_quiet_ms,
+                ctx.cfg.render_pipeline_parent_low_ms,
+                ctx.cfg.render_pipeline_parent_spread_ms,
+                ctx.cfg.render_pipeline_parent_quiet_ms,
                 BASE_Z - 1,
                 cx.div_euclid(2),
                 cy.div_euclid(2),
@@ -690,22 +690,22 @@ pub async fn finish_chunk(
 /// claimed first (deeper zooms win) and delay longer, so their bytes are
 /// expected to exist; a missing child means a deeper job is still pending
 /// or failed — the error path retries, then parks the row failed.
-async fn run_parent_job(app: &App, z: i64, x: i64, y: i64) -> AppResult<()> {
+async fn run_parent_job(ctx: &WorkerCtx, z: i64, x: i64, y: i64) -> AppResult<()> {
     pause_for_tests().await;
     let mut kids: Vec<Vec<u8>> = Vec::with_capacity(4);
     let mut v = 0i64;
     for (dx, dy) in [(0i64, 0i64), (1, 0), (0, 1), (1, 1)] {
         let (cx, cy) = (2 * x + dx, 2 * y + dy);
-        let seq: Option<(i64,)> = crate::dbq::timed(
+        let seq: Option<(i64,)> = iac_core::dbq::timed(
             "render_jobs",
             sqlx::query_as("SELECT seq FROM tiles WHERE z = $1 AND x = $2 AND y = $3")
                 .bind((z + 1) as i16)
                 .bind(cx as i32)
                 .bind(cy as i32)
-                .fetch_optional(&app.pool),
+                .fetch_optional(&ctx.pool),
         )
         .await?;
-        let bytes = crate::store::get_bytes(&app.store, &tile_key(z + 1, cx, cy)).await?;
+        let bytes = iac_core::store::get_bytes(&ctx.store, &tile_key(z + 1, cx, cy)).await?;
         // A child with no row and no bytes is the read path's constant
         // empty tile (a chunk no job ever touched). Children DO claim
         // first, so an in-flight deeper job is not a concern here; if one
@@ -719,12 +719,12 @@ async fn run_parent_job(app: &App, z: i64, x: i64, y: i64) -> AppResult<()> {
         v = v.max(seq);
     }
     let kids: [Vec<u8>; 4] = kids.try_into().map_err(|_| internal("children count"))?;
-    let bytes = crate::telemetry::blocking(move || img::render_parent_tile(&kids))
+    let bytes = iac_core::telemetry::blocking(move || img::render_parent_tile(&kids))
         .await
         .map_err(internal)?
         .map_err(internal)?;
-    crate::store::put(&app.store, &tile_key(z, x, y), bytes).await?;
-    finish_parent(app, z, x, y, v).await
+    iac_core::store::put(&ctx.store, &tile_key(z, x, y), bytes).await?;
+    finish_parent(ctx, z, x, y, v).await
 }
 
 /// Successful parent-job finish: monotone staleness row (its version is
@@ -733,25 +733,25 @@ async fn run_parent_job(app: &App, z: i64, x: i64, y: i64) -> AppResult<()> {
 /// A rerun re-queue waits out the job's own zoom delay, keeping the
 /// z ≤ 10 "at most every 10–30 s" bound.
 #[doc(hidden)]
-pub async fn finish_parent(app: &App, z: i64, x: i64, y: i64, v: i64) -> AppResult<()> {
+pub async fn finish_parent(ctx: &WorkerCtx, z: i64, x: i64, y: i64, v: i64) -> AppResult<()> {
     let own_delay = job_delay_ms(
-        app.cfg.render_pipeline_parent_low_ms,
-        app.cfg.render_pipeline_parent_spread_ms,
-        app.cfg.render_pipeline_parent_quiet_ms,
+        ctx.cfg.render_pipeline_parent_low_ms,
+        ctx.cfg.render_pipeline_parent_spread_ms,
+        ctx.cfg.render_pipeline_parent_quiet_ms,
         z,
         x,
         y,
     );
     let parent_delay = job_delay_ms(
-        app.cfg.render_pipeline_parent_low_ms,
-        app.cfg.render_pipeline_parent_spread_ms,
-        app.cfg.render_pipeline_parent_quiet_ms,
+        ctx.cfg.render_pipeline_parent_low_ms,
+        ctx.cfg.render_pipeline_parent_spread_ms,
+        ctx.cfg.render_pipeline_parent_quiet_ms,
         z - 1,
         x.div_euclid(2),
         y.div_euclid(2),
     );
-    let mut tx = app.pool.begin().await.map_err(internal)?;
-    crate::dbq::timed(
+    let mut tx = ctx.pool.begin().await.map_err(internal)?;
+    iac_core::dbq::timed(
         "render_jobs",
         sqlx::query(
             "INSERT INTO tiles (z, x, y, seq) VALUES ($1, $2, $3, $4)
@@ -767,7 +767,7 @@ pub async fn finish_parent(app: &App, z: i64, x: i64, y: i64, v: i64) -> AppResu
     .await?;
     queue_version_event(&mut tx, &[(z, x, y)], v).await?;
     // A change arrived while the job ran: re-queue, never abort.
-    let requeued: Option<(i32,)> = crate::dbq::timed(
+    let requeued: Option<(i32,)> = iac_core::dbq::timed(
         "render_jobs",
         sqlx::query_as(
             "UPDATE render_jobs
@@ -784,7 +784,7 @@ pub async fn finish_parent(app: &App, z: i64, x: i64, y: i64, v: i64) -> AppResu
     )
     .await?;
     if requeued.is_none() {
-        let deleted = crate::dbq::timed(
+        let deleted = iac_core::dbq::timed(
             "render_jobs",
             sqlx::query_as::<_, (i64,)>(
                 "DELETE FROM render_jobs
@@ -801,7 +801,7 @@ pub async fn finish_parent(app: &App, z: i64, x: i64, y: i64, v: i64) -> AppResu
         if deleted.is_none() {
             // A change arrived between the claim and here: re-queue for
             // the delta instead of deleting.
-            crate::dbq::timed(
+            iac_core::dbq::timed(
                 "render_jobs",
                 sqlx::query(
                     "UPDATE render_jobs

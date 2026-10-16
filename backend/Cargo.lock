@@ -1274,6 +1274,7 @@ dependencies = [
  "futures",
  "hmac",
  "iac-core",
+ "iac-worker",
  "libvips",
  "lru",
  "object_store",
@@ -1325,6 +1326,31 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-opentelemetry",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "iac-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "chrono",
+ "futures",
+ "iac-core",
+ "libvips",
+ "lru",
+ "object_store",
+ "parking_lot",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
  "tracing-subscriber",
  "uuid",
 ]

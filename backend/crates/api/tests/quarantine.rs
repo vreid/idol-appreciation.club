@@ -67,7 +67,7 @@ async fn consume_one(server: &Server) -> ingest::IngestJob {
     let p = pool(server).await;
     let job = ingest::claim_due(&p, 120).await.expect("claim ingest job");
     let job = job.expect("an ingest job was due");
-    ingest::execute_job(&server.state, job.clone())
+    ingest::execute_job(&server.state.worker_ctx(), job.clone())
         .await
         .unwrap_or_else(|err| panic!("ingest job {} failed: {err}", job.id));
     job
@@ -81,7 +81,7 @@ async fn paint_one_chunk(server: &Server) {
         .await
         .expect("claim render job");
     let (z, x, y) = job.expect("a render job was due");
-    render_jobs::execute_job(&server.state, z, x, y)
+    render_jobs::execute_job(&server.state.worker_ctx(), z, x, y)
         .await
         .expect("render job executes");
 }
@@ -426,10 +426,10 @@ async fn decode_failure_fails_permanently_and_refunds_cooldown() {
     // The consumer fails it permanently (probe ok, decode impossible).
     let job = ingest::claim_due(&p, 120).await.unwrap().expect("job");
     assert_eq!(job.id.to_string(), job_id);
-    let err = ingest::execute_job(&server.state, job.clone())
+    let err = ingest::execute_job(&server.state.worker_ctx(), job.clone())
         .await
         .expect_err("hostile bytes must fail the pixel stage");
-    ingest::fail_job(&server.state, &job, &err, 1.0)
+    ingest::fail_job(&server.state.worker_ctx(), &job, &err, 1.0)
         .await
         .unwrap();
 
@@ -729,7 +729,7 @@ async fn transient_failures_exhaust_to_failed() {
         let job = ingest::claim_due(&p, 120).await.unwrap().expect("job due");
         assert_eq!(job.id.to_string(), job_id);
         let err = idol_appreciation_club_backend::error::internal("simulated transient");
-        ingest::fail_job(&server.state, &job, &err, 0.0)
+        ingest::fail_job(&server.state.worker_ctx(), &job, &err, 0.0)
             .await
             .unwrap();
         let (state, attempts, _) = ingest_row(&server, &job_id).await.unwrap();

@@ -191,7 +191,7 @@ pub async fn import_originals(
             }
             buf.extend_from_slice(&chunk);
         }
-        let pipeline = crate::place::process_original(
+        let pipeline = iac_worker::pixel::process_original(
             buf,
             None,
             app.cfg.min_size,

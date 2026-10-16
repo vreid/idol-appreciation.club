@@ -7,10 +7,12 @@
 //! this (the API temporarily keeps the libvips-linked dark path; see
 //! the workspace-split notes in docs/backend.md).
 
+pub mod chunk_seqs;
 pub mod config;
 pub mod dbq;
 pub mod error;
 pub mod metrics;
 pub mod store;
 pub mod telemetry;
+pub mod versions_note;
 pub mod world;

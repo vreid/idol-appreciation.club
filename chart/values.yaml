@@ -68,6 +68,21 @@ backend:
     limits:
       cpu: "4"
       memory: 2Gi
+  # Dedicated worker pods (the worker binary): DARK at 0 replicas.
+  # Cutover stage 4 moves the render loops off the api pods: set
+  # worker.replicaCount > 0 and renderPipelineWorkers: 0 in ONE release
+  # (docs/backend.md "Cutover order matters"). KEDA-on-queue-depth scale
+  # (docs/scaling-architecture.md "Cluster layout") is a later step; the
+  # replica count is hand-turned until then.
+  worker:
+    replicaCount: 0
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "4"
+        memory: 2Gi
 
 web:
   # Two+ edge replicas: TLS certificates and ACME state live in object

@@ -1,12 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/api"]
+members = ["crates/core", "crates/api", "crates/worker"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
+iac-core = { path = "crates/core" }
+iac-worker = { path = "crates/worker" }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",

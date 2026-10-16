@@ -1,14 +1,18 @@
 {
   "backend": {
-    "digest": "sha256:48609aa490aa2ce50a45335965d1e4bfdd67b3cf01b04917886aff3ce13ad204",
-    "mergeSha": "7aa4c8177ea51c1f5e13d0a8723aeed75fbcbc77"
+    "digest": "sha256:6907f2c4c933ff312474719b8c72ec6ebf80cec92dc2c7810436426d80d5efca",
+    "mergeSha": "15817ffb3b4f4f0e09671917acbc6445871298f6"
   },
   "web": {
-    "digest": "sha256:8f4aae766ea633548c361b109c64028f7da1cb7d929c1da35c2f816ad2cd3764",
-    "mergeSha": "a78d1d307a20972075b7aa9b07552828c28ad44a"
+    "digest": "sha256:baf2c3e4a4af5d46274e1b8e6cc19f4ec6eb448fb8bf19f42ba1a1320c8f7f44",
+    "mergeSha": "15817ffb3b4f4f0e09671917acbc6445871298f6"
   },
   "caddy": {
     "digest": "sha256:b175b142c2275b05f0e1a0a47058a646a32624dc9e5874ccd023a230cb6d9f27",
     "mergeSha": "baf857393ee49a8c1832098b959b1cc9f4a65a13"
+  },
+  "backendWorker": {
+    "digest": "sha256:11a63d6c3b8d1584b1553599d6258b9b3611e07f4c03756324a9e71889bf9c3f",
+    "mergeSha": "15817ffb3b4f4f0e09671917acbc6445871298f6"
   }
 }

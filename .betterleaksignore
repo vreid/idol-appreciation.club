@@ -65,8 +65,11 @@ backend/tests/integration.rs:generic-password:1214
 # feat(web)! PR revives both files on this tree ("hunter2hunter2" is the
 # repo's load-test bot password, contract.test.ts the contract-suite bot
 # password) — working-tree entries required again. Regenerate per
-# .betterleaks.toml.
+# .betterleaks.toml. Line moved 163 -> 245 when the contract suite grew
+# the 202-era poll/SSE helpers; the bare 163 entry still matches the
+# f343628 git-history finding (commit #72 created the fixture there).
 web/test/contract/contract.test.ts:generic-password:163
+web/test/contract/contract.test.ts:generic-password:245
 
 # Bulk-image-import branch (791cc80) carries deploy/reseed-job.yaml — a
 # k8s Secret TEMPLATE for the reseed Job whose values are self-labeled

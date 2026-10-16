@@ -4,8 +4,8 @@
     "mergeSha": "200218a72ae1b29dbba3763c7e4e997d845a60d0"
   },
   "web": {
-    "digest": "sha256:23314dc05c0b8ef141364f5442a5f451e0bfca52051329ab90e684d9133d13b0",
-    "mergeSha": "a78d715312c531a5760754ff2031b08e92d704ac"
+    "digest": "sha256:8f4aae766ea633548c361b109c64028f7da1cb7d929c1da35c2f816ad2cd3764",
+    "mergeSha": "a78d1d307a20972075b7aa9b07552828c28ad44a"
   },
   "caddy": {
     "digest": "sha256:b175b142c2275b05f0e1a0a47058a646a32624dc9e5874ccd023a230cb6d9f27",

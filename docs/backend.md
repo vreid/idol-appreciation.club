@@ -10,14 +10,13 @@ cache-invalidation hook); the pixel work lives in `backend/crates/worker`
 `ingest` consumer and the shared `pixel` engine; ONLY this crate depends on
 libvips, per docs/scaling-architecture.md § Code and images); and the HTTP
 service lives in `backend/crates/api` (`iac-api`, binary `backend`), which
-re-exports the core modules at its root so `crate::*` paths stay stable. The
-API crate does not link libvips at all — the distroless API image is exact
-(bytes are only ever stored and served); pixel work exists solely in worker
-processes. The worker binary runs the render_jobs loops
-and the ingest consumer WITHOUT the HTTP server; the chart deploys it as the
-`backend-worker` Deployment, values-gated dark
-(`backend.worker.replicaCount: 0`). Modules (all under `crates/api/src` except
-the core and worker sets):
+re-exports the core modules at its root so `crate::*` paths stay stable. The API
+crate does not link libvips at all — the distroless API image is exact (bytes
+are only ever stored and served); pixel work exists solely in worker processes.
+The worker binary runs the render_jobs loops and the ingest consumer WITHOUT the
+HTTP server; the chart deploys it as the `backend-worker` Deployment,
+values-gated dark (`backend.worker.replicaCount: 0`). Modules (all under
+`crates/api/src` except the core and worker sets):
 
 | module          | responsibility                                                  |
 | --------------- | --------------------------------------------------------------- |
@@ -289,8 +288,8 @@ Pipeline, per sequential **block** of `IMPORT_BLOCK_ENTRIES` (default 500):
    shared chunk keys). Overlapping AABBs always share a chunk, so components
    never contend on rasters — they run in parallel with disjoint, sorted lock
    sets (deadlock-free by the same argument as the single-placement path).
-5. Each component holds its chunk locks (sorted) across the whole commit —
-   the same invariant the HTTP path held — then: ONE seq allocation round trip
+5. Each component holds its chunk locks (sorted) across the whole commit — the
+   same invariant the HTTP path held — then: ONE seq allocation round trip
    (`SELECT nextval('placement_seq') FROM generate_series(1, n)`, contiguous,
    ascending in entry order), the chunk pass, ONE multi-row
    `INSERT … SELECT unnest(…) … ON CONFLICT (id) DO NOTHING` (15 array binds),
@@ -347,29 +346,27 @@ Body/caps: a manifest is one file — for very large runs chunk client-side:
 independently. Knobs: `IMPORT_BLOCK_ENTRIES` (500), `IMPORT_GROUP_CONCURRENCY`
 (2).
 
-Client driver (`scripts/import-bulk.sh`, env-driven against the worker
-binary — no HTTP, no admin cookie):
+Client driver (`scripts/import-bulk.sh`, env-driven against the worker binary —
+no HTTP, no admin cookie):
 
 - **Chunking**: default `--chunk 750`, sized so one `import-batch` run fits
-  comfortably under an hour at the observed live rate (1.7 img/s single
-  client, ~2.5 img/s with 4 concurrent workers — real in-region S3,
-  latency-bound). Chunk size is **fixed per run**: it feeds the entry ids, so
-  changing `--chunk` mid-run re-places the same coordinates — use a new
-  `--tag`.
+  comfortably under an hour at the observed live rate (1.7 img/s single client,
+  ~2.5 img/s with 4 concurrent workers — real in-region S3, latency-bound).
+  Chunk size is **fixed per run**: it feeds the entry ids, so changing `--chunk`
+  mid-run re-places the same coordinates — use a new `--tag`.
 - **Retry**: a chunk run is retried up to 4× with backoff (safe: the engine
   commits per block and entry identity is `uuid5(batch_id, entry)`, so a
   timed-out-then-retried chunk can never double-place).
 - **Preupload cache**: `(sha256,size) → response map` is kept in
-  `/tmp/import-bulk-preupload-cache-<db>.json` (content-addressed, shared
-  across tags, keyed per database). Re-runs only upload sources the worker has
-  never seen — the engine dedupes by source sha regardless; the cache saves
-  the repeated decode. After a full wipe/re-seed the cached derivative objects
-  are gone: delete the cache file to force a full re-upload.
-- **Live numbers** (production, 51,487 placements, radius 12000, via the
-  former HTTP engine — the worker path is the identical code): ~2.49 img/s
-  sustained over 2 h20m with 4 concurrent clients; single client ~1.7 img/s;
-  the wall is per-entry chunk-canvas S3 round-trips + composite serialization,
-  not CPU.
+  `/tmp/import-bulk-preupload-cache-<db>.json` (content-addressed, shared across
+  tags, keyed per database). Re-runs only upload sources the worker has never
+  seen — the engine dedupes by source sha regardless; the cache saves the
+  repeated decode. After a full wipe/re-seed the cached derivative objects are
+  gone: delete the cache file to force a full re-upload.
+- **Live numbers** (production, 51,487 placements, radius 12000, via the former
+  HTTP engine — the worker path is the identical code): ~2.49 img/s sustained
+  over 2 h20m with 4 concurrent clients; single client ~1.7 img/s; the wall is
+  per-entry chunk-canvas S3 round-trips + composite serialization, not CPU.
 
 Counters (worker-process atomics, surfaced in the run summary JSON):
 `import_batches_total`, `import_images_total`, `import_chunk_writes_total`,
@@ -380,17 +377,17 @@ density — entries per touched chunk — and the engine preserves that collapse
 within every block).
 
 Measured (local bench, `scripts/bench-import.sh 2000 12000 2500`, worker
-container pinned to 4 CPU / 6 GB, postgres 1 CPU / 2 GB, tmpfs file store,
-fresh DB): 2500 images in 513 s → **4.9 images/s sustained**,
+container pinned to 4 CPU / 6 GB, postgres 1 CPU / 2 GB, tmpfs file store, fresh
+DB): 2500 images in 513 s → **4.9 images/s sustained**,
 `chunk_write_amplification` 1.08 (2500 images / 2318 chunk writes), zero failed
 S3 ops, one batch, p≤600 s duration bucket. The 1024-px chunk grid against
 ≤1024-px derivatives means a uniform-disc pile at radius 12000 covers ~500
-chunks (~5 entries/chunk), so amplification near 1 is the honest geometry —
-pile densification (smaller radius or higher count at fixed radius) is what
-moves it, not an engine knob. The 4.9/s is the LOCAL container rate (laptop CPU
-shared with the dev environment; tmpfs storage flatters the S3 leg); the ≥10/s
-SLO is decided by the post-wipe 100k run on the real 4-vCPU node (see the
-reseed runbook).
+chunks (~5 entries/chunk), so amplification near 1 is the honest geometry — pile
+densification (smaller radius or higher count at fixed radius) is what moves it,
+not an engine knob. The 4.9/s is the LOCAL container rate (laptop CPU shared
+with the dev environment; tmpfs storage flatters the S3 leg); the ≥10/s SLO is
+decided by the post-wipe 100k run on the real 4-vCPU node (see the reseed
+runbook).
 
 ## Tile serving and admission control
 
@@ -416,9 +413,9 @@ resolves bytes and versions only.
 `stale-while-revalidate` serves tiles instantly while the next GET refreshes
 them, the SSE-driven client refetch bounds visible staleness to ~1s past a
 place/remove commit, and conditional GETs stay cheap 304s while the seq is
-unchanged. A removal advances the chunk version past the old max (fresh
-sequence draw), so the ETag changes and the affected tiles re-cut exactly once
-by the pipeline.
+unchanged. A removal advances the chunk version past the old max (fresh sequence
+draw), so the ETag changes and the affected tiles re-cut exactly once by the
+pipeline.
 
 ### Server-side stale-while-revalidate (the pile-wedge fix)
 
@@ -432,10 +429,10 @@ clients held the map open.
 The first fix made GETs never render while stale bytes exist (serve stored
 bytes + record demand); Phase 3 removes request-path rendering entirely — the
 GET handler cannot allocate vips work, so the wedge class is gone by
-construction and the admission machinery (render queue, queue cap, 202
-shedding, in-process background worker, decoded-raster cache) went with it.
-What remains is pure byte service: memory → object storage → 404, with
-staleness decided by one indexed max-seq probe.
+construction and the admission machinery (render queue, queue cap, 202 shedding,
+in-process background worker, decoded-raster cache) went with it. What remains
+is pure byte service: memory → object storage → 404, with staleness decided by
+one indexed max-seq probe.
 
 ### The chunk-seq rollup (`chunk_seqs`, migration 0007)
 
@@ -473,15 +470,15 @@ MB across concurrent GETs) and OOM-killed pods. The doctrine now:
 
 ### The render queue (`tile_render_jobs`) — removed with Phase 3
 
-Migration 0005's `tile_render_jobs` queue, its in-process background worker,
-the queue cap and 202 shedding, and the decoded-raster LRU existed to keep
-renders OFF the request path while the API still rendered. Phase 3 moves pixel
-work into the worker's `render_jobs` loops entirely, so the whole admission
-layer is gone: GETs only serve bytes (see _Tile serving_ above), demand is the
+Migration 0005's `tile_render_jobs` queue, its in-process background worker, the
+queue cap and 202 shedding, and the decoded-raster LRU existed to keep renders
+OFF the request path while the API still rendered. Phase 3 moves pixel work into
+the worker's `render_jobs` loops entirely, so the whole admission layer is gone:
+GETs only serve bytes (see _Tile serving_ above), demand is the
 `chunk_seqs`/`render_jobs` staleness signal, and the pipeline section below is
-the single render path. Migration 0005 remains in history; fresh databases
-never create the table (migrations 0005+0007 are superseded by 0008's
-`render_jobs` + `chunk_seqs`).
+the single render path. Migration 0005 remains in history; fresh databases never
+create the table (migrations 0005+0007 are superseded by 0008's `render_jobs` +
+`chunk_seqs`).
 
 ### The render pipeline (`render_jobs`, migration 0008 — Phase 3, ships dark)
 
@@ -491,11 +488,10 @@ version-driven job queue that brings chunks up to date and cuts their 21 zoom
 parent jobs, so tile requests never render anything. It ships **dark**:
 `RENDER_PIPELINE_ENABLED=false` (the default) keeps every code path above
 exactly as-is — synchronous placement composites, synchronous removal replays.
-Workers are a separate knob:
-`RENDER_PIPELINE_WORKERS` (default 0) spawns the claim loops, and may be raised
-BEFORE the enabled flip so a pre-seeded queue is painted while the request path
-still composites (the staged cutover below). With zero workers and the flag off
-nothing runs (test-enforced by
+Workers are a separate knob: `RENDER_PIPELINE_WORKERS` (default 0) spawns the
+claim loops, and may be raised BEFORE the enabled flip so a pre-seeded queue is
+painted while the request path still composites (the staged cutover below). With
+zero workers and the flag off nothing runs (test-enforced by
 `render_jobs::pipeline_disabled_keeps_request_path_unchanged`). Migration 0008
 applies at boot either way; the new columns back-fill untouched (`painted_seq`
 0 = "nothing painted by the pipeline yet"). Cutover is the values flip plus a
@@ -535,8 +531,8 @@ worker deployment (see the rollout plan below).
   `RENDER_PIPELINE_PARENT_SPREAD_MS`), z 11–17 after a short quiet window
   (`RENDER_PIPELINE_PARENT_QUIET_MS`, 3 s). Finished rows are DELETED (a jobs
   table that keeps `done` rows forever makes every row change replica-replayed
-  WAL). After 5 attempts (`MAX_JOB_ATTEMPTS`, spec constant) a
-  job is parked `failed` instead of retrying forever; a fresh change revives it.
+  WAL). After 5 attempts (`MAX_JOB_ATTEMPTS`, spec constant) a job is parked
+  `failed` instead of retrying forever; a fresh change revives it.
 - **Version guard.** The finish transaction advances `painted_seq` with
   `GREATEST(painted_seq, $v)` — a slower job can never move a version backwards
   (the doc's `WHERE painted_seq < $v`, hardened: the equal case must still
@@ -780,10 +776,11 @@ Required: `DATABASE_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`,
 `LISTEN_ADDR=0.0.0.0:8080`, `PUBLIC_BASE_URL`, `STATIC_DIR=../web/dist`,
 `COOLDOWN_PAINT_SECS=300`, `COOLDOWN_EMPTY_SECS=1`, `MAX_UPLOAD_BYTES=10485760`,
 `MAX_DECODE_PIXELS=67108864`, `MIN_SIZE=16`, `MAX_SIZE=4096`,
-`TILE_CACHE_ENTRIES=2048`, `RUST_LOG=info`, `IMPORT_BLOCK_ENTRIES=500`, `IMPORT_GROUP_CONCURRENCY=2`, `IMPORT_DERIVATIVE_LONG_EDGE=1024`,
+`TILE_CACHE_ENTRIES=2048`, `RUST_LOG=info`, `IMPORT_BLOCK_ENTRIES=500`,
+`IMPORT_GROUP_CONCURRENCY=2`, `IMPORT_DERIVATIVE_LONG_EDGE=1024`,
 `REGISTRATION_APPROVAL_REQUIRED=false` (set true in production to gate external
-signups behind admin approval), `RENDER_PIPELINE_ENABLED=false` (Phase 3 master switch),
-`RENDER_PIPELINE_WORKERS=0`, `RENDER_PIPELINE_POLL_MS=1000`,
+signups behind admin approval), `RENDER_PIPELINE_ENABLED=false` (Phase 3 master
+switch), `RENDER_PIPELINE_WORKERS=0`, `RENDER_PIPELINE_POLL_MS=1000`,
 `RENDER_PIPELINE_LEASE_SECS=120`, `RENDER_PIPELINE_PARENT_QUIET_MS=3000`,
 `RENDER_PIPELINE_PARENT_LOW_MS=10000`, `RENDER_PIPELINE_PARENT_SPREAD_MS=20000`,
 `INGEST_PIPELINE_ENABLED=false` (see the two pipeline sections above).
@@ -818,17 +815,17 @@ Tests:
 
 - `cargo test` — unit + property tests (tile math, chunk keys, cooldown
   boundaries incl. 299.99 s vs 300 s, dedupe hashing, pyramid ops).
-- `cargo test --test integration` (api) / `--test pipeline` + `--test
-  quarantine` (worker) — full flows against testcontainers postgres 16 +
+- `cargo test --test integration` (api) / `--test pipeline` +
+  `--test quarantine` (worker) — full flows against testcontainers postgres 16 +
   filesystem store (requires Docker/Podman; the module default is postgres 11,
   so the tests pin 16-alpine for generated columns). The pipeline suites run
   with `--test-threads 2` (a shared `pipeline_serial` lock serializes the
   jobs-table tests).
 - `backend/scripts/smoke.sh [IMAGE]` — boots postgres + minio + the built image
   and proves register → place → 429 → tiles → center → SSE end to end.
-- `scripts/import-bulk.sh` / `scripts/bench-import.sh` — the bulk import
-  driver and its SLO bench, both driving the worker subcommands directly (see
-  Batch import).
+- `scripts/import-bulk.sh` / `scripts/bench-import.sh` — the bulk import driver
+  and its SLO bench, both driving the worker subcommands directly (see Batch
+  import).
 - `S3_LIVE_CHECK=1 cargo test --test s3_live -- --ignored` — roundtrip against
   the REAL bucket (plus normal `S3_*` env); exercises the production buffered
   known-length PUT path (UpCloud rejects streamed/chunked SigV4 PUTs). Skipped

@@ -161,7 +161,8 @@ jobs:
             esac
           }
           find_reusable() { # $1 = lock key, $2 = tree; prints a matching digest
-            local repo="ghcr.io/vreid/idol-appreciation.club-$(repo_of "$1")" pin ref d label
+            local repo pin ref d label
+            repo="ghcr.io/vreid/idol-appreciation.club-$(repo_of "$1")"
             pin="$(jq -r ".$1.digest // empty" images.lock.json)"
             for ref in "$repo:main" ${pin:+"$repo@$pin"}; do
               d="$(crane digest "$ref" 2>/dev/null)" || continue

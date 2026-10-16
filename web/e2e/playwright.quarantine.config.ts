@@ -9,7 +9,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: /quarantine-place\.spec\.ts/,
+  testMatch: /quarantine-place\.spec\.ts/u,
   timeout: 30_000,
   fullyParallel: true,
   retries: 1,

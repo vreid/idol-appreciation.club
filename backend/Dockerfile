@@ -31,7 +31,7 @@ WORKDIR /app
 
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY crates ./crates
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -40,11 +40,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
+COPY crates ./crates
 COPY migrations ./migrations
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release --bin backend
+    cargo build --release --bin backend -p iac-api
 
 FROM debian:trixie-slim AS runtime
 RUN apt-get update \

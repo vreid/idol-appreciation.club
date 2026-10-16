@@ -1,0 +1,38 @@
+[package]
+name = "iac-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+sqlx.workspace = true
+object_store.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
+thiserror.workspace = true
+# The error type's IntoResponse impl and the metrics text exposition keep
+# core honest about HTTP shapes without pulling the server stack.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+bytes.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+tokio-stream.workspace = true
+lru = "0.18"
+sha2 = "0.10"
+# TRANSITIONAL (workspace split, PR A): AppError::Vips keeps the pixel
+# stage's error type in the shared enum while the dark path still links
+# libvips in the API. Removed when the pixel work leaves the API crate
+# (worker-binaries / distroless steps).
+libvips = "2.3"
+
+[dev-dependencies]
+proptest = "1"

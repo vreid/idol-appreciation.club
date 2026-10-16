@@ -6,15 +6,11 @@
 pub mod api;
 pub mod auth;
 pub mod chunks;
-pub mod config;
-pub mod dbq;
-pub mod error;
 pub mod events;
 pub mod handlers;
 pub mod img;
 pub mod import;
 pub mod ingest;
-pub mod metrics;
 pub mod place;
 pub mod rate;
 pub mod render_jobs;
@@ -22,11 +18,13 @@ pub mod router;
 
 pub mod state;
 pub mod statics;
-pub mod store;
-pub mod telemetry;
 pub mod tiles;
 pub mod versions;
-pub mod world;
+
+// The shared foundation lives in `iac-core` (workspace split); re-export
+// it at the crate root so `crate::config` and every existing
+// `idol_appreciation_club_backend::*` path keeps resolving unchanged.
+pub use iac_core::{config, dbq, error, metrics, store, telemetry, world};
 
 use crate::state::{AppState, KeyLocks};
 use std::sync::Arc;
@@ -40,7 +38,7 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
         .acquire_timeout(std::time::Duration::from_secs(10))
         .connect(&cfg.database_url)
         .await?;
-    sqlx::migrate!().run(&pool).await?;
+    sqlx::migrate!("../../migrations").run(&pool).await?;
     let store = store::from_config(&cfg)?;
     let (events_tx, _) = tokio::sync::broadcast::channel(1024);
     // Read-replica pool for the versioned read path (small: point lookups

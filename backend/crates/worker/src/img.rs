@@ -40,6 +40,15 @@ pub const DEFAULT_MAX_DECODE_PIXELS: u64 = 4096 * 4096;
 /// (composite_chunks → decode → …) cannot deadlock.
 static VIPS: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
 
+/// Ensure libvips is initialized and hold the global serialization lock.
+/// Every vips entry point goes through this (not a bare `VIPS.lock()`), so
+/// no caller — test binary or production main — can reach a vips op
+/// before `VipsApp` exists (GLib class lookups SIGSEGV pre-init).
+fn vips_guard() -> parking_lot::ReentrantMutexGuard<'static, ()> {
+    init().expect("libvips init");
+    VIPS.lock()
+}
+
 pub fn init() -> anyhow::Result<()> {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
@@ -233,7 +242,7 @@ pub fn get_pixel(img: &VipsImage, x: i32, y: i32) -> [u8; 3] {
 }
 
 pub fn probe(bytes: &[u8]) -> Result<(i32, i32), AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let img = VipsImage::new_from_buffer(bytes, "")
         .map_err(|_| AppError::BadRequest("undecodable image"))?;
     // Header-only: new_from_buffer parses the container header, and these
@@ -276,7 +285,7 @@ fn format_of(loader: &str) -> Option<SourceFormat> {
 /// animation to the first frame; applies EXIF orientation before any
 /// metadata stripping, so pixels are upright.
 pub fn decode(bytes: &[u8], max_pixels: u64) -> Result<(VipsImage, SourceFormat), AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let img = VipsImage::new_from_buffer(bytes, "")
         .map_err(|_| AppError::BadRequest("undecodable image"))?;
     let loader = img.get_as_string("vips-loader").unwrap_or_default();
@@ -328,7 +337,7 @@ pub fn decode(bytes: &[u8], max_pixels: u64) -> Result<(VipsImage, SourceFormat)
 /// verify a manifest's declared `w`/`h` against the actual derivative
 /// bitmap without paying a decode per entry.
 pub fn dimensions(bytes: &[u8]) -> Result<(i64, i64), AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let img = VipsImage::new_from_buffer(bytes, "")
         .map_err(|_| AppError::BadRequest("undecodable image"))?;
     Ok((i64::from(img.get_width()), i64::from(img.get_height())))
@@ -337,7 +346,7 @@ pub fn dimensions(bytes: &[u8]) -> Result<(i64, i64), AppError> {
 /// Resize to an exact `w x h` (aspect-preserving input already handled by
 /// the caller), Lanczos3 on premultiplied alpha.
 pub fn resize_exact(img: &VipsImage, w: i32, h: i32) -> Result<VipsImage, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let pm = ops::premultiply(img)?;
     let scale = f64::from(w) / f64::from(img.get_width());
     let resized = ops::resize(&pm, scale)?;
@@ -371,7 +380,7 @@ pub fn resize_exact(img: &VipsImage, w: i32, h: i32) -> Result<VipsImage, AppErr
 /// CLOCKWISE in the y-down convention — libvips `similarity` angle is
 /// documented clockwise-positive, so the angle is passed through.
 pub fn rotate_centered(img: &VipsImage, rot: f32) -> Result<VipsImage, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     if rot.abs() < 1e-6 {
         // NOT .clone(): the crate derives Clone on VipsImage as a raw
         // pointer copy (no GObject refcount), so a cloned handle
@@ -432,14 +441,14 @@ pub fn rotate_centered(img: &VipsImage, rot: f32) -> Result<VipsImage, AppError>
 /// Deterministic webp encode (fixed quality; strip is implicit in the chain
 /// because pixels come from stripped headers).
 pub fn webp_bytes(img: &VipsImage, quality: i32) -> Result<Vec<u8>, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     Ok(img.image_write_to_buffer(&format!(".webp[Q={quality}]"))?)
 }
 
 /// Re-encode in the source codec at high quality with ALL metadata stripped.
 /// The sha256 of these bytes is the content address of the original.
 pub fn strip_resave(img: &VipsImage, format: SourceFormat) -> Result<Vec<u8>, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let suffix = match format {
         SourceFormat::Jpeg => ".jpg[Q=90,strip=TRUE]",
         SourceFormat::Png => ".png[strip=TRUE]",
@@ -472,7 +481,7 @@ pub fn composite(
     x: i64,
     y: i64,
 ) -> Result<VipsImage, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let x = i32::try_from(x).map_err(|_| internal("composite x out of range"))?;
     let y = i32::try_from(y).map_err(|_| internal("composite y out of range"))?;
     Ok(ops::composite2_with_opts(
@@ -494,7 +503,7 @@ pub fn composite(
 /// constants over `black` yields a multiband image libvips refuses to
 /// composite onto).
 pub fn blank_chunk(size: i32) -> Result<VipsImage, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     const ONE_PX_TRANSPARENT_PNG_HEX: &str = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360606060000000050001a5f645400000000049454e44ae426082";
 
     let bytes = hex_decode(ONE_PX_TRANSPARENT_PNG_HEX);
@@ -527,7 +536,7 @@ pub fn tile_from_chunk(
     top: i64,
     src_size: i64,
 ) -> Result<VipsImage, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let left = i32::try_from(left).map_err(|_| internal("tile left out of range"))?;
     let top = i32::try_from(top).map_err(|_| internal("tile top out of range"))?;
     let src = i32::try_from(src_size).map_err(|_| internal("tile size out of range"))?;
@@ -546,7 +555,7 @@ pub fn tile_from_chunk(
 /// composite the rest on top. (libvips `arrayjoin` rejects hspacing=0 on
 /// 8.15 and its failed-build path is segfault-prone, so we join by hand.)
 pub fn tile_from_children(children: &[VipsImage; 4]) -> Result<VipsImage, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let quarter = TILE_EDGE / 2;
     let mut quads = Vec::with_capacity(4);
     for child in children {
@@ -580,7 +589,7 @@ pub fn tile_from_children(children: &[VipsImage; 4]) -> Result<VipsImage, AppErr
 /// Already-opaque tiles (parent levels join flattened children) pass
 /// through unchanged — flatten requires an alpha band.
 pub fn flatten_paper(img: VipsImage) -> Result<VipsImage, AppError> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     if img.image_hasalpha() {
         Ok(ops::flatten_with_opts(
             &img,
@@ -597,7 +606,7 @@ pub fn flatten_paper(img: VipsImage) -> Result<VipsImage, AppError> {
 /// Encoded opaque red PNG for tests and fixtures (integration tests use
 /// this to build uploads without shipping binary fixtures).
 pub fn test_png(width: u32, height: u32) -> Vec<u8> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     solid_png(width, height, [220, 40, 40])
 }
 
@@ -682,7 +691,7 @@ pub fn solid_png(width: u32, height: u32, color: [u8; 3]) -> Vec<u8> {
 /// Asymmetric test image: solid red top half, solid blue bottom half.
 /// Rotation tests use it to pin the clockwise convention.
 pub fn asymmetric_test_png(width: u32, height: u32) -> Vec<u8> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     init().expect("vips");
     let w = width as i32;
     let h = height as i32;
@@ -712,7 +721,7 @@ pub fn composite_chunks(
     targets: &[(i64, i64)],
     rot: f32,
 ) -> iac_core::error::AppResult<Vec<Vec<u8>>> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let (ov, _) = decode(overlay, DEFAULT_MAX_DECODE_PIXELS)?;
     // WebP sources decode to sequential-access lazy images; embedding or
     // compositing at offsets clips them, which needs random access.
@@ -788,7 +797,7 @@ pub fn replay_canvas<C: AsRef<[u8]>, T: AsRef<[u8]>>(
     canvas: Option<C>,
     overlays: &[(T, i64, i64, f32)],
 ) -> iac_core::error::AppResult<Vec<u8>> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let mut canvas = match &canvas {
         Some(bytes) => Some(VipsImage::new_from_buffer(bytes.as_ref(), "")?),
         None => None,
@@ -843,7 +852,7 @@ pub fn composite_group<T: AsRef<[u8]>>(
     chunks: &[ChunkPaint],
     decoded_budget_bytes: u64,
 ) -> iac_core::error::AppResult<Vec<Vec<u8>>> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let mut cache: HashMap<usize, VipsImage> = HashMap::new();
     let mut cache_bytes = 0u64;
     let mut out = Vec::with_capacity(chunks.len());
@@ -903,7 +912,7 @@ pub fn render_leaf_tile(
     offset_y: i64,
     native_size: i64,
 ) -> iac_core::error::AppResult<Vec<u8>> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let chunk = match chunk {
         Some(bytes) => {
             // WebP chunk blobs decode to sequential images; materialize to a
@@ -926,6 +935,9 @@ mod empty_tile_const {
     /// the API serves it for maxSeq-0 tiles without linking libvips.
     #[test]
     fn empty_tile_const_decodes() {
+        // This test decodes BEFORE any guarded helper runs; with
+        // --test-threads 2 it can be the suite's first vips op.
+        init().expect("libvips init");
         let bytes = iac_core::empty_tile::decode();
         let img = VipsImage::new_from_buffer(&bytes, "").expect("const decodes");
         assert_eq!(img.get_width(), TILE_EDGE as i32);
@@ -942,7 +954,7 @@ mod empty_tile_const {
 fn dump_guard() {}
 
 pub fn empty_tile_256() -> iac_core::error::AppResult<Vec<u8>> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let blank = blank_chunk(TILE_EDGE as i32)?;
     let flat = flatten_paper(blank)?;
     webp_bytes(&flat, 80)
@@ -950,7 +962,7 @@ pub fn empty_tile_256() -> iac_core::error::AppResult<Vec<u8>> {
 
 /// Render a parent tile from its four encoded child tiles (2×2, row-major).
 pub fn render_parent_tile(children: &[Vec<u8>; 4]) -> iac_core::error::AppResult<Vec<u8>> {
-    let _vips = VIPS.lock();
+    let _vips = vips_guard();
     let imgs: [VipsImage; 4] = core::array::from_fn(|i| {
         VipsImage::new_from_buffer(&children[i], "").expect("child tile decodes")
     });

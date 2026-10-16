@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Boots a REAL backend (pinned libvips gate image) + Postgres for the
-# contract integration suite (web/test/contract/), then runs vitest against
-# it. Mirrors the container-runner conventions of the backend gates
-# (RUNNER=podman locally, RUNNER=docker in CI) and cleans up on exit.
+# Boots a REAL backend (pinned libvips gate image) + Postgres + the worker
+# (ingest consumer + one render loop) for the contract integration suite
+# (web/test/contract/), then runs vitest against it. Mirrors the
+# container-runner conventions of the backend gates (RUNNER=podman
+# locally, RUNNER=docker in CI) and cleans up on exit.
+#
+# Era note: the api binary never runs pixel work — a place answers 202
+# and stays pending until a CONSUMER commits it. Without the worker the
+# suite's cooldown/SSE expectations would time out, so the worker is part
+# of the rig (docs/scaling-architecture.md "Upload flow").
 #
 # Taskfile web:contract is the only intended caller; BASE_PORT can be
 # overridden for parallel local runs.
@@ -13,12 +19,21 @@ BASE_PORT="${CONTRACT_PORT:-18080}"
 NET="idol-contract-net-$$"
 PG="idol-contract-pg-$$"
 API="idol-contract-api-$$"
+WORKER="idol-contract-worker-$$"
+STORE_VOL="idol-contract-store-$$"
+STORE_DIR="/tmp/idol-contract-store-$$"
 # 32-byte minimum enforced by the backend; value is throwaway per run.
 SESSION_SECRET="contract-harness-0123456789abcdef0123456789abcdef"
 IMAGE="${CONTRACT_IMAGE:-backend-builder}"
 
+KEEP="${KEEP:-0}"
 cleanup() {
-  "${RUNNER}" rm -f "${API}" "${PG}" >/dev/null 2>&1 || true
+  if [ "$KEEP" = "1" ]; then
+    echo "KEEP=1: leaving containers up (api=$API worker=$WORKER pg=$PG)"
+    return
+  fi
+  "${RUNNER}" rm -f "${API}" "${WORKER}" "${PG}" >/dev/null 2>&1 || true
+  "${RUNNER}" volume rm -f "${STORE_VOL}" >/dev/null 2>&1 || true
   "${RUNNER}" network rm "${NET}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -75,12 +90,14 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     -p "127.0.0.1:${port}:8080" \
     -e LISTEN_ADDR=0.0.0.0:8080 \
     -e "DATABASE_URL=postgres://postgres:postgres@${PG}:5432/postgres" \
-    -e "S3_ENDPOINT=file:///tmp/idol-contract-store-$$" \
+    -e "S3_ENDPOINT=file://${STORE_DIR}" \
     -e S3_BUCKET=contract-store \
     -e "SESSION_SECRET=${SESSION_SECRET}" \
     -e STATIC_DIR=/nonexistent \
     -e COOLDOWN_EMPTY_SECS=1 \
     -e COOLDOWN_PAINT_SECS=1 \
+    -e DATABASE_POOL_MAX=30 \
+    -v "${STORE_VOL}:${STORE_DIR}" \
     "${IMAGE}" /app/target/release/backend 2>&1)"; then
     api_started=1
     break
@@ -121,6 +138,47 @@ if [ "${ready}" != "1" ]; then
   echo "backend never became healthy" >&2
   exit 1
 fi
+
+# First real DB round trip must succeed before anything else starts: this
+# both proves the pool serves and gives the api's first connects a quiet
+# window (a boot-time race with the worker's migrations once wedged the
+# pool into 10s acquire timeouts).
+settle=0
+for _ in $(seq 1 30); do
+  if curl -sf -m 3 "${BASE_URL}/api/center" >/dev/null 2>&1; then
+    settle=1
+    break
+  fi
+  sleep 1
+done
+if [ "$settle" != "1" ]; then
+  echo "backend never served a DB request cleanly" >&2
+  "${RUNNER}" logs "${API}" >&2 || true
+  exit 1
+fi
+
+# The consumer, AFTER the api is settled: ingest Pipeline (202 flow) plus
+# one render loop so painted tiles/versions events flow. The store is the
+# SAME named volume the api mounted — quarantine objects are written by
+# the api and read by the worker, so per-container filesystems would fail
+# every job with permanent "not found".
+"${RUNNER}" run -d --name "${WORKER}" \
+  --network "${NET}" \
+  -e "DATABASE_URL=postgres://postgres:postgres@${PG}:5432/postgres" \
+  -e "S3_ENDPOINT=file://${STORE_DIR}" \
+  -e S3_BUCKET=contract-store \
+  -e "SESSION_SECRET=${SESSION_SECRET}" \
+  -e RENDER_PIPELINE_ENABLED=true \
+  -e RENDER_PIPELINE_WORKERS=1 \
+  -e RENDER_PIPELINE_POLL_MS=250 \
+  -e INGEST_PIPELINE_ENABLED=true \
+  -e DATABASE_POOL_MAX=6 \
+  -v "${STORE_VOL}:${STORE_DIR}" \
+  "${IMAGE}" /app/target/release/backend-worker >/dev/null
+
+# Give the worker's migrations + first claim loops a beat before the
+# suite starts placing.
+sleep 2
 
 cd "$(dirname "$0")/.."
 # NOT BASE_URL — vite overwrites that name in process.env with its app

@@ -1,0 +1,52 @@
+[package]
+name = "iac-api"
+version.workspace = true
+edition.workspace = true
+
+# The lib keeps the historical name so every
+# `idol_appreciation_club_backend::*` import in tests and tooling keeps
+# resolving across the workspace split.
+[lib]
+name = "idol_appreciation_club_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "backend"
+path = "src/main.rs"
+
+[dependencies]
+iac-core = { path = "../core" }
+axum = { version = "0.8", features = ["multipart"] }
+tokio.workspace = true
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "fs", "request-id"] }
+sqlx.workspace = true
+object_store.workspace = true
+argon2 = { version = "0.5", features = ["std"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+thiserror.workspace = true
+lru = "0.18"
+futures.workspace = true
+parking_lot.workspace = true
+bytes.workspace = true
+anyhow.workspace = true
+tokio-stream.workspace = true
+libvips = "2.3"
+
+[dev-dependencies]
+proptest = "1"
+testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

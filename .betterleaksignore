@@ -152,3 +152,11 @@ backend/tests/integration.rs:generic-password:578
 backend/tests/integration.rs:generic-password:589
 backend/tests/integration.rs:generic-password:1215
 backend/tests/common/mod.rs:generic-password:437
+backend/crates/api/tests/common/mod.rs:generic-password:437
+backend/crates/api/tests/integration.rs:generic-password:42
+backend/crates/api/tests/integration.rs:generic-password:51
+backend/crates/api/tests/integration.rs:generic-password:63
+backend/crates/api/tests/integration.rs:generic-password:593
+backend/crates/api/tests/integration.rs:generic-password:604
+backend/crates/api/tests/integration.rs:generic-password:1421
+b4280e2b9bc5fdd078efa1b643bf8f3f239a3be1:backend/crates/api/tests/common/mod.rs:generic-password:437

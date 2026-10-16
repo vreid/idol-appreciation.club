@@ -1,25 +1,34 @@
 # Backend architecture
 
 The backend is a single Rust service: HTTP API, tile-pyramid renderer and static
-file host. Source lives in `backend/src`, one module per concern:
+file host. It is a Cargo **workspace**: the shared, pixel-free foundation lives
+in `backend/crates/core` (`iac-core`: world math, config, DB query helpers,
+object store, metrics, telemetry, the error taxonomy), and the service lives in
+`backend/crates/api` (`iac-api`, binary `backend`), which re-exports the core
+modules at its root so `crate::*` paths stay stable. The API temporarily still
+links libvips for the dark 201 path and the Phase-2 tile fallback; the
+worker-binaries step gives the pixel work its own crate (only that crate will
+depend on libvips, per docs/scaling-architecture.md § Code and images), and the
+distroless API image lands once the API is vips-free. Modules (all under
+`crates/api/src` except the core set):
 
-| module     | responsibility                                         |
-| ---------- | ------------------------------------------------------ |
-| `world`    | pure tile/chunk/rect geometry (unit + property tested) |
-| `config`   | env parsing, cooldown and size knobs                   |
-| `img`      | all libvips calls, bytes-in/bytes-out API              |
-| `store`    | object storage (S3-compatible; `file://` dev mode)     |
-| `chunks`   | chunk raster mutation + moderation replay              |
-| `tiles`    | pyramid rendering, maxSeq staleness, caches            |
-| `place`    | `POST /api/place`, admin soft-delete pipeline          |
-| `ingest`   | Phase 4 quarantine consumer behind the 202 upload path |
-| `api`      | near / center / health / reports / image counts        |
-| `handlers` | register / login / logout / me                         |
-| `auth`     | HMAC-signed stateless cookies, `Authed` extractor      |
-| `events`   | Postgres LISTEN/NOTIFY → broadcast → SSE               |
-| `statics`  | SPA hosting with graceful no-frontend fallback         |
-| `router`   | route table + body limit + tracing                     |
-| `error`    | every failure maps to JSON `{"error": "..."}`          |
+| module     | responsibility                                                |
+| ---------- | ------------------------------------------------------------- |
+| `world`    | core · pure tile/chunk/rect geometry (unit + property tested) |
+| `config`   | core · env parsing, cooldown and size knobs                   |
+| `img`      | all libvips calls, bytes-in/bytes-out API                     |
+| `store`    | core · object storage (S3-compatible; `file://` dev mode)     |
+| `chunks`   | chunk raster mutation + moderation replay                     |
+| `tiles`    | pyramid rendering, maxSeq staleness, caches                   |
+| `place`    | `POST /api/place`, admin soft-delete pipeline                 |
+| `ingest`   | Phase 4 quarantine consumer behind the 202 upload path        |
+| `api`      | near / center / health / reports / image counts               |
+| `handlers` | register / login / logout / me                                |
+| `auth`     | HMAC-signed stateless cookies, `Authed` extractor             |
+| `events`   | Postgres LISTEN/NOTIFY → broadcast → SSE                      |
+| `statics`  | SPA hosting with graceful no-frontend fallback                |
+| `router`   | route table + body limit + tracing                            |
+| `error`    | core · every failure maps to JSON `{"error": "..."}`          |
 
 ## World math
 

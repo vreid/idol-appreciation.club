@@ -46,6 +46,9 @@ impl Default for TileRenderCfg {
 #[derive(Clone, Copy)]
 pub struct PipelineCfg {
     pub enabled: bool,
+    /// Phase 4 quarantine flow: 202 placement path + in-process ingest
+    /// consumer (INGEST_PIPELINE_ENABLED).
+    pub ingest: bool,
     /// Worker loops spawned per server (0 = none; tests drive claims
     /// manually with 0).
     pub workers: u32,
@@ -62,6 +65,7 @@ impl Default for PipelineCfg {
     fn default() -> Self {
         Self {
             enabled: false,
+            ingest: false,
             workers: 0,
             poll_ms: 1000,
             lease_secs: 120,
@@ -78,6 +82,7 @@ impl PipelineCfg {
     pub fn fast() -> Self {
         Self {
             enabled: true,
+            ingest: false,
             workers: 1,
             poll_ms: 10,
             lease_secs: 120,
@@ -264,6 +269,7 @@ pub async fn start_server_full(
         import_group_concurrency: 2,
         import_derivative_long_edge: 1024,
         render_pipeline_enabled: pipeline.enabled,
+        ingest_pipeline_enabled: pipeline.ingest,
         render_pipeline_workers: pipeline.workers,
         render_pipeline_poll_ms: pipeline.poll_ms,
         render_pipeline_lease_secs: pipeline.lease_secs,

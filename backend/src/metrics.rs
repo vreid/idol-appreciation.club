@@ -114,6 +114,11 @@ pub struct Metrics {
     render_jobs_pending: AtomicI64,
     render_jobs_running: AtomicI64,
     render_jobs_failed: AtomicI64,
+    ingest_jobs_pending: AtomicI64,
+    ingest_jobs_running: AtomicI64,
+    ingest_jobs_placed: AtomicI64,
+    ingest_jobs_failed: AtomicI64,
+    ingest_duration: Histogram<12>,
     import_duration: Histogram<{ IMPORT_BUCKETS.len() }>,
     /// Pyramid gate (issue #120): leases currently held by full-pyramid
     /// (z < BASE_Z) renders, and entry GETs shed because the gate was
@@ -156,6 +161,11 @@ pub static METRICS: LazyLock<Metrics> = LazyLock::new(|| Metrics {
     render_jobs_pending: AtomicI64::new(0),
     render_jobs_running: AtomicI64::new(0),
     render_jobs_failed: AtomicI64::new(0),
+    ingest_jobs_pending: AtomicI64::new(0),
+    ingest_jobs_running: AtomicI64::new(0),
+    ingest_jobs_placed: AtomicI64::new(0),
+    ingest_jobs_failed: AtomicI64::new(0),
+    ingest_duration: Histogram::new(WIDE_BUCKETS),
     import_duration: Histogram::new(IMPORT_BUCKETS),
     pyramid_active: AtomicUsize::new(0),
     pyramid_sheds: AtomicU64::new(0),
@@ -218,7 +228,7 @@ pub const S3_OPS: [&str; 2] = ["get", "put"];
 /// tiles-table seq read/write on the render path, `tile_queue` the
 /// background render queue's bookkeeping. Session-level advisory locks
 /// and migrations stay unlabeled (lock waits are not query time).
-pub const DB_FAMILIES: [&str; 16] = [
+pub const DB_FAMILIES: [&str; 17] = [
     "near",
     "tile_versions",
     "dig",
@@ -237,6 +247,9 @@ pub const DB_FAMILIES: [&str; 16] = [
     // Phase 3 render pipeline (migration 0008): claim/finish/fail on the
     // render_jobs table plus its chunk_seqs and tiles writes.
     "render_jobs",
+    // Phase 4 ingest pipeline (migration 0009): the quarantine
+    // consumer's claim/record writes on ingest_jobs.
+    "ingest",
 ];
 
 pub fn chunk_composited() {
@@ -281,6 +294,20 @@ pub fn render_jobs_queue(pending: i64, running: i64, failed: i64) {
     m.render_jobs_pending.store(pending, Ordering::Relaxed);
     m.render_jobs_running.store(running, Ordering::Relaxed);
     m.render_jobs_failed.store(failed, Ordering::Relaxed);
+}
+
+/// Ingest-queue gauges, refreshed by the ingest consumer's claim loop.
+pub fn ingest_jobs_queue(pending: i64, running: i64, placed: i64, failed: i64) {
+    let m = &*METRICS;
+    m.ingest_jobs_pending.store(pending, Ordering::Relaxed);
+    m.ingest_jobs_running.store(running, Ordering::Relaxed);
+    m.ingest_jobs_placed.store(placed, Ordering::Relaxed);
+    m.ingest_jobs_failed.store(failed, Ordering::Relaxed);
+}
+
+/// One completed ingest job (place or removal), pixel stage included.
+pub fn ingest_done(elapsed: Duration) {
+    METRICS.ingest_duration.observe(elapsed);
 }
 
 /// Exposition of all series. `pool` supplies the sqlx connection gauges;
@@ -433,6 +460,18 @@ pub fn render(pool: &sqlx::PgPool, queue_depth: u64, queue_dropped: u64) -> Stri
         ("failed", m.render_jobs_failed.load(Ordering::Relaxed)),
     ] {
         out.push_str(&format!("render_jobs_queue{{state=\"{state}\"}} {v}\n"));
+    }
+
+    out.push_str(
+        "# HELP ingest_jobs_queue Depth of the Phase 4 ingest_jobs queue by state (refreshed by the consumer claim loop).\n# TYPE ingest_jobs_queue gauge\n",
+    );
+    for (state, v) in [
+        ("pending", m.ingest_jobs_pending.load(Ordering::Relaxed)),
+        ("running", m.ingest_jobs_running.load(Ordering::Relaxed)),
+        ("placed", m.ingest_jobs_placed.load(Ordering::Relaxed)),
+        ("failed", m.ingest_jobs_failed.load(Ordering::Relaxed)),
+    ] {
+        out.push_str(&format!("ingest_jobs_queue{{state=\"{state}\"}} {v}\n"));
     }
 
     out.push_str(

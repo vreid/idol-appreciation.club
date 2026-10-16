@@ -13,6 +13,7 @@ pub mod events;
 pub mod handlers;
 pub mod img;
 pub mod import;
+pub mod ingest;
 pub mod metrics;
 pub mod place;
 pub mod rate;
@@ -87,6 +88,12 @@ pub async fn build_app(cfg: config::Config) -> anyhow::Result<(state::App, axum:
     // cutover, docs/backend.md).
     for _ in 0..state.cfg.render_pipeline_workers {
         render_jobs::spawn_worker(&state);
+    }
+    // Phase 4 ingest consumer (docs "Upload flow"): dark unless
+    // INGEST_PIPELINE_ENABLED=true — the 202 quarantine path only runs
+    // when the consumer is alive to drain the queue.
+    if state.cfg.ingest_pipeline_enabled {
+        ingest::spawn_consumer(&state);
     }
 
     Ok((state.clone(), router::router(state)))

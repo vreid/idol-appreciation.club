@@ -23,6 +23,96 @@ pub fn cooldown_check(elapsed_secs: f64, threshold_secs: i64) -> Result<(), i64>
     Err(retry.max(1))
 }
 
+/// The transactional cooldown gate, consumed inside the caller's
+/// transaction (the synchronous path holds chunk locks around it; the
+/// 202 quarantine path runs it standalone). Admin-exempt accounts skip
+/// both cooldowns entirely — no 429 path. Everyone else: paints
+/// (overlapping existing art) wait 300 s, empty space 1 s. On rejection
+/// the transaction is rolled back and the retry-after mirrors the
+/// read-only precheck's decision.
+async fn cooldown_gate(
+    app: &App,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    account_id: Uuid,
+    aabb: &Rect,
+) -> AppResult<()> {
+    let acct: (bool,) = crate::dbq::timed(
+        "place",
+        sqlx::query_as("SELECT cooldown_exempt FROM accounts WHERE id = $1 FOR UPDATE")
+            .bind(account_id)
+            .fetch_one(&mut **tx),
+    )
+    .await?;
+    if !acct.0 {
+        let intersects: (bool,) = crate::dbq::timed(
+            "place",
+            sqlx::query_as(
+                "SELECT EXISTS(
+                 SELECT 1 FROM placements
+                 WHERE removed_at IS NULL
+                   AND bbox && box(point($1::float8, $2::float8),
+                                   point($3::float8, $4::float8)))",
+            )
+            .bind(aabb.x)
+            .bind(aabb.y)
+            .bind(aabb.x + aabb.w - 1)
+            .bind(aabb.y + aabb.h - 1)
+            .fetch_one(&mut **tx),
+        )
+        .await?;
+        let threshold = if intersects.0 {
+            app.cfg.cooldown_paint_secs
+        } else {
+            app.cfg.cooldown_empty_secs
+        };
+        let updated: Option<(chrono::DateTime<Utc>,)> = crate::dbq::timed(
+            "place",
+            sqlx::query_as(
+                "UPDATE accounts SET last_placement_at = now()
+             WHERE id = $1
+               AND (last_placement_at IS NULL
+                    OR now() - last_placement_at >= make_interval(secs => $2))
+             RETURNING last_placement_at",
+            )
+            .bind(account_id)
+            .bind(threshold)
+            .fetch_optional(&mut **tx),
+        )
+        .await?;
+        if updated.is_none() {
+            // No rollback here: the helper sees the transaction through a
+            // &mut, and returning Err drops the caller's owned
+            // transaction, which sqlx rolls back — the same prompt
+            // release of the account row lock as an explicit rollback.
+            let last: Option<(chrono::DateTime<Utc>,)> = crate::dbq::timed(
+                "place",
+                sqlx::query_as("SELECT last_placement_at FROM accounts WHERE id = $1")
+                    .bind(account_id)
+                    .fetch_optional(&app.pool),
+            )
+            .await?;
+            let elapsed = last
+                .map(|(t,)| (Utc::now() - t).num_milliseconds() as f64 / 1000.0)
+                .unwrap_or(0.0);
+            return match cooldown_check(elapsed, threshold) {
+                Ok(()) => Err(AppError::Cooldown(threshold.max(1))),
+                Err(retry) => Err(AppError::Cooldown(retry)),
+            };
+        }
+    } else {
+        // Keep last_placement_at fresh so a later un-exempt state starts
+        // from the real last placement, not an ancient one.
+        crate::dbq::timed(
+            "place",
+            sqlx::query("UPDATE accounts SET last_placement_at = now() WHERE id = $1")
+                .bind(account_id)
+                .execute(&mut **tx),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Read-only early cooldown gate, run BEFORE the pixel stage so a
 /// cooled-down account cannot spend the serialized libvips stage on a
 /// request the placement transaction would reject anyway. Mirrors the
@@ -282,6 +372,52 @@ pub async fn place(
     }
     cooldown_precheck(&app, account_id, &aabb).await?;
 
+    // Phase 4 quarantine path (docs "Upload flow", INGEST_PIPELINE_ENABLED):
+    // the cheap validation above is all the request pays. Stash the bytes
+    // and queue the ingest job; the pixel stage, content-addressed S3
+    // writes, the placement row, chunk versions and render jobs all move
+    // to the consumer. The client follows the `placed`/`place_failed`
+    // events or polls GET /api/uploads/{id}.
+    if app.cfg.ingest_pipeline_enabled {
+        let job_id = Uuid::now_v7();
+        let quarantine_key = format!("quarantine/{job_id}");
+        // The object write is not transactional; a crash between PUT and
+        // the job insert orphans a quarantine object, which the
+        // lifecycle rule cleans up (docs step 3).
+        crate::store::put(&app.store, &quarantine_key, image_bytes).await?;
+        let mut tx = app.pool.begin().await?;
+        cooldown_gate(&app, &mut tx, account_id, &aabb).await?;
+        crate::ingest::enqueue_place(
+            &mut tx,
+            &crate::ingest::PlaceJobSpec {
+                job_id,
+                account_id,
+                quarantine_key,
+                x,
+                y,
+                w,
+                h,
+                rot,
+                size,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok((
+            axum::http::StatusCode::ACCEPTED,
+            Json(json!({
+                "id": job_id,
+                "state": "pending",
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "rot": rot,
+            })),
+        )
+            .into_response());
+    }
+
     // Sync pixel stage (libvips is !Send): decode, strip metadata,
     // re-save in the source codec, hash; then build the deterministic
     // webp derivative from the stripped raster.
@@ -329,77 +465,7 @@ pub async fn place(
     // Cooldown exemption (admin-granted): skip both cooldowns entirely —
     // no 429 path. Everyone else: paints (overlapping existing art) wait
     // 300 s, empty space 1 s.
-    let acct: (bool,) = crate::dbq::timed(
-        "place",
-        sqlx::query_as("SELECT cooldown_exempt FROM accounts WHERE id = $1 FOR UPDATE")
-            .bind(account_id)
-            .fetch_one(&mut *tx),
-    )
-    .await?;
-    if !acct.0 {
-        let intersects: (bool,) = crate::dbq::timed(
-            "place",
-            sqlx::query_as(
-                "SELECT EXISTS(
-                 SELECT 1 FROM placements
-                 WHERE removed_at IS NULL
-                   AND bbox && box(point($1::float8, $2::float8),
-                                   point($3::float8, $4::float8)))",
-            )
-            .bind(aabb.x)
-            .bind(aabb.y)
-            .bind(aabb.x + aabb.w - 1)
-            .bind(aabb.y + aabb.h - 1)
-            .fetch_one(&mut *tx),
-        )
-        .await?;
-        let threshold = if intersects.0 {
-            app.cfg.cooldown_paint_secs
-        } else {
-            app.cfg.cooldown_empty_secs
-        };
-        let updated: Option<(chrono::DateTime<Utc>,)> = crate::dbq::timed(
-            "place",
-            sqlx::query_as(
-                "UPDATE accounts SET last_placement_at = now()
-             WHERE id = $1
-               AND (last_placement_at IS NULL
-                    OR now() - last_placement_at >= make_interval(secs => $2))
-             RETURNING last_placement_at",
-            )
-            .bind(account_id)
-            .bind(threshold)
-            .fetch_optional(&mut *tx),
-        )
-        .await?;
-        if updated.is_none() {
-            tx.rollback().await.map_err(internal)?;
-            let last: Option<(chrono::DateTime<Utc>,)> = crate::dbq::timed(
-                "place",
-                sqlx::query_as("SELECT last_placement_at FROM accounts WHERE id = $1")
-                    .bind(account_id)
-                    .fetch_optional(&app.pool),
-            )
-            .await?;
-            let elapsed = last
-                .map(|(t,)| (Utc::now() - t).num_milliseconds() as f64 / 1000.0)
-                .unwrap_or(0.0);
-            return match cooldown_check(elapsed, threshold) {
-                Ok(()) => Err(AppError::Cooldown(threshold.max(1))),
-                Err(retry) => Err(AppError::Cooldown(retry)),
-            };
-        }
-    } else {
-        // Keep last_placement_at fresh so a later un-exempt state starts
-        // from the real last placement, not an ancient one.
-        crate::dbq::timed(
-            "place",
-            sqlx::query("UPDATE accounts SET last_placement_at = now() WHERE id = $1")
-                .bind(account_id)
-                .execute(&mut *tx),
-        )
-        .await?;
-    }
+    cooldown_gate(&app, &mut tx, account_id, &aabb).await?;
 
     // Pipeline-on ordering doctrine (docs/scaling-architecture.md
     // "Ordering"): hold the single sequencer row lock from the seq draw
@@ -542,6 +608,42 @@ pub async fn admin_delete(
     // Replay/notify scope = the AABB of the rotated rect (the painted
     // bitmap), matching the placement pipeline.
     let aabb = crate::world::rotated_aabb(x, y, w, h, rot);
+    // Phase 4 quarantine path: queue the removal instead of applying it
+    // inline. The consumer locks the placement row — which also orders a
+    // delete of a still-quarantined upload after its placement lands —
+    // then applies removed_at + the version bump + render job enqueue.
+    if app.cfg.ingest_pipeline_enabled {
+        let job_id = Uuid::now_v7();
+        let mut tx = app.pool.begin().await?;
+        crate::ingest::enqueue_removal(
+            &mut tx,
+            &crate::ingest::RemovalJobSpec {
+                job_id,
+                account_id: admin_id,
+                placement_id: id,
+                x,
+                y,
+                w,
+                h,
+                rot,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok((
+            axum::http::StatusCode::ACCEPTED,
+            Json(json!({
+                "id": job_id,
+                "state": "pending",
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "rot": rot,
+            })),
+        )
+            .into_response());
+    }
     let chunk_keys = aabb.chunk_keys();
     let lock_keys: Vec<String> = chunk_keys
         .iter()
@@ -625,6 +727,42 @@ pub async fn admin_delete(
     .await?;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+/// GET /api/uploads/{id} — the upload-status contract (docs "Upload
+/// flow"): the body is exactly contract/zod's `uploadStatusSchema`
+/// (pending / placed / failed), 404 for unknown ids. The web client's
+/// poll treats 404 as "keep waiting on events", so pre-pipeline
+/// backends never break it. Owner or admin only; anyone else gets the
+/// same 404 (no existence leak).
+pub async fn upload_status(
+    State(app): State<App>,
+    Authed(account_id): Authed,
+    axum::extract::Path(id): axum::extract::Path<Uuid>,
+) -> AppResult<Response> {
+    let owner: Option<(Option<Uuid>,)> = crate::dbq::timed(
+        "place",
+        sqlx::query_as("SELECT account_id FROM ingest_jobs WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&app.pool),
+    )
+    .await?;
+    match owner {
+        // The uploading account polls its own job.
+        Some((account,)) if account == Some(account_id) => {}
+        // Everyone else (incl. admin-issued removal jobs): admin role or
+        // the same 404.
+        Some(_) => {
+            crate::auth::require_admin(&app, account_id)
+                .await
+                .map_err(|_| AppError::NotFound)?;
+        }
+        None => return Err(AppError::NotFound),
+    }
+    match crate::ingest::status_json(&app.pool, id).await? {
+        Some(body) => Ok(Json(body).into_response()),
+        None => Err(AppError::NotFound),
+    }
 }
 
 #[cfg(test)]

@@ -27,6 +27,7 @@ pub fn router(state: App) -> Router {
         .route("/api/placements/{id}/tags", put(api::tags_put))
         .route("/api/images/{sha}/count", get(api::image_count))
         .route("/api/admin/placements/{id}", delete(place::admin_delete))
+        .route("/api/uploads/{id}", get(place::upload_status))
         .route("/api/admin/accounts", get(api::admin_list_accounts))
         .route(
             "/api/admin/accounts/{username}/approve",

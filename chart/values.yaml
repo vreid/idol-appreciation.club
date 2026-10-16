@@ -37,6 +37,12 @@ backend:
   # backlog (30.7k repaints) while the request path still composites.
   # Stage 3 flips renderPipelineEnabled last.
   renderPipelineWorkers: 2
+  # Phase 4 ingest pipeline (docs/scaling-architecture.md "Upload
+  # flow"): 202 quarantine placements + the in-process ingest consumer
+  # (docs/backend.md "The ingest pipeline"). Ships dark; the consumer
+  # queues render jobs, so this flips LAST — after the render pipeline
+  # is verified end-to-end.
+  ingestPipelineEnabled: false
   # Two replicas: zero-blip rolls (surge pod ready before the old one
   # drains) and half the blast radius per pod. Multi-writer safety rides
   # the session-level PG advisory chunk locks (chunks.rs), not the replica

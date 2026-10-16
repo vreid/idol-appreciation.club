@@ -4,6 +4,11 @@ const baseURL = process.env.BASE_URL ?? "https://idol-appreciation.club";
 
 export default defineConfig({
   testDir: ".",
+  // The quarantine-flow specs route-mock every API call and only make
+  // sense against the local build (e2e/playwright.quarantine.config.ts);
+  // against prod the deployed bundle may predate the client feature and
+  // the mocks would fight the real backend.
+  testIgnore: /quarantine-place\.spec\.ts/u,
   timeout: 30_000,
   fullyParallel: true,
   retries: 1,

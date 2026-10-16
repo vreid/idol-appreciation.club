@@ -11,6 +11,8 @@ pub mod chunk_seqs;
 pub mod config;
 pub mod dbq;
 pub mod error;
+pub mod imgprobe;
+pub mod jobs;
 pub mod metrics;
 pub mod store;
 pub mod telemetry;

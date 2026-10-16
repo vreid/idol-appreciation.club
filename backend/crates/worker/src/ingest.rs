@@ -44,81 +44,9 @@ pub struct IngestJob {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Everything the 202 path records about an accepted upload.
-pub struct PlaceJobSpec {
-    pub job_id: Uuid,
-    pub account_id: Uuid,
-    pub quarantine_key: String,
-    pub x: i64,
-    pub y: i64,
-    pub w: i64,
-    pub h: i64,
-    pub rot: f32,
-    pub size: i64,
-}
 
-/// Queue a quarantine placement job (the 202 path's tx).
-pub async fn enqueue_place(
-    tx: &mut Transaction<'_, Postgres>,
-    spec: &PlaceJobSpec,
-) -> AppResult<()> {
-    sqlx::query(
-        "INSERT INTO ingest_jobs
-         (id, kind, account_id, quarantine_key, x, y, w, h, rot, size)
-         VALUES ($1, 'place', $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(spec.job_id)
-    .bind(spec.account_id)
-    .bind(&spec.quarantine_key)
-    .bind(spec.x)
-    .bind(spec.y)
-    .bind(spec.w as i32)
-    .bind(spec.h as i32)
-    .bind(spec.rot)
-    .bind(spec.size as i32)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal)?;
-    Ok(())
-}
 
-/// Everything the 202 removal path records about the target.
-pub struct RemovalJobSpec {
-    pub job_id: Uuid,
-    pub account_id: Uuid,
-    pub placement_id: Uuid,
-    pub x: i64,
-    pub y: i64,
-    pub w: i64,
-    pub h: i64,
-    pub rot: f32,
-}
 
-/// Queue an admin removal job (the 202 path's tx). The consumer locks
-/// the placement row before applying, so a delete racing the placement's
-/// own ingest applies strictly after it lands.
-pub async fn enqueue_removal(
-    tx: &mut Transaction<'_, Postgres>,
-    spec: &RemovalJobSpec,
-) -> AppResult<()> {
-    sqlx::query(
-        "INSERT INTO ingest_jobs
-         (id, kind, account_id, placement_id, x, y, w, h, rot)
-         VALUES ($1, 'removal', $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(spec.job_id)
-    .bind(spec.account_id)
-    .bind(spec.placement_id)
-    .bind(spec.x)
-    .bind(spec.y)
-    .bind(spec.w as i32)
-    .bind(spec.h as i32)
-    .bind(spec.rot)
-    .execute(&mut **tx)
-    .await
-    .map_err(internal)?;
-    Ok(())
-}
 
 /// Claim the oldest due job (`FOR UPDATE SKIP LOCKED`, render_jobs
 /// idiom): pending rows past `not_before`, plus `running` rows whose
@@ -323,7 +251,7 @@ async fn run_place_job(ctx: &WorkerCtx, job: &IngestJob) -> AppResult<()> {
     // from the seq draw to commit, so commit order equals sequence order
     // and the render workers' incremental painting sees a consistent
     // world.
-    crate::render_jobs::lock_sequencer(&mut tx).await?;
+    iac_core::jobs::lock_sequencer(&mut tx).await?;
     let seq: (i64,) = iac_core::dbq::timed(
         "ingest",
         sqlx::query_as("SELECT nextval('placement_seq')").fetch_one(&mut *tx),

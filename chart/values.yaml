@@ -126,13 +126,17 @@ web:
   # round goes HORIZONTAL (3 replicas across the 3 baseline nodes) with
   # 1.5Gi per edge. CPU request yields to 1C (see the PR math): the
   # failure mode was memory, the limit keeps 2.5C of burst headroom.
+  # 2026-10-16 10:59Z: the gate-shape run (999-1556 SSE + 100 placers +
+  # version-churn refetches) OOM'd all three edges at 1.5Gi inside the
+  # burst window; the limit doubles (request unchanged, so scheduling is
+  # untouched) per the resize receipt on #163.
   resources:
     requests:
       cpu: 1
       memory: 1.5Gi
     limits:
       cpu: 2500m
-      memory: 1.5Gi
+      memory: 3Gi
 
 # Descheduler (phase 5, salvage of the cancelled #206 retune): rebalances
 # the baseline pool; the worker pool stays with the Cluster Autoscaler.
